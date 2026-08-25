@@ -75,3 +75,16 @@ jobs:
             echo "a credential could reach stdout"; exit 1
           fi
           echo "ok  no credential printing"
+
+      - name: claude plugin validate --strict
+        run: |
+          # The same check Anthropic's review pipeline runs on every submission,
+          # so a failure here is a rejection that has not happened yet.
+          npm install -g @anthropic-ai/claude-code >/dev/null 2>&1 || {
+            echo "::warning::could not install claude-code; skipping official validation"
+            exit 0
+          }
+          for plugin in $(jq -r '.plugins[].source' .claude-plugin/marketplace.json); do
+            echo "validating $plugin"
+            claude plugin validate "$plugin" --strict
+          done

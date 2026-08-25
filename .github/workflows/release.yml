@@ -1,0 +1,46 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/.claude-plugin/plugin.json'
+      - '.claude-plugin/marketplace.json'
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Users only receive an update when the version is bumped, so the bump is
+      # the release signal. Tagging it makes that visible in git history and
+      # gives people something to diff against.
+      - name: Tag and release any plugin whose version changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          jq -r '.plugins[] | .name + " " + .source' .claude-plugin/marketplace.json |
+          while read -r name source; do
+            version=$(jq -r .version "$source/.claude-plugin/plugin.json")
+            tag="$name-v$version"
+
+            if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+              echo "$tag already tagged — nothing to release"
+              continue
+            fi
+
+            echo "releasing $tag"
+            git tag "$tag"
+            git push origin "$tag"
+            gh release create "$tag" \
+              --title "$name $version" \
+              --notes "Install: \`/plugin marketplace add ${{ github.repository }}\` then \`/plugin install $name@$(jq -r .name .claude-plugin/marketplace.json)\`
+
+See [$source/README.md](https://github.com/${{ github.repository }}/blob/main/$source/README.md)."
+          done
