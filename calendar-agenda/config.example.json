@@ -1,0 +1,18 @@
+{
+  "timeZone": null,
+  "locale": null,
+  "calendars": [
+    {
+      "id": "you@gmail.com",
+      "label": "personal",
+      "badge": "🏠",
+      "writable": true
+    },
+    {
+      "id": "you@company.com",
+      "label": "work",
+      "badge": "💼",
+      "writable": false
+    }
+  ]
+}

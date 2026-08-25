@@ -1,0 +1,15 @@
+{
+  "name": "korkin25",
+  "owner": {
+    "name": "Eugeny Kuzakov",
+    "url": "https://github.com/korkin25"
+  },
+  "plugins": [
+    {
+      "name": "calendar-agenda",
+      "source": "./calendar-agenda",
+      "description": "Your agenda from any number of Google Calendars at the start of every session, and scheduling that respects all of them.",
+      "version": "0.1.0"
+    }
+  ]
+}

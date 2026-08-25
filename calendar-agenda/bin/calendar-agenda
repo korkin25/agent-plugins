@@ -1,0 +1,318 @@
+#!/usr/bin/env node
+/**
+ * Prints your agenda across every configured Google Calendar.
+ *
+ *   calendar-agenda              today
+ *   calendar-agenda --week       the next seven days
+ *   calendar-agenda --json       machine-readable output
+ *   calendar-agenda --no-color   plain text, no ANSI
+ *
+ * Colour is emitted only when stdout is a terminal, or when CALENDAR_AGENDA_COLOR=1
+ * is set: the agenda is usually consumed by an agent that renders markdown, where
+ * escape codes would show up literally.
+ *
+ * Configuration: ~/.config/calendar-agenda/config.json (see README).
+ */
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const CONFIG_DIR = process.env.CALENDAR_AGENDA_CONFIG_DIR
+  || path.join(os.homedir(), '.config/calendar-agenda');
+const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
+
+const args = process.argv.slice(2);
+const week = args.includes('--week');
+const asJson = args.includes('--json');
+const useColor = !args.includes('--no-color')
+  && !process.env.NO_COLOR
+  && !asJson
+  && (process.env.CALENDAR_AGENDA_COLOR === '1' || process.stdout.isTTY);
+
+const C = useColor
+  ? { reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m', red: '\x1b[31m',
+      green: '\x1b[32m', yellow: '\x1b[33m', cyan: '\x1b[36m' }
+  : new Proxy({}, { get: () => '' });
+
+function fail(message, hint) {
+  process.stderr.write(`calendar-agenda: ${message}\n` + (hint ? `${hint}\n` : ''));
+  process.exit(1);
+}
+
+function loadConfig() {
+  let raw;
+  try {
+    raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+  } catch {
+    fail(`no configuration at ${CONFIG_PATH}`,
+         'Run the "calendar-setup" skill, or copy config.example.json from the plugin.');
+  }
+  let cfg;
+  try {
+    cfg = JSON.parse(raw);
+  } catch (e) {
+    fail(`${CONFIG_PATH} is not valid JSON: ${e.message}`);
+  }
+  if (!Array.isArray(cfg.calendars) || cfg.calendars.length === 0) {
+    fail(`${CONFIG_PATH} lists no calendars`,
+         'Add at least one entry to "calendars".');
+  }
+  cfg.calendars.forEach((c, i) => {
+    if (!c || typeof c.id !== 'string' || !c.id) {
+      fail(`calendars[${i}] has no "id"`, 'Use the calendar address, e.g. you@gmail.com.');
+    }
+  });
+  // An unset timeZone means "wherever this machine is" — the common case, and the
+  // one that keeps working when the user travels.
+  cfg.timeZone = cfg.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  return cfg;
+}
+
+function loadAuth(cfg) {
+  const explicit = cfg.credentials || process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
+  const tokensPath = cfg.tokens
+    || process.env.GOOGLE_CALENDAR_MCP_TOKEN_PATH
+    || path.join(os.homedir(), '.config/google-calendar-mcp/tokens.json');
+  const keysPath = explicit
+    || process.env.GOOGLE_OAUTH_CREDENTIALS
+    || path.join(os.homedir(), '.config/google-calendar-mcp/gcp-oauth.keys.json');
+
+  let keys;
+  try {
+    keys = JSON.parse(fs.readFileSync(keysPath, 'utf8'));
+  } catch {
+    fail(`cannot read credentials at ${keysPath}`,
+         'Authenticate the google-calendar MCP server first, or set "credentials" in the config.');
+  }
+
+  // A service account key authenticates on its own; an OAuth client needs the
+  // token file written by the MCP server's auth flow.
+  if (keys.type === 'service_account') {
+    return { kind: 'service_account', keys };
+  }
+  const installed = keys.installed || keys.web || keys;
+  let tokens;
+  try {
+    const store = JSON.parse(fs.readFileSync(tokensPath, 'utf8'));
+    tokens = store.normal || store[Object.keys(store)[0]];
+  } catch {
+    fail(`cannot read tokens at ${tokensPath}`,
+         'Run the google-calendar MCP auth flow once, then try again.');
+  }
+  if (!tokens || !tokens.refresh_token) {
+    fail('stored tokens carry no refresh_token', 'Re-run the auth flow.');
+  }
+  return { kind: 'oauth', clientId: installed.client_id, clientSecret: installed.client_secret, tokens };
+}
+
+function requireGoogleLibs() {
+  // These come from the google-calendar MCP server this plugin builds on; loading
+  // them from there avoids shipping a second copy of a large dependency tree.
+  //
+  // Loading code from a path is code execution, so a directory is used only when
+  // it is owned by this user and not writable by anyone else — otherwise a
+  // writable node_modules anywhere on the list would be a way to run arbitrary
+  // code inside this process on every session start.
+  const candidates = [
+    process.env.CALENDAR_AGENDA_NODE_MODULES,
+    path.join(os.homedir(), '.local/share/google-calendar-mcp/node_modules'),
+    path.join(os.homedir(), '.npm-global/lib/node_modules'),
+    '/usr/lib/node_modules'
+  ].filter(Boolean);
+
+  const safeToLoadFrom = (dir) => {
+    try {
+      const st = fs.statSync(dir);
+      if (!st.isDirectory()) return false;
+      const mineOrRoot = st.uid === process.getuid() || st.uid === 0;
+      const groupOrWorldWritable = (st.mode & 0o022) !== 0;
+      return mineOrRoot && !groupOrWorldWritable;
+    } catch {
+      return false;
+    }
+  };
+
+  for (const base of candidates) {
+    if (!safeToLoadFrom(base)) continue;
+    try {
+      return {
+        auth: require(path.join(base, 'google-auth-library')),
+        googleapis: require(path.join(base, 'googleapis'))
+      };
+    } catch { /* try the next location */ }
+  }
+  try {
+    return { auth: require('google-auth-library'), googleapis: require('googleapis') };
+  } catch {
+    fail('google-auth-library / googleapis not found',
+         'Install them, or point CALENDAR_AGENDA_NODE_MODULES at a node_modules directory\n' +
+         'that you own and that is not group- or world-writable.');
+  }
+}
+
+function buildClient(cfg) {
+  const { auth: authLib, googleapis } = requireGoogleLibs();
+  const creds = loadAuth(cfg);
+  const scopes = ['https://www.googleapis.com/auth/calendar.readonly'];
+
+  if (creds.kind === 'service_account') {
+    const client = new authLib.JWT({
+      email: creds.keys.client_email, key: creds.keys.private_key, scopes
+    });
+    return googleapis.google.calendar({ version: 'v3', auth: client });
+  }
+  const client = new authLib.OAuth2Client({
+    clientId: creds.clientId, clientSecret: creds.clientSecret
+  });
+  client.setCredentials(creds.tokens);
+  return googleapis.google.calendar({ version: 'v3', auth: client });
+}
+
+// Calendars that mirror each other (a work event copied into a personal calendar
+// by a sync tool) would otherwise double every line. The copy usually carries a
+// generic title, so the informative one wins.
+const PLACEHOLDER = /^(🤝\s*)?(meeting|встреча)$|^(🏠\s*)?personal commitment$|^(busy|занято|blocked|private)$/i;
+
+function shortenLocation(location) {
+  if (!location) return null;
+  const text = String(location).trim();
+  if (/teams\.microsoft/i.test(text) || /microsoft teams/i.test(text)) return '💻 Teams';
+  if (/meet\.google/i.test(text)) return '💻 Meet';
+  if (/zoom\./i.test(text)) return '💻 Zoom';
+  if (/^https?:\/\//i.test(text)) return '🔗 link';
+  return '📍 ' + text.split(',')[0].slice(0, 40);
+}
+
+function plural(n, one, few, many) {
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+}
+
+async function main() {
+  const cfg = loadConfig();
+  const cal = buildClient(cfg);
+  const TZ = cfg.timeZone;
+
+  const fmtDate = new Intl.DateTimeFormat(cfg.locale || undefined,
+    { timeZone: TZ, weekday: 'long', day: 'numeric', month: 'long' });
+  const fmtTime = new Intl.DateTimeFormat(cfg.locale || undefined,
+    { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false });
+  const dayKey = (d) => new Intl.DateTimeFormat('en-CA',
+    { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+
+  const now = new Date();
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(end.getDate() + (week ? 7 : 1));
+
+  const collected = [];
+  const errors = [];
+  await Promise.all(cfg.calendars.map(async (c) => {
+    try {
+      const r = await cal.events.list({
+        calendarId: c.id, timeMin: start.toISOString(), timeMax: end.toISOString(),
+        singleEvents: true, orderBy: 'startTime', maxResults: 100
+      });
+      for (const e of r.data.items || []) {
+        if (e.status === 'cancelled') continue;
+        collected.push({
+          summary: e.summary || '(no title)',
+          allDay: Boolean(e.start && e.start.date),
+          start: new Date(e.start && (e.start.dateTime || e.start.date)),
+          end: new Date(e.end && (e.end.dateTime || e.end.date)),
+          badge: c.badge || '',
+          location: e.location || null
+        });
+      }
+    } catch (err) {
+      errors.push(`${c.label || c.id}: ${String(err.message).slice(0, 70)}`);
+    }
+  }));
+
+  const bySlot = new Map();
+  for (const e of collected) {
+    const slot = `${e.start.getTime()}-${e.end.getTime()}`;
+    const prev = bySlot.get(slot);
+    if (!prev) {
+      bySlot.set(slot, { ...e, badges: e.badge ? [e.badge] : [] });
+      continue;
+    }
+    if (e.badge && !prev.badges.includes(e.badge)) prev.badges.push(e.badge);
+    const prevPlaceholder = PLACEHOLDER.test(prev.summary);
+    const nextPlaceholder = PLACEHOLDER.test(e.summary);
+    if (prevPlaceholder && !nextPlaceholder) {
+      prev.summary = e.summary;
+      prev.location = e.location || prev.location;
+    } else if (prevPlaceholder === nextPlaceholder && e.summary.length > prev.summary.length) {
+      prev.summary = e.summary;
+      prev.location = prev.location || e.location;
+    }
+  }
+  const events = Array.from(bySlot.values()).sort((a, b) => a.start - b.start);
+
+  if (asJson) {
+    process.stdout.write(JSON.stringify({
+      timeZone: TZ,
+      range: { from: start.toISOString(), to: end.toISOString() },
+      events: events.map((e) => ({
+        summary: e.summary, start: e.start.toISOString(), end: e.end.toISOString(),
+        allDay: e.allDay, calendars: e.badges, location: e.location
+      })),
+      errors
+    }, null, 2) + '\n');
+    return;
+  }
+
+  const nextIdx = events.findIndex((e) => e.start > now);
+  const title = week ? 'This week' : `Today, ${fmtDate.format(now)}`;
+  const count = events.length
+    ? `${C.dim}·${C.reset} ${events.length} ${plural(events.length, 'event', 'events', 'events')}`
+    : '';
+  const lines = ['', `📅  ${C.bold}${C.cyan}${title}${C.reset} ${count}`, ''];
+
+  if (!events.length) {
+    lines.push(`   ${C.green}✨ nothing scheduled${C.reset}`, '');
+  } else {
+    let currentDay = null;
+    events.forEach((e, i) => {
+      if (week) {
+        const k = dayKey(e.start);
+        if (k !== currentDay) {
+          currentDay = k;
+          lines.push(`   ${C.bold}${fmtDate.format(e.start)}${C.reset}`);
+        }
+      }
+      const pad = week ? '     ' : '   ';
+      const past = !e.allDay && e.end < now;
+      const running = !e.allDay && e.start <= now && e.end > now;
+
+      let mark, color;
+      if (running) { mark = '🔴'; color = C.red + C.bold; }
+      else if (past) { mark = '✓ '; color = C.dim; }
+      else if (i === nextIdx) { mark = '⏰'; color = C.yellow + C.bold; }
+      else { mark = '  '; color = ''; }
+
+      const when = e.allDay ? 'all day' : `${fmtTime.format(e.start)}–${fmtTime.format(e.end)}`;
+      const tail = [e.badges.join(''), shortenLocation(e.location)].filter(Boolean).join('  ');
+      const wrap = (t) => (color ? `${color}${t}${C.reset}` : t);
+
+      lines.push(`${pad}${mark} ${wrap(when)}  ${wrap(e.summary)}` +
+                 (tail ? `  ${C.dim}${tail}${C.reset}` : '') +
+                 (running ? `  ${C.red}← now${C.reset}` : ''));
+    });
+    lines.push('');
+  }
+
+  for (const e of errors) lines.push(`   ${C.red}⚠ unreachable ${e}${C.reset}`);
+
+  process.stdout.write(lines.join('\n') + '\n');
+}
+
+main().catch((err) => {
+  process.stderr.write(`calendar-agenda: ${err.message}\n`);
+  process.exit(1);
+});

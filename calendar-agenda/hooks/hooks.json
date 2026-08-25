@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "out=$(timeout 15 \"${CLAUDE_PLUGIN_ROOT}/bin/calendar-agenda\" 2>/dev/null); [ -n \"$out\" ] && jq -nc --arg c \"$out\" '{hookSpecificOutput:{hookEventName:\"SessionStart\",additionalContext:$c}}'; true",
+            "timeout": 20,
+            "statusMessage": "Reading your calendar"
+          }
+        ]
+      }
+    ]
+  }
+}

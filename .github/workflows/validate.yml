@@ -1,0 +1,77 @@
+name: validate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Manifests are valid JSON
+        run: |
+          for f in .claude-plugin/marketplace.json \
+                   calendar-agenda/.claude-plugin/plugin.json \
+                   calendar-agenda/hooks/hooks.json \
+                   calendar-agenda/.mcp.json \
+                   calendar-agenda/config.example.json; do
+            jq -e . "$f" > /dev/null || { echo "invalid JSON: $f"; exit 1; }
+            echo "ok  $f"
+          done
+
+      - name: Marketplace entries point at real plugins
+        run: |
+          jq -r '.plugins[] | .name + " " + .source' .claude-plugin/marketplace.json |
+          while read -r name source; do
+            test -f "$source/.claude-plugin/plugin.json" \
+              || { echo "$name: no plugin.json at $source"; exit 1; }
+            test "$(jq -r .name "$source/.claude-plugin/plugin.json")" = "$name" \
+              || { echo "$name: plugin.json name does not match the marketplace entry"; exit 1; }
+            echo "ok  $name"
+          done
+
+      - name: Versions agree
+        run: |
+          a=$(jq -r '.plugins[] | select(.name=="calendar-agenda") | .version' .claude-plugin/marketplace.json)
+          b=$(jq -r .version calendar-agenda/.claude-plugin/plugin.json)
+          test "$a" = "$b" || { echo "version mismatch: marketplace $a vs plugin $b"; exit 1; }
+          echo "ok  version $a"
+
+      - name: Executable parses and is executable
+        run: |
+          node --check calendar-agenda/bin/calendar-agenda
+          test -x calendar-agenda/bin/calendar-agenda || { echo "bin/calendar-agenda is not executable"; exit 1; }
+          echo "ok  bin/calendar-agenda"
+
+      - name: Skills carry name and description
+        run: |
+          for f in calendar-agenda/skills/*/SKILL.md; do
+            head -1 "$f" | grep -qx -- --- || { echo "$f: no frontmatter"; exit 1; }
+            awk 'NR>1 && /^---$/{exit} {print}' "$f" | grep -q '^name:' \
+              || { echo "$f: no name"; exit 1; }
+            awk 'NR>1 && /^---$/{exit} {print}' "$f" | grep -q '^description:' \
+              || { echo "$f: no description"; exit 1; }
+            echo "ok  $f"
+          done
+
+      - name: No personal data left in the tree
+        run: |
+          # The workflow states the patterns it looks for, so it must not scan itself.
+          if grep -rIn --exclude-dir=.git --exclude=validate.yml \
+               -E "kk573|korkin25@|eugeny[.]kuzakov|evgeniy[.]kuzakov|csssr[.]com" . ; then
+            echo "personal identifiers found — scrub them before publishing"; exit 1
+          fi
+          echo "ok  no personal identifiers"
+
+      - name: Secrets are never printed
+        run: |
+          if grep -rIn --exclude-dir=.git --exclude=validate.yml \
+               -E "console[.]log[(].*(private_key|client_secret|refresh_token|access_token)" . ; then
+            echo "a credential could reach stdout"; exit 1
+          fi
+          echo "ok  no credential printing"
