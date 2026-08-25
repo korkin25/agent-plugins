@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Bumps a plugin's version in every manifest that carries it, so they cannot drift.
+#
+#   plugin-release <name> patch|minor|major|<explicit-version>
+#
+# Users receive an update only when the version changes, so this is the release
+# action. It stops short of committing: review the diff, then commit and push.
+set -euo pipefail
+
+name="${1:-}"; bump="${2:-patch}"
+[ -n "$name" ] || { echo "usage: plugin-release <name> [patch|minor|major|X.Y.Z]" >&2; exit 1; }
+
+root=$(git rev-parse --show-toplevel) && cd "$root"
+market=.claude-plugin/marketplace.json
+manifest=$(jq -r --arg n "$name" '.plugins[] | select(.name==$n) | .source' "$market")/.claude-plugin/plugin.json
+[ -f "$manifest" ] || { echo "plugin-release: no such plugin: $name" >&2; exit 1; }
+
+current=$(jq -r '.version // "0.0.0"' "$manifest")
+case "$bump" in
+  patch|minor|major)
+    IFS=. read -r ma mi pa <<<"$current"
+    case "$bump" in
+      major) ma=$((ma+1)); mi=0; pa=0 ;;
+      minor) mi=$((mi+1)); pa=0 ;;
+      patch) pa=$((pa+1)) ;;
+    esac
+    next="$ma.$mi.$pa" ;;
+  *[!0-9.]*) echo "plugin-release: '$bump' is neither a bump level nor a version" >&2; exit 1 ;;
+  *) next="$bump" ;;
+esac
+
+tmp=$(mktemp); jq --arg v "$next" '.version = $v' "$manifest" > "$tmp" && mv "$tmp" "$manifest"
+tmp=$(mktemp); jq --arg n "$name" --arg v "$next" \
+  '(.plugins[] | select(.name==$n) | .version) = $v' "$market" > "$tmp" && mv "$tmp" "$market"
+
+echo "$name: $current → $next"
+echo
+echo "review, then:"
+echo "  git add -A && git commit -m \"release($name): $next\" && git push"
+echo
+echo "CI tags $name-v$next and publishes a GitHub release on push."

@@ -26,7 +26,7 @@ will not book you over a meeting sitting on a calendar you forgot to check.
 ## Install
 
 ```
-/plugin marketplace add korkin25/claude-plugins
+/plugin marketplace add korkin25/agent-plugins
 /plugin install calendar-agenda@korkin25
 ```
 

@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Scaffolds a new plugin in this marketplace repo.
+#
+#   plugin-new <name> "<one-line description>"
+#
+# The name becomes an immutable slug once anyone installs the plugin, so it is
+# validated here rather than regretted later.
+set -euo pipefail
+
+name="${1:-}"; desc="${2:-}"
+[ -n "$name" ] && [ -n "$desc" ] || {
+  echo "usage: plugin-new <name> \"<description>\"" >&2; exit 1; }
+
+case "$name" in
+  *[!a-z0-9-]*|-*|*-|"") echo "plugin-new: name must be lowercase letters, digits and single hyphens" >&2; exit 1 ;;
+esac
+
+root=$(git rev-parse --show-toplevel) && cd "$root"
+market=.claude-plugin/marketplace.json
+[ -f "$market" ] || { echo "plugin-new: no $market here" >&2; exit 1; }
+[ -e "$name" ] && { echo "plugin-new: $name already exists" >&2; exit 1; }
+jq -e --arg n "$name" '.plugins[] | select(.name==$n)' "$market" >/dev/null 2>&1 \
+  && { echo "plugin-new: $name is already in the marketplace" >&2; exit 1; }
+
+owner=$(jq -r '.owner.name // "Unknown"' "$market")
+repo=$(git remote get-url origin 2>/dev/null | sed -E 's|.*[:/]([^/]+/[^/]+?)(\.git)?$|\1|')
+
+mkdir -p "$name/.claude-plugin" "$name/skills/$name"
+
+cat > "$name/.claude-plugin/plugin.json" <<JSON
+{
+  "name": "$name",
+  "displayName": "$name",
+  "version": "0.1.0",
+  "description": "$desc",
+  "author": { "name": "$owner" },
+  "homepage": "https://github.com/$repo/tree/main/$name",
+  "license": "MIT",
+  "keywords": []
+}
+JSON
+
+cat > "$name/skills/$name/SKILL.md" <<SKILL
+---
+name: $name
+description: $desc Use when … — replace this with the situations the skill applies to, in the words the user would actually type, including the languages they type in. The description is the entire trigger mechanism.
+---
+
+# $name
+
+Replace this with the instructions Claude should follow.
+
+Say what to do, in what order, and what to check. Where a step can fail quietly, say how to tell.
+SKILL
+
+cat > "$name/README.md" <<README
+# $name
+
+$desc
+
+## Install
+
+\`\`\`
+/plugin marketplace add $repo
+/plugin install $name@$(jq -r .name "$market")
+\`\`\`
+
+## What it does
+
+Replace this.
+
+## What this sends where
+
+If the plugin puts user data into the model's context, or reads credentials, say so here.
+People can only make an informed decision about installing if it is written down.
+README
+
+tmp=$(mktemp)
+jq --arg n "$name" --arg d "$desc" \
+   '.plugins += [{name: $n, source: ("./" + $n), description: $d, version: "0.1.0"}]' \
+   "$market" > "$tmp" && mv "$tmp" "$market"
+
+echo "created $name/"
+echo "  manifest  $name/.claude-plugin/plugin.json"
+echo "  skill     $name/skills/$name/SKILL.md"
+echo "  readme    $name/README.md"
+echo "  added to  $market"
+echo
+echo "next: write the skill, then"
+echo "  plugin-check $name"
+echo "  claude --plugin-dir ./$name     # load it for real before committing"

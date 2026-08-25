@@ -1,11 +1,11 @@
-# claude-plugins
+# agent-plugins
 
 A small marketplace of plugins for [Claude Code](https://claude.com/claude-code).
 
 ## Use it
 
 ```
-/plugin marketplace add korkin25/claude-plugins
+/plugin marketplace add korkin25/agent-plugins
 ```
 
 then browse with `/plugin`, or install directly:
@@ -19,14 +19,16 @@ then browse with `/plugin`, or install directly:
 | Plugin | What it does |
 |---|---|
 | [**calendar-agenda**](calendar-agenda/) | Your agenda from any number of Google Calendars at the start of every session, and scheduling that respects all of them |
+| [**plugin-factory**](plugin-factory/) | Scaffold, check and release plugins in this repository, with the same validation Anthropic's review pipeline runs |
 
 ## How releases work
 
-Every push runs [`validate.yml`](.github/workflows/validate.yml), which checks that the
-manifests parse, that each marketplace entry points at a real plugin whose `plugin.json` name
-matches, that versions agree between the two manifests, that the bundled executable parses and
-is executable, that every skill carries a `name` and `description`, and that no personal
-identifiers or credential-printing slipped into the tree.
+Every push runs [`validate.yml`](.github/workflows/validate.yml), which simply invokes
+[`plugin-check`](plugin-factory/bin/plugin-check) — the same tool you run locally, so CI and your
+machine cannot disagree. It verifies that the manifests parse, that names and versions agree
+between each plugin and the marketplace, that nothing which belongs at the plugin root ended up
+inside `.claude-plugin/`, that executables carry a shebang and parse, that no absolute home path
+or credential printing slipped in, and then runs `claude plugin validate --strict`.
 
 This repository **is** the marketplace: merging to `main` is the release. There is no publish
 step to run, and nothing to wait for.

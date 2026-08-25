@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Shows your agenda across any number of Google Calendars when a session starts, and schedules new events only in slots that are free in all of them.",
   "author": { "name": "Eugeny Kuzakov", "url": "https://github.com/korkin25" },
-  "homepage": "https://github.com/korkin25/claude-plugins/tree/main/calendar-agenda",
+  "homepage": "https://github.com/korkin25/agent-plugins/tree/main/calendar-agenda",
   "license": "MIT",
   "keywords": ["calendar", "google-calendar", "agenda", "scheduling", "productivity"],
   "hooks": "./hooks/hooks.json"

@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Runs every check CI runs, locally, before you push.
+#
+#   plugin-check            every plugin in the marketplace
+#   plugin-check <name>     one plugin
+#
+# Exits non-zero on the first real problem, so it is usable in a pipeline.
+set -uo pipefail
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  echo "plugin-check: not inside a git repository" >&2; exit 1; }
+cd "$root"
+
+market=.claude-plugin/marketplace.json
+[ -f "$market" ] || { echo "plugin-check: no $market — is this a marketplace repo?" >&2; exit 1; }
+
+only="${1:-}"
+fail=0
+say()  { printf '  %s\n' "$*"; }
+bad()  { printf '  ✗ %s\n' "$*" >&2; fail=1; }
+ok()   { printf '  ✓ %s\n' "$*"; }
+
+echo "manifests"
+for f in $market $(jq -r '.plugins[].source + "/.claude-plugin/plugin.json"' "$market"); do
+  if jq -e . "$f" >/dev/null 2>&1; then ok "$f"; else bad "$f is not valid JSON"; fi
+done
+
+echo "marketplace entries"
+while read -r name source; do
+  [ -n "$only" ] && [ "$only" != "$name" ] && continue
+  manifest="$source/.claude-plugin/plugin.json"
+  if [ ! -f "$manifest" ]; then bad "$name: no manifest at $manifest"; continue; fi
+  [ "$(jq -r .name "$manifest")" = "$name" ] \
+    || bad "$name: plugin.json name disagrees with the marketplace entry"
+  a=$(jq -r '.plugins[] | select(.name=="'"$name"'") | .version // empty' "$market")
+  b=$(jq -r '.version // empty' "$manifest")
+  [ "$a" = "$b" ] || bad "$name: version $a in the marketplace, $b in plugin.json"
+  jq -e '.description // empty' "$manifest" >/dev/null || bad "$name: plugin.json has no description"
+  ok "$name"
+done < <(jq -r '.plugins[] | .name + " " + .source' "$market")
+
+echo "layout"
+while read -r name source; do
+  [ -n "$only" ] && [ "$only" != "$name" ] && continue
+  for stray in commands agents skills hooks; do
+    [ -e "$source/.claude-plugin/$stray" ] \
+      && bad "$name: $stray/ must live at the plugin root, not inside .claude-plugin/"
+  done
+  for f in "$source"/bin/*; do
+    [ -e "$f" ] || continue
+    [ -x "$f" ] || bad "$name: $f is not executable"
+    head -1 "$f" | grep -q '^#!' || bad "$name: $f has no shebang"
+  done
+  for f in "$source"/skills/*/SKILL.md "$source"/SKILL.md; do
+    [ -f "$f" ] || continue
+    front=$(awk 'NR==1 && !/^---$/{exit} NR>1 && /^---$/{exit} NR>1{print}' "$f")
+    grep -q '^description:' <<<"$front" || bad "$name: $f has no description in its frontmatter"
+  done
+  ok "$name"
+done < <(jq -r '.plugins[] | .name + " " + .source' "$market")
+
+echo "executables parse"
+while read -r name source; do
+  [ -n "$only" ] && [ "$only" != "$name" ] && continue
+  for f in "$source"/bin/*; do
+    [ -f "$f" ] || continue
+    case $(head -1 "$f") in
+      *node*) node --check "$f" >/dev/null 2>&1 || bad "$name: $f does not parse as JavaScript" ;;
+      *bash*|*sh)  bash -n "$f"  2>/dev/null      || bad "$name: $f does not parse as shell" ;;
+    esac
+  done
+  ok "$name"
+done < <(jq -r '.plugins[] | .name + " " + .source' "$market")
+
+echo "hygiene"
+leak=$(grep -rIn --exclude-dir=.git --exclude-dir=node_modules \
+        -E "/home/[a-z0-9_-]+/|/Users/[a-z0-9_-]+/" . 2>/dev/null | grep -v plugin-check || true)
+[ -n "$leak" ] && { bad "absolute home paths found:"; sed 's/^/      /' <<<"$leak" | head -5; }
+secret=$(grep -rIn --exclude-dir=.git --exclude-dir=node_modules \
+          -E "console[.]log[(].*(private_key|client_secret|refresh_token|access_token)" . 2>/dev/null || true)
+[ -n "$secret" ] && { bad "a credential could reach stdout:"; sed 's/^/      /' <<<"$secret" | head -5; }
+[ -z "$leak$secret" ] && ok "no home paths, no credential printing"
+
+echo "official validator"
+if command -v claude >/dev/null 2>&1; then
+  while read -r name source; do
+    [ -n "$only" ] && [ "$only" != "$name" ] && continue
+    if out=$(claude plugin validate "$source" --strict 2>&1); then
+      ok "$name: $(tail -1 <<<"$out")"
+    else
+      bad "$name: $(tail -2 <<<"$out")"
+    fi
+  done < <(jq -r '.plugins[] | .name + " " + .source' "$market")
+else
+  say "claude CLI not found — skipping (CI still runs it)"
+fi
+
+echo
+[ $fail -eq 0 ] && echo "all checks passed" || echo "checks failed" >&2
+exit $fail
