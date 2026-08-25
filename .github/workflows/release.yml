@@ -24,23 +24,26 @@ jobs:
       - name: Tag and release any plugin whose version changed
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
+          market=$(jq -r .name .claude-plugin/marketplace.json)
           jq -r '.plugins[] | .name + " " + .source' .claude-plugin/marketplace.json |
           while read -r name source; do
             version=$(jq -r .version "$source/.claude-plugin/plugin.json")
             tag="$name-v$version"
 
             if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-              echo "$tag already tagged — nothing to release"
+              echo "$tag already tagged - nothing to release"
               continue
             fi
+
+            notes=$(printf '%s\n%s\n\n%s\n' \
+              "Install:" \
+              "    /plugin marketplace add $REPO" \
+              "    /plugin install $name@$market")
 
             echo "releasing $tag"
             git tag "$tag"
             git push origin "$tag"
-            gh release create "$tag" \
-              --title "$name $version" \
-              --notes "Install: \`/plugin marketplace add ${{ github.repository }}\` then \`/plugin install $name@$(jq -r .name .claude-plugin/marketplace.json)\`
-
-See [$source/README.md](https://github.com/${{ github.repository }}/blob/main/$source/README.md)."
+            gh release create "$tag" --title "$name $version" --notes "$notes"
           done
