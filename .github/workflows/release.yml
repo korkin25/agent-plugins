@@ -6,6 +6,9 @@ on:
     paths:
       - '**/.claude-plugin/plugin.json'
       - '.claude-plugin/marketplace.json'
+  # Manual trigger, so a release can be cut or re-attempted without an
+  # artificial commit to a manifest.
+  workflow_dispatch:
 
 permissions:
   contents: write
