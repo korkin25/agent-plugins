@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# Tests a plugin in a clean room: a throwaway HOME, so nothing already present on
+# the author's machine can make a broken plugin look like it works.
+#
+#   plugin-test [<name>]        every plugin, or one
+#   plugin-test <name> --keep   keep the sandbox for inspection
+#
+# What this covers, and why these and not others: every cross-variant failure
+# worth catching so far has been a hook that did not run, a hook that emitted the
+# wrong shape, output carrying ANSI escapes that a markdown surface shows
+# literally, or an absolute path from the author's home. None of those need a UI
+# to detect. What it deliberately does NOT cover is rendering — whether a given
+# client displays systemMessage, or draws colour — because that differs per
+# client and per build and can only be established by looking.
+set -uo pipefail
+
+# Smoke-running every file in bin/ would make this script run itself, and each
+# copy would do it again. Belt and braces: the loop below skips this file by
+# name, and this guard catches any other path back in.
+[ -n "${PLUGIN_TEST_RUNNING:-}" ] && exit 0
+export PLUGIN_TEST_RUNNING=1
+self=$(basename "$0")
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  echo "plugin-test: not inside a git repository" >&2; exit 1; }
+cd "$root"
+market=.claude-plugin/marketplace.json
+[ -f "$market" ] || { echo "plugin-test: no $market here" >&2; exit 1; }
+
+only=""; keep=0
+for a in "$@"; do
+  case "$a" in
+    --keep) keep=1 ;;
+    -*) echo "plugin-test: unknown option $a" >&2; exit 1 ;;
+    *) only="$a" ;;
+  esac
+done
+
+fail=0
+ok()   { printf '    ✓ %s\n' "$*"; }
+bad()  { printf '    ✗ %s\n' "$*" >&2; fail=1; }
+note() { printf '    · %s\n' "$*"; }
+
+sandbox=$(mktemp -d "${TMPDIR:-/tmp}/plugin-test.XXXXXX")
+cleanup() { [ "$keep" -eq 1 ] && echo "sandbox kept: $sandbox" || rm -rf "$sandbox"; }
+trap cleanup EXIT
+
+# A clean room is the whole point: HOME, XDG and the caches all point into the
+# sandbox, so a plugin that silently depends on the author's config fails here
+# instead of failing for the first person who installs it.
+export HOME="$sandbox/home"
+export XDG_CONFIG_HOME="$sandbox/home/.config"
+export XDG_CACHE_HOME="$sandbox/home/.cache"
+export XDG_DATA_HOME="$sandbox/home/.local/share"
+mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME"
+
+has_ansi() { printf '%s' "$1" | grep -q "$(printf '\033')"; }
+
+test_plugin() {
+  local name="$1" source="$2"
+  echo "  $name"
+
+  local plugin_root="$root/$source"
+  export CLAUDE_PLUGIN_ROOT="$plugin_root"
+
+  # --- hooks -------------------------------------------------------------
+  local hooks="$plugin_root/hooks/hooks.json"
+  if [ -f "$hooks" ]; then
+    if ! jq -e . "$hooks" >/dev/null 2>&1; then
+      bad "hooks.json is not valid JSON"
+    else
+      local n=0
+      while IFS=$'\t' read -r event cmd timeout; do
+        n=$((n+1))
+        [ -z "$cmd" ] && continue
+
+        # Every hook must survive a hostile-but-ordinary environment: no config,
+        # no credentials, nothing set up. It may decline to do anything. It may
+        # not fail the session.
+        local out status
+        out=$(printf '{}' | timeout "${timeout:-20}" bash -c "$cmd" 2>/dev/null)
+        status=$?
+
+        if [ "$status" -eq 124 ]; then
+          bad "$event hook timed out — a hook that hangs blocks every session start"
+        elif [ "$status" -ne 0 ]; then
+          bad "$event hook exited $status on a machine with nothing configured"
+        else
+          ok "$event hook exits cleanly with nothing configured"
+        fi
+
+        if [ -n "$out" ]; then
+          if jq -e . >/dev/null 2>&1 <<<"$out"; then
+            ok "$event hook emits valid JSON"
+          else
+            bad "$event hook wrote non-JSON to stdout: $(head -c 60 <<<"$out")"
+          fi
+          if has_ansi "$out"; then
+            bad "$event hook output carries ANSI escapes — surfaces that render markdown show them literally"
+          else
+            ok "$event hook output is free of ANSI escapes"
+          fi
+        else
+          note "$event hook produced no output here (expected without configuration)"
+        fi
+
+        grep -q 'CLAUDE_PLUGIN_ROOT' <<<"$cmd" || grep -qv '/' <<<"$cmd" \
+          || note "$event hook does not use \${CLAUDE_PLUGIN_ROOT} — check it holds no fixed path"
+      done < <(jq -r '.hooks | to_entries[] | .key as $e | .value[] | .hooks[]
+                      | select(.type=="command") | [$e, .command, (.timeout // 20)] | @tsv' "$hooks")
+      [ "$n" -eq 0 ] && note "hooks.json declares no command hooks"
+    fi
+  else
+    note "no hooks"
+  fi
+
+  # --- executables -------------------------------------------------------
+  if [ -d "$plugin_root/bin" ]; then
+    for f in "$plugin_root"/bin/*; do
+      [ -f "$f" ] || continue
+      local base; base=$(basename "$f")
+      # The runner must not run itself, and the other factory tools expect
+      # arguments rather than a bare invocation.
+      [ "$base" = "$self" ] && { note "$base: skipped, it is the runner"; continue; }
+      # With nothing configured a tool must explain itself rather than crash with
+      # a stack trace: that message is the first thing a new user will ever see.
+      local out; out=$("$f" </dev/null 2>&1); local st=$?
+      if [ $st -eq 0 ]; then
+        ok "$base runs with nothing configured"
+      elif grep -qiE "cannot find module|no such file or directory: |Traceback|SyntaxError" <<<"$out"; then
+        bad "$base crashes rather than explaining itself: $(head -1 <<<"$out")"
+      elif [ -n "$out" ]; then
+        ok "$base fails with an explanation: $(head -1 <<<"$out" | cut -c1-58)"
+      else
+        bad "$base failed silently — a user gets no idea what to do"
+      fi
+    done
+  fi
+
+  # --- MCP servers -------------------------------------------------------
+  local mcp="$plugin_root/.mcp.json"
+  if [ -f "$mcp" ]; then
+    if jq -e . "$mcp" >/dev/null 2>&1; then
+      while read -r server pkg; do
+        case "$pkg" in
+          *@[0-9]*) ok "MCP server $server is pinned ($pkg)" ;;
+          "")       note "MCP server $server declares no package argument" ;;
+          *)        bad "MCP server $server is unpinned ($pkg) — it would float to latest on every start" ;;
+        esac
+      done < <(jq -r '.mcpServers | to_entries[]
+                      | [.key, ((.value.args // []) | map(select(test("^[^-]")))[0] // "")] | @tsv' "$mcp")
+    else
+      bad ".mcp.json is not valid JSON"
+    fi
+  fi
+
+  # --- skills ------------------------------------------------------------
+  local found=0
+  for f in "$plugin_root"/skills/*/SKILL.md "$plugin_root"/SKILL.md; do
+    [ -f "$f" ] || continue
+    found=$((found+1))
+    local desc
+    desc=$(awk 'NR==1 && !/^---$/{exit} NR>1 && /^---$/{exit} NR>1{print}' "$f" |
+           sed -n 's/^description: *//p')
+    if [ -z "$desc" ]; then
+      bad "$(basename "$(dirname "$f")"): no description — the skill can never trigger"
+    elif [ "${#desc}" -lt 40 ]; then
+      bad "$(basename "$(dirname "$f")"): description is ${#desc} chars; too thin to trigger reliably"
+    else
+      ok "$(basename "$(dirname "$f")"): description is ${#desc} chars"
+    fi
+  done
+  [ "$found" -eq 0 ] && note "no skills"
+
+  # --- load it for real --------------------------------------------------
+  if command -v claude >/dev/null 2>&1; then
+    local out
+    out=$(cd "$sandbox" && timeout 120 claude --plugin-dir "$plugin_root" \
+            -p "reply with the single word: ok" </dev/null 2>&1)
+    if grep -qiE "plugin.*(error|failed|invalid)" <<<"$out"; then
+      bad "Claude reported a plugin load error: $(grep -iE 'plugin.*(error|failed|invalid)' <<<"$out" | head -1 | cut -c1-70)"
+    elif grep -qiE "authenticat|login|credit balance" <<<"$out"; then
+      note "headless load skipped — this environment is not authenticated"
+    elif [ -n "$out" ]; then
+      ok "loads in Claude Code without a plugin error"
+    else
+      note "headless load produced no output"
+    fi
+  else
+    note "claude CLI not found — skipping the real load"
+  fi
+}
+
+echo "clean room: $sandbox"
+while read -r name source; do
+  [ -n "$only" ] && [ "$only" != "$name" ] && continue
+  test_plugin "$name" "$source"
+done < <(jq -r '.plugins[] | .name + " " + .source' "$market")
+
+echo
+if [ $fail -eq 0 ]; then
+  echo "all plugin tests passed"
+else
+  echo "plugin tests failed" >&2
+fi
+exit $fail

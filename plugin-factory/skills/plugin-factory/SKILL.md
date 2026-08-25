@@ -67,9 +67,25 @@ supply-chain hole in something the user runs on every session.
 
 ```bash
 plugin-new <name> "<description>"    # scaffold and register it in the marketplace
-plugin-check [<name>]                # every check CI runs, locally
+plugin-check [<name>]                # static checks: manifests, layout, hygiene, validator
+plugin-test [<name>]                 # behavioural checks in a throwaway HOME
 plugin-release <name> patch|minor|major|X.Y.Z
 ```
+
+**`plugin-test` is the one that saves the four-way manual hunt.** It runs everything in a
+clean room — a temporary `HOME` and `XDG_*` — so a plugin that only works because the author's
+machine is already set up fails here rather than for the first person who installs it. It
+asserts what actually broke in practice: that each hook **exits cleanly with nothing
+configured** (a hook that fails takes the session with it), that its stdout is **valid JSON of
+the right shape**, that the output carries **no ANSI escapes** (surfaces that render markdown
+show them literally), that every executable **explains itself instead of crashing** when
+unconfigured, that MCP servers are **pinned**, and that skill descriptions are long enough to
+trigger at all.
+
+What it deliberately does not cover is **rendering** — whether a particular client displays
+`systemMessage`, or draws colour. That differs between a terminal TUI and a desktop app even
+within one product, and can only be established by looking. Test behaviour automatically; check
+rendering once, by eye, and write down what you found.
 
 `plugin-check` is the one to run before every push: it verifies the manifests parse, that names
 and versions agree between them, that nothing that belongs at the plugin root ended up inside

@@ -15,7 +15,7 @@
       "name": "plugin-factory",
       "source": "./plugin-factory",
       "description": "Scaffold, validate and release plugins in your own marketplace repository.",
-      "version": "0.1.0"
+      "version": "0.2.0"
     }
   ]
 }

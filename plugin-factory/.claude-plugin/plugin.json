@@ -1,10 +1,19 @@
 {
   "name": "plugin-factory",
   "displayName": "Plugin Factory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Scaffold, validate and release Claude Code plugins in your own marketplace repository, with the same checks Anthropic's review pipeline runs.",
-  "author": { "name": "Eugeny Kuzakov", "url": "https://github.com/korkin25" },
+  "author": {
+    "name": "Eugeny Kuzakov",
+    "url": "https://github.com/korkin25"
+  },
   "homepage": "https://github.com/korkin25/agent-plugins/tree/main/plugin-factory",
   "license": "MIT",
-  "keywords": ["plugin", "scaffold", "marketplace", "release", "tooling"]
+  "keywords": [
+    "plugin",
+    "scaffold",
+    "marketplace",
+    "release",
+    "tooling"
+  ]
 }

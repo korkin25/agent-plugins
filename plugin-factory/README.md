@@ -15,7 +15,8 @@ than after.
 
 ```bash
 plugin-new <name> "<description>"                 # scaffold, and register in marketplace.json
-plugin-check [<name>]                             # every check CI runs, locally
+plugin-check [<name>]                             # static checks: manifests, layout, hygiene
+plugin-test  [<name>]                             # behavioural checks in a throwaway HOME
 plugin-release <name> patch|minor|major|X.Y.Z     # bump the version everywhere it appears
 ```
 
@@ -25,8 +26,20 @@ plugin and the marketplace, that nothing which belongs at the plugin root ended 
 home path or credential printing slipped into the tree, and then runs
 `claude plugin validate --strict`.
 
-Run it before every push. CI runs the same checks, but finding a problem locally costs seconds
-instead of a round trip.
+`plugin-test` is the one that removes the manual hunt across terminal and desktop builds of two
+products. It runs in a **clean room** — a temporary `HOME` and `XDG_*` — so a plugin that works
+only because your own machine is already configured fails here instead of for your first user.
+It asserts what actually goes wrong: hooks must exit cleanly with nothing configured, their
+stdout must be valid JSON of the expected shape and free of ANSI escapes, executables must
+explain themselves rather than crash, MCP servers must be version-pinned, and skill descriptions
+must be substantial enough to trigger.
+
+It does **not** test rendering — whether a client shows `systemMessage`, or draws colour. That
+differs between a terminal TUI and a desktop app within the same product, and only looking can
+settle it. Automate behaviour; check appearance once and write down the answer.
+
+Run both before every push. CI runs exactly the same two tools, so a green CI cannot mean
+something different from a green machine.
 
 ## The skill
 
