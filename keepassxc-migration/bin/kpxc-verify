@@ -9,6 +9,7 @@ value is ever read or printed.
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -22,7 +23,12 @@ CHROME_SCHEMA = 'chrome_libsecret_os_crypt_password_v2'
 WANTED_STORE = 'gnome-libsecret'
 # Chromium-family launchers worth checking for a --password-store flag.
 BROWSER_HINTS = ('opera', 'chrome', 'chromium', 'brave', 'vivaldi', 'edge')
-ELECTRON_STEMS = ('code', 'code-insiders', 'code-url-handler', 'claude')
+SECRETISH = re.compile(
+    r'(TOKEN|SECRET|PASSWORD|PASSWD|_KEY|APIKEY|API_KEY|CLIENT_ID|'
+    r'CREDENTIAL|AUTHORIZATION|_PAT|ACCESS_KEY)', re.I)
+ELECTRON_STEMS = ('code', 'code-insiders', 'claude')
+# *-url-handler entries only hand a URL to a running instance: they never
+# open a store of their own, so a missing flag there is not a finding.
 
 
 def is_launcher(entry):
@@ -283,6 +289,45 @@ def check_ssh_agent():
     advisory(False, text, ['%s (SSH_AUTH_SOCK=%s)' % (reason, sock or 'not set')])
 
 
+def check_shell_loader():
+    """The loader line is useless unless kpxc-env is on PATH - and it fails silently."""
+    text = 'shell secrets load from the database'
+    rc = os.path.expanduser('~/.bashrc')
+    try:
+        with open(rc, errors='replace') as handle:
+            has_loader = 'kpxc-env export' in handle.read()
+    except OSError:
+        advisory(True, text, ['no ~/.bashrc, so nothing to load'])
+        return
+    if not has_loader:
+        advisory(True, text, ['no loader line in ~/.bashrc - shell secrets not in use'])
+        return
+    if shutil.which('kpxc-env') is None:
+        advisory(False, text,
+                 ['~/.bashrc calls kpxc-env, but it is not on PATH:',
+                  'every variable would be empty in a normal shell.',
+                  'Fix: kpxc-env install'])
+        return
+    leftovers = []
+    try:
+        with open(rc, errors='replace') as handle:
+            for number, line in enumerate(handle, 1):
+                match = re.match(r'\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=', line)
+                if match and SECRETISH.search(match.group(1)):
+                    leftovers.append('%s still exported at ~/.bashrc:%d'
+                                     % (match.group(1), number))
+    except OSError:
+        pass
+    detail = ['loader present, kpxc-env on PATH']
+    for item in leftovers:
+        detail.append(item)
+    for name in ('.bashrc.kpxc-bak', '.bashrc.bak'):
+        path = os.path.expanduser('~/' + name)
+        if os.path.exists(path):
+            detail.append('%s still holds the old secrets - delete it' % name)
+    advisory(not leftovers, text, detail)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog='kpxc-verify',
@@ -303,7 +348,7 @@ def main():
             required(False, '%s crashed' % check.__name__,
                      ['%s: %s' % (exc.__class__.__name__, exc)])
     print('advisory')
-    for check in (check_kwallet_disabled, check_launchers,
+    for check in (check_kwallet_disabled, check_launchers, check_shell_loader,
                   check_ssh_keys_on_disk, check_ssh_agent):
         try:
             check()

@@ -261,6 +261,9 @@ def section_secretservice():
                 marks.append('xdg:schema=%s' % attrs['xdg:schema'])
             if attrs.get('xdg:schema') == CHROME_SCHEMA:
                 marks.append('browser Safe Storage key')
+            if attrs.get('kpxc-env'):
+                marks.append('shell env var%s'
+                             % (', hot' if attrs.get('kpxc-env-hot') == '1' else ''))
             suffix = ('  [%s]' % ', '.join(marks)) if marks else ''
             note('    - %s%s' % (entry_label, suffix))
 

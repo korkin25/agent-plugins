@@ -15,7 +15,7 @@
       "name": "keepassxc-migration",
       "source": "./keepassxc-migration",
       "description": "Moves a Linux desktop's secrets into KeePassXC - out of gnome-keyring, KWallet and shell dotfiles, with the browser sessions surviving the move.",
-      "version": "0.2.1"
+      "version": "0.2.2"
     },
     {
       "name": "plugin-factory",
