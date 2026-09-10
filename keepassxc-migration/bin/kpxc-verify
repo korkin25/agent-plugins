@@ -1,0 +1,324 @@
+#!/usr/bin/env python3
+"""Read-only check that the desktop has actually moved onto KeePassXC.
+
+Prints one line per check and exits 0 when every required check passes, 1
+otherwise. Warnings describe a sloppy but working setup and never change the
+exit code. Nothing is started, stopped, written or unlocked, and no secret
+value is ever read or printed.
+"""
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+
+HOME = os.path.expanduser('~')
+XDG_DATA_HOME = os.environ.get('XDG_DATA_HOME') or os.path.join(HOME, '.local', 'share')
+XDG_CONFIG_HOME = os.environ.get('XDG_CONFIG_HOME') or os.path.join(HOME, '.config')
+
+SECRETS_NAME = 'org.freedesktop.secrets'
+CHROME_SCHEMA = 'chrome_libsecret_os_crypt_password_v2'
+WANTED_STORE = 'gnome-libsecret'
+# Chromium-family launchers worth checking for a --password-store flag.
+BROWSER_HINTS = ('opera', 'chrome', 'chromium', 'brave', 'vivaldi', 'edge')
+ELECTRON_STEMS = ('code', 'code-insiders', 'code-url-handler', 'claude')
+
+
+def is_launcher(entry):
+    """True for a browser or Electron app .desktop file worth inspecting."""
+    stem = entry[:-8].lower() if entry.endswith('.desktop') else entry.lower()
+    return stem in ELECTRON_STEMS or any(hint in stem for hint in BROWSER_HINTS)
+
+
+OK, FAIL, WARN = '[ OK ]', '[FAIL]', '[WARN]'
+
+failures = 0
+warnings = 0
+
+
+def result(status, text, detail=None):
+    global failures, warnings
+    if status == FAIL:
+        failures += 1
+    elif status == WARN:
+        warnings += 1
+    print('%s %s' % (status, text))
+    for line in (detail or []):
+        print('       ' + line)
+
+
+def required(passed, text, detail=None):
+    result(OK if passed else FAIL, text, detail)
+
+
+def advisory(passed, text, detail=None):
+    result(OK if passed else WARN, text, detail)
+
+
+def run(argv, timeout=10):
+    """Run a command; return (rc, stdout, stderr) or None if it is unavailable."""
+    if shutil.which(argv[0]) is None:
+        return None
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return p.returncode, p.stdout, p.stderr
+
+
+def proc_comm(pid):
+    try:
+        with open('/proc/%d/comm' % pid, 'r') as fh:
+            return fh.read().strip()
+    except OSError:
+        return None
+
+
+def check_bus_owner():
+    out = run(['busctl', '--user', 'list', '--no-pager'])
+    if out is None or out[0] != 0:
+        required(False, '%s is owned by keepassxc' % SECRETS_NAME,
+                 ['busctl is unavailable, so ownership could not be determined'])
+        return
+    for line in out[1].splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[0] == SECRETS_NAME:
+            if fields[1] == '-':
+                required(False, '%s is owned by keepassxc' % SECRETS_NAME,
+                         ['nobody owns the name right now (activatable)'])
+                return
+            try:
+                pid = int(fields[1])
+            except ValueError:
+                pid = None
+            comm = proc_comm(pid) if pid else None
+            owner = comm or fields[2]
+            required(owner == 'keepassxc',
+                     '%s is owned by keepassxc' % SECRETS_NAME,
+                     ['current owner: %s (pid %s)' % (owner, pid if pid else '?')])
+            return
+    required(False, '%s is owned by keepassxc' % SECRETS_NAME,
+             ['the name is not on the session bus at all'])
+
+
+def check_chrome_key():
+    text = 'a Chromium Safe Storage key lives in the KeePassXC collection'
+    try:
+        import secretstorage
+    except ImportError:
+        required(False, text, ['the secretstorage module is not installed, '
+                               'so the collection could not be inspected'])
+        return
+    try:
+        bus = secretstorage.dbus_init()
+        collections = list(secretstorage.get_all_collections(bus))
+    except Exception as exc:  # noqa: BLE001 - any transport failure is a failed check
+        required(False, text, ['cannot reach the Secret Service (%s)' % exc.__class__.__name__])
+        return
+    labels = []
+    locked = []
+    for coll in collections:
+        try:
+            coll_label = coll.get_label()
+        except Exception:  # noqa: BLE001
+            coll_label = '<unreadable label>'
+        try:
+            if coll.is_locked():
+                locked.append(coll_label)
+                continue
+        except Exception:  # noqa: BLE001
+            locked.append(coll_label)
+            continue
+        try:
+            items = list(coll.get_all_items())
+        except Exception:  # noqa: BLE001
+            continue
+        for entry in items:
+            try:
+                attrs = entry.get_attributes()
+            except Exception:  # noqa: BLE001
+                continue
+            if attrs.get('xdg:schema') != CHROME_SCHEMA:
+                continue
+            try:
+                entry_label = entry.get_label()
+            except Exception:  # noqa: BLE001
+                entry_label = '<unreadable label>'
+            app = attrs.get('application')
+            labels.append('%s / %s%s' % (coll_label, entry_label,
+                                         (' [application=%s]' % app) if app else ''))
+    detail = labels[:]
+    if not labels and locked:
+        detail.append('locked collections were skipped and not unlocked: %s'
+                      % ', '.join(locked))
+    if not labels and not locked:
+        detail.append('no item carries xdg:schema=%s' % CHROME_SCHEMA)
+    required(bool(labels), text, detail)
+
+
+def check_gnome_keyring_masked():
+    text = 'gnome-keyring-daemon.service is masked or absent'
+    if shutil.which('gnome-keyring-daemon') is None:
+        out = run(['systemctl', '--user', 'is-enabled', 'gnome-keyring-daemon.service'])
+        state = (out[1].strip() or out[2].strip()) if out else ''
+        if not out or state in ('', 'not-found'):
+            required(True, text, ['gnome-keyring-daemon is not installed'])
+            return
+    out = run(['systemctl', '--user', 'is-enabled', 'gnome-keyring-daemon.service'])
+    if out is None:
+        required(False, text, ['systemctl is unavailable, so the unit state is unknown'])
+        return
+    state = (out[1].strip() or out[2].strip() or 'unknown').splitlines()[0]
+    passed = state in ('masked', 'masked-runtime') or 'not-found' in state or 'No such file' in state
+    required(passed, text, ['is-enabled reports: %s' % state])
+
+
+def check_kwallet_disabled():
+    text = 'kwalletrc has [Wallet] Enabled=false'
+    path = os.path.join(XDG_CONFIG_HOME, 'kwalletrc')
+    if not os.path.exists(path):
+        advisory(True, text, ['%s does not exist, so KWallet is not configured' % path])
+        return
+    section = None
+    value = None
+    try:
+        with open(path, 'r', errors='replace') as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith('[') and line.endswith(']'):
+                    section = line[1:-1]
+                elif section == 'Wallet' and '=' in line:
+                    key, _, raw = line.partition('=')
+                    if key.strip().lower() == 'enabled':
+                        value = raw.strip().lower()
+    except OSError as exc:
+        advisory(False, text, ['%s is unreadable (%s)' % (path, exc.strerror)])
+        return
+    if value is None:
+        advisory(False, text, ['[Wallet] Enabled is not set in %s' % path])
+        return
+    advisory(value == 'false', text, ['[Wallet] Enabled=%s' % value])
+
+
+def check_launchers():
+    text = 'browser and vscode launchers use --password-store=%s' % WANTED_STORE
+    dirs = [
+        os.path.join('/usr', 'share', 'applications'),
+        os.path.join(XDG_DATA_HOME, 'applications'),
+    ]
+    # A user .desktop file shadows the system one of the same name, so only the
+    # effective launcher is judged - the system dir is scanned first and lost.
+    effective = {}
+    for directory in dirs:
+        try:
+            entries = sorted(e for e in os.listdir(directory) if e.endswith('.desktop'))
+        except OSError:
+            continue
+        for entry in entries:
+            if not is_launcher(entry):
+                continue
+            effective[entry] = os.path.join(directory, entry)
+    good, bad = [], []
+    for entry in sorted(effective):
+        path = effective[entry]
+        found = set()
+        try:
+            with open(path, 'r', errors='replace') as fh:
+                for line in fh:
+                    if line.startswith('Exec') and '--password-store' in line:
+                        for token in line.split():
+                            if token.startswith('--password-store'):
+                                found.add(token.partition('=')[2] or '<no value>')
+        except OSError:
+            continue
+        if found == {WANTED_STORE}:
+            good.append(path)
+        else:
+            bad.append('%s: %s' % (path, ', '.join(sorted(found)) if found else 'no flag'))
+    if not good and not bad:
+        advisory(True, text, ['no browser or vscode launcher found'])
+        return
+    detail = bad[:]
+    if good:
+        detail.append('%d launcher(s) already set correctly' % len(good))
+    advisory(not bad, text, detail)
+
+
+def check_ssh_keys_on_disk():
+    text = 'no private key files are left in ~/.ssh'
+    ssh_dir = os.path.join(HOME, '.ssh')
+    private = []
+    try:
+        for entry in sorted(os.listdir(ssh_dir)):
+            path = os.path.join(ssh_dir, entry)
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, 'rb') as fh:
+                    # Only the header is inspected; key material is never read.
+                    if b'PRIVATE KEY' in fh.read(60):
+                        private.append('~/.ssh/' + entry)
+            except OSError:
+                continue
+    except OSError:
+        advisory(True, text, ['~/.ssh does not exist'])
+        return
+    advisory(not private, text, private)
+
+
+def check_ssh_agent():
+    text = 'the ssh agent holds at least one key'
+    sock = os.environ.get('SSH_AUTH_SOCK')
+    out = run(['ssh-add', '-l'], timeout=8)
+    if out is None:
+        advisory(False, text, ['ssh-add is unavailable'])
+        return
+    rc, stdout, stderr = out
+    if rc == 0:
+        keys = [ln for ln in stdout.splitlines() if ln.strip()]
+        advisory(bool(keys), text, ['%d key(s) loaded' % len(keys)])
+        return
+    reason = stderr.strip().splitlines()[-1] if stderr.strip() else 'rc=%d' % rc
+    advisory(False, text, ['%s (SSH_AUTH_SOCK=%s)' % (reason, sock or 'not set')])
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog='kpxc-verify',
+        description='Read-only check that KeePassXC has taken over the Secret Service: '
+                    'bus ownership, the Chromium Safe Storage key, and a masked gnome-keyring. '
+                    'Exits 0 when every required check passes. Changes nothing and never reads '
+                    'a secret value.',
+    )
+    parser.parse_args()
+
+    print('KeePassXC migration check')
+    print('=========================')
+    print('required')
+    for check in (check_bus_owner, check_chrome_key, check_gnome_keyring_masked):
+        try:
+            check()
+        except Exception as exc:  # noqa: BLE001 - a broken probe counts as a failure
+            required(False, '%s crashed' % check.__name__,
+                     ['%s: %s' % (exc.__class__.__name__, exc)])
+    print('advisory')
+    for check in (check_kwallet_disabled, check_launchers,
+                  check_ssh_keys_on_disk, check_ssh_agent):
+        try:
+            check()
+        except Exception as exc:  # noqa: BLE001 - a broken advisory probe is only a warning
+            advisory(False, '%s crashed' % check.__name__,
+                     ['%s: %s' % (exc.__class__.__name__, exc)])
+
+    print()
+    if failures:
+        print('result: %d required check(s) failed, %d warning(s) - migration incomplete'
+              % (failures, warnings))
+        return 1
+    print('result: every required check passed, %d warning(s)' % warnings)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

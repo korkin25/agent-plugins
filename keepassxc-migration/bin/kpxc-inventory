@@ -1,0 +1,516 @@
+#!/usr/bin/env python3
+"""Read-only inventory of the desktop secret storage stack.
+
+Reports who owns org.freedesktop.secrets, which keyring daemons are installed,
+what the stores contain (labels and attributes only), how many browser cookies
+are bound to the keyring, and how the launchers and ssh are set up.
+
+Nothing is started, stopped, written or unlocked, and no secret value is ever
+read or printed.
+"""
+
+import argparse
+import configparser
+import os
+import shutil
+import sqlite3
+import subprocess
+import sys
+import tempfile
+
+HOME = os.path.expanduser('~')
+XDG_DATA_HOME = os.environ.get('XDG_DATA_HOME') or os.path.join(HOME, '.local', 'share')
+XDG_CONFIG_HOME = os.environ.get('XDG_CONFIG_HOME') or os.path.join(HOME, '.config')
+
+SECRETS_NAME = 'org.freedesktop.secrets'
+CHROME_SCHEMA = 'chrome_libsecret_os_crypt_password_v2'
+
+DAEMONS = ['gnome-keyring-daemon', 'kwalletd6', 'ksecretd', 'keepassxc']
+UNITS = ['gnome-keyring-daemon.service', 'gnome-keyring-daemon.socket']
+KWALLET_FOLDERS = [
+    'Chromium Keys', 'Chrome Keys', 'Claude Keys', 'Code Keys', 'Opera Keys',
+    'xdg-desktop-portal', 'ksshaskpass', 'Passwords',
+]
+BROWSERS = [
+    ('Opera', os.path.join(XDG_CONFIG_HOME, 'opera')),
+    ('Chrome', os.path.join(XDG_CONFIG_HOME, 'google-chrome')),
+    ('Chromium', os.path.join(XDG_CONFIG_HOME, 'chromium')),
+    ('Brave', os.path.join(XDG_CONFIG_HOME, 'BraveSoftware', 'Brave-Browser')),
+    ('Vivaldi', os.path.join(XDG_CONFIG_HOME, 'vivaldi')),
+]
+# Chromium-family launchers worth checking for a --password-store flag.
+BROWSER_HINTS = ('opera', 'chrome', 'chromium', 'brave', 'vivaldi', 'edge')
+ELECTRON_STEMS = ('code', 'code-insiders', 'code-url-handler', 'claude')
+
+
+def is_launcher(entry):
+    """True for a browser or Electron app .desktop file worth inspecting."""
+    stem = entry[:-8].lower() if entry.endswith('.desktop') else entry.lower()
+    return stem in ELECTRON_STEMS or any(hint in stem for hint in BROWSER_HINTS)
+
+
+def head(title):
+    print()
+    print(title)
+    print('-' * len(title))
+
+
+def item(label, value):
+    print('  %-34s %s' % (label + ':', value))
+
+
+def note(text):
+    print('  ' + text)
+
+
+def run(argv, timeout=10):
+    """Run a command; return (rc, stdout, stderr) or None if it is unavailable."""
+    if shutil.which(argv[0]) is None:
+        return None
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return p.returncode, p.stdout, p.stderr
+
+
+def proc_table():
+    """Map of pid -> comm for every process readable in /proc."""
+    table = {}
+    for pid in os.listdir('/proc'):
+        if not pid.isdigit():
+            continue
+        try:
+            with open('/proc/%s/comm' % pid, 'r') as fh:
+                table[int(pid)] = fh.read().strip()
+        except OSError:
+            continue
+    return table
+
+
+def bus_owner(name):
+    """Return (pid, process) for a well-known name, or None/'activatable'."""
+    out = run(['busctl', '--user', 'list', '--no-pager'])
+    if out is None:
+        return 'unavailable', None
+    rc, stdout, _ = out
+    if rc != 0:
+        return 'unavailable', None
+    for line in stdout.splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[0] == name:
+            if fields[1] == '-':
+                return 'activatable', None
+            try:
+                pid = int(fields[1])
+            except ValueError:
+                return fields[2], None
+            return fields[2], pid
+    return 'absent', None
+
+
+def section_owner():
+    head('D-Bus name %s' % SECRETS_NAME)
+    owner, pid = bus_owner(SECRETS_NAME)
+    if owner == 'unavailable':
+        item('owner', 'unavailable (busctl is missing or the user bus is unreachable)')
+        return
+    if owner == 'absent':
+        item('owner', 'nobody, and the name is not activatable')
+        return
+    if owner == 'activatable':
+        item('owner', 'nobody (activatable)')
+        return
+    exact = proc_table().get(pid, owner) if pid else owner
+    item('owner', '%s (pid %s)' % (exact, pid if pid else '?'))
+
+
+def section_services():
+    head('Keyring daemons and units')
+    table = proc_table()
+    for name in DAEMONS:
+        pids = sorted(pid for pid, comm in table.items() if comm == name)
+        installed = shutil.which(name) is not None
+        if pids:
+            state = 'running (pid %s)' % ', '.join(str(p) for p in pids)
+        elif installed:
+            state = 'installed, not running'
+        else:
+            state = 'not installed'
+        item(name, state)
+    for unit in UNITS:
+        enabled = run(['systemctl', '--user', 'is-enabled', unit])
+        active = run(['systemctl', '--user', 'is-active', unit])
+        if enabled is None and active is None:
+            item(unit, 'unavailable (systemctl is missing)')
+            continue
+        e = (enabled[1].strip() or enabled[2].strip()) if enabled else '?'
+        a = (active[1].strip() or active[2].strip()) if active else '?'
+        flag = '  <-- masked' if e == 'masked' else ''
+        item(unit, 'is-enabled=%s is-active=%s%s' % (e or 'unknown', a or 'unknown', flag))
+
+
+def describe_service_file(path):
+    """Return a one-line summary of a D-Bus activation file."""
+    keys = {}
+    try:
+        with open(path, 'r', errors='replace') as fh:
+            for line in fh:
+                if '=' in line and not line.startswith('#'):
+                    k, _, v = line.partition('=')
+                    keys[k.strip()] = v.strip()
+    except OSError as exc:
+        return 'unreadable (%s)' % exc.strerror
+    parts = []
+    if keys.get('Exec'):
+        parts.append('Exec=%s' % keys['Exec'])
+    if keys.get('SystemdService'):
+        parts.append('SystemdService=%s' % keys['SystemdService'])
+    return '; '.join(parts) if parts else 'no Exec and no SystemdService'
+
+
+def section_activation():
+    head('D-Bus activation files for %s' % SECRETS_NAME)
+    dirs = [
+        ('user override', os.path.join(XDG_DATA_HOME, 'dbus-1', 'services')),
+        ('system', os.path.join('/usr', 'share', 'dbus-1', 'services')),
+    ]
+    for kind, directory in dirs:
+        path = os.path.join(directory, SECRETS_NAME + '.service')
+        if os.path.exists(path):
+            item(kind, path)
+            note('    ' + describe_service_file(path))
+            continue
+        # The file may be named after another bus name but still claim ours.
+        found = []
+        try:
+            for entry in sorted(os.listdir(directory)):
+                full = os.path.join(directory, entry)
+                try:
+                    with open(full, 'r', errors='replace') as fh:
+                        if 'Name=' + SECRETS_NAME in fh.read():
+                            found.append(full)
+                except OSError:
+                    continue
+        except OSError:
+            item(kind, 'no such directory (%s)' % directory)
+            continue
+        if found:
+            for full in found:
+                item(kind, full)
+                note('    ' + describe_service_file(full))
+        else:
+            item(kind, 'none in %s' % directory)
+
+
+def section_secretservice():
+    head('Secret Service contents (labels and attributes only)')
+    try:
+        import secretstorage
+    except ImportError:
+        note('unavailable: the secretstorage module is not installed')
+        return
+    try:
+        bus = secretstorage.dbus_init()
+    except Exception as exc:  # noqa: BLE001 - any transport failure is non-fatal
+        note('unavailable: cannot reach the Secret Service (%s)' % exc.__class__.__name__)
+        return
+    try:
+        collections = list(secretstorage.get_all_collections(bus))
+    except Exception as exc:  # noqa: BLE001
+        note('unavailable: cannot list collections (%s)' % exc.__class__.__name__)
+        return
+    if not collections:
+        note('no collections')
+        return
+    for coll in collections:
+        try:
+            label = coll.get_label()
+        except Exception:  # noqa: BLE001
+            label = '<unreadable label>'
+        try:
+            locked = coll.is_locked()
+        except Exception:  # noqa: BLE001
+            locked = None
+        state = 'unknown' if locked is None else ('locked' if locked else 'unlocked')
+        item('collection "%s"' % label, state)
+        if locked:
+            note('    items not listed while locked (no unlock is attempted)')
+            continue
+        try:
+            items = list(coll.get_all_items())
+        except Exception as exc:  # noqa: BLE001
+            note('    items unavailable (%s)' % exc.__class__.__name__)
+            continue
+        if not items:
+            note('    no items')
+            continue
+        for entry in items:
+            try:
+                entry_label = entry.get_label()
+            except Exception:  # noqa: BLE001
+                entry_label = '<unreadable label>'
+            try:
+                attrs = entry.get_attributes()
+            except Exception:  # noqa: BLE001
+                attrs = {}
+            marks = []
+            if attrs.get('application'):
+                marks.append('application=%s' % attrs['application'])
+            if attrs.get('xdg:schema'):
+                marks.append('xdg:schema=%s' % attrs['xdg:schema'])
+            if attrs.get('xdg:schema') == CHROME_SCHEMA:
+                marks.append('browser Safe Storage key')
+            suffix = ('  [%s]' % ', '.join(marks)) if marks else ''
+            note('    - %s%s' % (entry_label, suffix))
+
+
+def section_kwallet():
+    head('KWallet (%s) contents' % WALLET)
+    if shutil.which('kwallet-query') is None:
+        note('unavailable: kwallet-query is not installed')
+        return
+    running = any(comm == 'kwalletd6' for comm in proc_table().values())
+    if not running:
+        note('kwalletd6 is not running - skipped so that querying does not start it')
+        return
+    for folder in KWALLET_FOLDERS:
+        out = run(['kwallet-query', '-l', '-f', folder, WALLET], timeout=8)
+        if out is None:
+            item(folder, 'unavailable (kwallet-query did not answer in time)')
+            continue
+        rc, stdout, stderr = out
+        entries = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
+        if rc != 0:
+            # kwallet-query reports its own errors on stdout, not stderr.
+            message = (stdout.strip() or stderr.strip() or 'rc=%d' % rc).splitlines()[-1]
+            if 'not found' in message.lower() and 'wallet' in message.lower():
+                note('%s - no folder listed' % message)
+                return
+            item(folder, 'absent or unreadable (%s)' % message)
+            continue
+        if not entries:
+            item(folder, 'empty')
+            continue
+        item(folder, '%d entr%s' % (len(entries), 'y' if len(entries) == 1 else 'ies'))
+        for name in entries:
+            note('    - ' + name)
+
+
+def count_cookie_prefixes(db_path):
+    """Count cookies by the v10/v11 prefix, working on a throwaway copy."""
+    tmpdir = tempfile.mkdtemp(prefix='kpxc-inventory-')
+    try:
+        copy = os.path.join(tmpdir, 'Cookies')
+        shutil.copy2(db_path, copy)
+        for suffix in ('-wal', '-shm'):
+            side = db_path + suffix
+            if os.path.exists(side):
+                try:
+                    shutil.copy2(side, copy + suffix)
+                except OSError:
+                    pass
+        conn = sqlite3.connect(copy)
+        try:
+            # Only the three-byte version tag is read - never the payload.
+            rows = conn.execute(
+                'SELECT substr(encrypted_value, 1, 3), count(*) '
+                'FROM cookies GROUP BY 1'
+            ).fetchall()
+        finally:
+            conn.close()
+        counts = {}
+        for prefix, number in rows:
+            if isinstance(prefix, bytes):
+                prefix = prefix.decode('ascii', 'replace')
+            counts[prefix or '<empty>'] = number
+        return counts, None
+    except (OSError, sqlite3.Error) as exc:
+        return None, str(exc)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def section_browsers():
+    head('Browser cookies by encryption prefix')
+    seen = False
+    for name, base in BROWSERS:
+        if not os.path.isdir(base):
+            continue
+        seen = True
+        candidates = [
+            os.path.join(base, 'Default', 'Cookies'),
+            os.path.join(base, 'Cookies'),
+        ]
+        db = next((p for p in candidates if os.path.exists(p)), None)
+        if db is None:
+            item(name, 'profile found, no Cookies database')
+            continue
+        counts, error = count_cookie_prefixes(db)
+        if counts is None:
+            item(name, 'unreadable (%s)' % error)
+            continue
+        v10 = counts.get('v10', 0)
+        v11 = counts.get('v11', 0)
+        other = sum(n for p, n in counts.items() if p not in ('v10', 'v11'))
+        item(name, 'v10=%d  v11=%d  other=%d  (%s)' % (v10, v11, other, db))
+        if v11:
+            note('    v11 cookies need the keyring key; a wrong key makes the browser drop them')
+    if not seen:
+        note('no Chromium-family profile found')
+
+
+def desktop_password_store(path):
+    """Return the --password-store value found in a .desktop file."""
+    values = set()
+    flagged = False
+    try:
+        with open(path, 'r', errors='replace') as fh:
+            for line in fh:
+                if not line.startswith('Exec'):
+                    continue
+                if '--password-store' not in line:
+                    continue
+                flagged = True
+                for token in line.split():
+                    if token.startswith('--password-store'):
+                        _, _, value = token.partition('=')
+                        values.add(value or '<no value>')
+    except OSError as exc:
+        return 'unreadable (%s)' % exc.strerror
+    if not flagged:
+        return 'no --password-store flag'
+    return '--password-store=' + ', '.join(sorted(values))
+
+
+def section_launchers():
+    head('Launcher --password-store flags')
+    dirs = [
+        ('system', os.path.join('/usr', 'share', 'applications')),
+        ('user override', os.path.join(XDG_DATA_HOME, 'applications')),
+    ]
+    for kind, directory in dirs:
+        try:
+            entries = sorted(e for e in os.listdir(directory) if e.endswith('.desktop'))
+        except OSError:
+            item(kind, 'no such directory (%s)' % directory)
+            continue
+        matches = [e for e in entries if is_launcher(e)]
+        if not matches:
+            item(kind, 'no browser or vscode launcher in %s' % directory)
+            continue
+        item(kind, directory)
+        for entry in matches:
+            note('    %-32s %s' % (entry, desktop_password_store(os.path.join(directory, entry))))
+
+
+def section_ssh():
+    head('ssh')
+    item('SSH_AUTH_SOCK', os.environ.get('SSH_AUTH_SOCK') or 'not set')
+    out = run(['ssh-add', '-l'], timeout=8)
+    if out is None:
+        item('keys in the agent', 'unavailable (ssh-add is missing or hung)')
+    else:
+        rc, stdout, stderr = out
+        if rc == 0:
+            keys = [ln for ln in stdout.splitlines() if ln.strip()]
+            item('keys in the agent', str(len(keys)))
+        elif rc == 1:
+            item('keys in the agent', '0 (agent has no identities)')
+        else:
+            item('keys in the agent', 'unavailable (%s)' % (stderr.strip() or 'rc=%d' % rc))
+    ssh_dir = os.path.join(HOME, '.ssh')
+    private = []
+    try:
+        for entry in sorted(os.listdir(ssh_dir)):
+            path = os.path.join(ssh_dir, entry)
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, 'rb') as fh:
+                    # Only the header is inspected; key material is never read.
+                    if b'PRIVATE KEY' in fh.read(60):
+                        private.append(entry)
+            except OSError:
+                continue
+    except OSError:
+        item('private key files in ~/.ssh', 'no ~/.ssh directory')
+        return
+    item('private key files in ~/.ssh', str(len(private)))
+    for entry in private:
+        note('    - ~/.ssh/' + entry)
+
+
+def ini_enabled(path, section):
+    """Return True/False/None for Enabled= in one section of an ini file."""
+    parser = configparser.ConfigParser(strict=False, interpolation=None)
+    parser.optionxform = str
+    try:
+        with open(path, 'r', errors='replace') as fh:
+            parser.read_file(fh)
+    except (OSError, configparser.Error):
+        return None
+    if not parser.has_section(section):
+        return None
+    for key in parser[section]:
+        if key.lower() == 'enabled':
+            return parser[section][key].strip().lower() == 'true'
+    return None
+
+
+def section_keepassxc():
+    head('KeePassXC')
+    out = run(['keepassxc', '--version'], timeout=15)
+    if out is None:
+        item('keepassxc', 'not installed')
+    else:
+        version = (out[1].strip() or out[2].strip()).splitlines()
+        item('keepassxc', version[0] if version else 'installed, version unknown')
+    item('keepassxc-cli', 'present' if shutil.which('keepassxc-cli') else 'not installed')
+    ini = os.path.join(XDG_CONFIG_HOME, 'keepassxc', 'keepassxc.ini')
+    if not os.path.exists(ini):
+        item('keepassxc.ini', 'absent (%s)' % ini)
+        return
+    item('keepassxc.ini', ini)
+    for section in ('FdoSecrets', 'SSHAgent'):
+        state = ini_enabled(ini, section)
+        if state is None:
+            text = 'section or Enabled key absent'
+        else:
+            text = 'Enabled=true' if state else 'Enabled=false'
+        item('  [%s]' % section, text)
+
+
+WALLET = 'kdewallet'
+
+
+def main():
+    global WALLET
+    parser = argparse.ArgumentParser(
+        prog='kpxc-inventory',
+        description='Read-only report on the desktop secret storage stack: the owner of '
+                    'org.freedesktop.secrets, keyring daemons, store contents (labels and '
+                    'attributes only), browser cookie encryption, launcher flags and ssh. '
+                    'Changes nothing and never reads a secret value.',
+    )
+    parser.add_argument('--wallet', default='kdewallet',
+                        help='KWallet name to inspect (default: kdewallet)')
+    WALLET = parser.parse_args().wallet
+
+    print('Secret storage inventory')
+    print('========================')
+    for section in (
+        section_owner, section_services, section_activation, section_secretservice,
+        section_kwallet, section_browsers, section_launchers, section_ssh,
+        section_keepassxc,
+    ):
+        try:
+            section()
+        except Exception as exc:  # noqa: BLE001 - a broken probe must not kill the report
+            print('  section failed: %s: %s' % (exc.__class__.__name__, exc))
+    print()
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

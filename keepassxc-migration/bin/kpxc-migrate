@@ -1,0 +1,368 @@
+#!/usr/bin/env python3
+"""Migrate secrets from gnome-keyring and KWallet into KeePassXC.
+
+Only one process can own org.freedesktop.secrets, so this is a handover: the
+entries are read out through the current owner, the name is freed, KeePassXC
+takes it, and the entries are written back in.
+
+Secret values live only in this process's memory. Nothing but labels,
+attributes and truncated fingerprints is ever printed.
+"""
+
+import argparse
+import datetime
+import hashlib
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+CHROME_SCHEMA = 'chrome_libsecret_os_crypt_password_v2'
+GK_PATTERN = '[g]nome-keyring-daemon --foreground'
+# Used only when the wallet cannot list its own folders over D-Bus.
+FALLBACK_FOLDERS = ['Chromium Keys', 'Chrome Keys', 'Claude Keys', 'Code Keys',
+                    'Opera Keys', 'Brave Keys', 'Vivaldi Keys',
+                    'xdg-desktop-portal', 'ksshaskpass', 'Passwords']
+KWALLET_SERVICES = [('org.kde.kwalletd6', '/modules/kwalletd6'),
+                    ('org.kde.kwalletd5', '/modules/kwalletd5')]
+BACKUP_TARGETS = ['~/.local/share/keyrings', '~/.local/share/kwalletd',
+                  '~/.config/kwalletrc']
+DBUS_OVERRIDE = os.path.expanduser(
+    os.environ.get('XDG_DATA_HOME', '~/.local/share')
+    + '/dbus-1/services/org.freedesktop.secrets.service')
+
+
+def fp(value):
+    return hashlib.sha256(value).hexdigest()[:12] if value else '-'
+
+
+def keepassxc_exec():
+    """Absolute path to the KeePassXC binary, for the D-Bus service file."""
+    return shutil.which('keepassxc') or '/usr/bin/keepassxc'
+
+
+def busctl_call(service, path, member, signature='', *args):
+    command = ['busctl', '--user', 'call', service, path, 'org.kde.KWallet',
+               member]
+    if signature:
+        command.append(signature)
+        command.extend(str(a) for a in args)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True,
+                                timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def wallet_folders(wallet):
+    """Folders the wallet actually holds, so nothing app-specific is assumed.
+
+    Falls back to a list of the usual names when the daemon cannot be asked -
+    an already-open wallet answers without prompting, a closed one is not
+    forced open here.
+    """
+    for service, path in KWALLET_SERVICES:
+        state = busctl_call(service, path, 'isOpen', 's', wallet)
+        if not state or 'true' not in state:
+            continue
+        handle = busctl_call(service, path, 'open', 'sxs', wallet, 0,
+                             'kpxc-migrate')
+        if not handle:
+            continue
+        listing = busctl_call(service, path, 'folderList', 'is',
+                              handle.split()[-1], 'kpxc-migrate')
+        if not listing:
+            continue
+        names, seen = [], set()
+        for token in listing.split('"')[1::2]:
+            if token and token not in seen:
+                seen.add(token)
+                names.append(token)
+        if names:
+            print('  wallet folders discovered: %s' % ', '.join(names))
+            return names
+    return FALLBACK_FOLDERS
+
+
+def owner():
+    """Process name owning org.freedesktop.secrets, or None."""
+    try:
+        out = subprocess.run(['busctl', '--user', 'list'],
+                             capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        if line.startswith('org.freedesktop.secrets '):
+            parts = line.split()
+            name = parts[2] if len(parts) > 2 else '-'
+            return None if name == '-' else name
+    return None
+
+
+def gk_pids():
+    try:
+        out = subprocess.run(['pgrep', '-f', GK_PATTERN],
+                             capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [int(x) for x in out.split()]
+
+
+def stop_gnome_keyring():
+    subprocess.run(['systemctl', '--user', 'stop', 'gnome-keyring-daemon.service',
+                    'gnome-keyring-daemon.socket'], capture_output=True)
+    for _ in range(20):
+        pids = gk_pids()
+        if not pids:
+            return True
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        time.sleep(0.5)
+    return not gk_pids()
+
+
+def wait_for(predicate, what, limit):
+    for i in range(limit):
+        current = owner()
+        if predicate(current):
+            return current
+        if i and i % 20 == 0:
+            print('  ... waiting for %s, the name is held by: %s'
+                  % (what, current or 'nobody'))
+        time.sleep(1)
+    return None
+
+
+def make_backup(directory):
+    os.makedirs(directory, exist_ok=True)
+    saved = []
+    for target in BACKUP_TARGETS:
+        src = os.path.expanduser(target)
+        if not os.path.exists(src):
+            continue
+        dst = os.path.join(directory, os.path.basename(src.rstrip('/')))
+        if os.path.isdir(src):
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        else:
+            shutil.copy2(src, dst)
+        saved.append(dst)
+    return saved
+
+
+def read_keyring(collected, seen):
+    try:
+        import secretstorage
+    except ImportError:
+        print('  secretstorage module is missing - the keyring cannot be read.\n'
+              '  Install it: apt install python3-secretstorage, '
+              'dnf install python3-secretstorage,\n'
+              '  or pip install --user secretstorage')
+        return
+    connection = secretstorage.dbus_init()
+    for collection in secretstorage.get_all_collections(connection):
+        if collection.collection_path.endswith('/session'):
+            continue
+        if collection.is_locked():
+            print('  %s is locked, a password prompt follows'
+                  % collection.collection_path)
+            if collection.unlock():
+                print('  ! prompt dismissed, skipping %s'
+                      % collection.collection_path)
+                continue
+        for item in collection.get_all_items():
+            label = item.get_label()
+            secret = item.get_secret()
+            collected.append((label, dict(item.get_attributes()), secret))
+            seen.add(label)
+            print('  keyring : %-44s %s' % (label[:44], fp(secret)))
+
+
+def read_kwallet(collected, seen, wallet):
+    for folder in wallet_folders(wallet):
+        try:
+            listing = subprocess.run(
+                ['kwallet-query', '-l', '-f', folder, wallet],
+                capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            print('  kwallet-query is unavailable - KWallet not read')
+            return
+        # kwallet-query reports failures on stdout, not stderr, so a non-zero
+        # exit is the only reliable sign that this is an error and not a listing
+        if listing.returncode != 0:
+            continue
+        for entry in listing.stdout.decode(errors='replace').splitlines():
+            entry = entry.strip()
+            low = entry.lower()
+            if not entry or 'not found' in low or 'does not exist' in low:
+                continue
+            if entry in seen:
+                print('  kwallet : %-44s skipped, already in the keyring'
+                      % entry[:44])
+                continue
+            value = subprocess.run(
+                ['kwallet-query', '-f', folder, '-r', entry, wallet],
+                capture_output=True, timeout=30).stdout.rstrip(b'\n')
+            if not value:
+                continue
+            if entry.endswith(' Safe Storage'):
+                attrs = {'application': entry[:-len(' Safe Storage')].lower(),
+                         'xdg:schema': CHROME_SCHEMA}
+            else:
+                attrs = {'kwallet-folder': folder,
+                         'xdg:schema': 'org.freedesktop.Secret.Generic'}
+            collected.append((entry, attrs, value))
+            seen.add(entry)
+            print('  kwallet : %-44s %s' % (entry[:44], fp(value)))
+
+
+def target_collection():
+    import secretstorage
+    connection = secretstorage.dbus_init()
+    for collection in secretstorage.get_all_collections(connection):
+        if collection.collection_path.endswith('/session'):
+            continue
+        if collection.is_locked():
+            collection.unlock()
+        if not collection.is_locked():
+            return collection
+    return None
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument('--backup-dir', default=None,
+                        help='where to copy the old stores before touching them')
+    parser.add_argument('--no-backup', action='store_true',
+                        help='skip the backup (not recommended)')
+    parser.add_argument('--wallet', default='kdewallet', help='KWallet name')
+    parser.add_argument('--wait', type=int, default=300,
+                        help='seconds to wait for a handover step')
+    parser.add_argument('--min-entries', type=int, default=1,
+                        help='abort if fewer entries than this were collected')
+    parser.add_argument('--run', action='store_true',
+                        help='actually perform the migration')
+    args = parser.parse_args()
+
+    if not args.run:
+        print(__doc__)
+        print('This migration needs a human at the KeePassXC window: the name '
+              'handover\ncannot be automated. Re-run with --run when ready, and '
+              'run kpxc-inventory\nfirst to see what would move.')
+        return 2
+
+    if not sys.stdin.isatty():
+        print('kpxc-migrate needs an interactive terminal: it waits for you to '
+              'toggle\nthe Secret Service integration in KeePassXC while it '
+              'holds the secrets in\nmemory. Run it from a normal shell.')
+        return 2
+
+    if not args.no_backup:
+        directory = args.backup_dir or os.path.expanduser(
+            '~/.local/share/kpxc-migration-backup-%s'
+            % datetime.date.today().isoformat())
+        saved = make_backup(directory)
+        print('backup: %s' % (', '.join(saved) if saved else 'nothing to copy'))
+
+    print('\n=== Phase A: read the secrets out of the current owner ===')
+    current = owner()
+    print('org.freedesktop.secrets is held by:', current or 'nobody')
+
+    if current and 'keepass' in current.lower():
+        print("""
+KeePassXC currently holds the name, so the old stores cannot be read.
+Turn the integration off for a moment:
+  Tools -> Settings -> Secret Service Integration -> uncheck -> OK""")
+        if wait_for(lambda o: not (o and 'keepass' in o.lower()),
+                    'the integration to be switched off', args.wait) is None:
+            sys.exit('KeePassXC still holds the name - nothing was changed')
+
+    if not gk_pids():
+        print('starting gnome-keyring so its entries can be read...')
+        if os.path.exists(DBUS_OVERRIDE):
+            os.rename(DBUS_OVERRIDE, DBUS_OVERRIDE + '.off')
+        subprocess.run(['systemctl', '--user', 'start',
+                        'gnome-keyring-daemon.service'], capture_output=True)
+        for _ in range(20):
+            if gk_pids():
+                break
+            time.sleep(0.5)
+
+    collected, seen = [], set()
+    if gk_pids():
+        read_keyring(collected, seen)
+    else:
+        print('  gnome-keyring is not running (masked or not installed)')
+    read_kwallet(collected, seen, args.wallet)
+
+    print('\ncollected entries:', len(collected))
+    if len(collected) < args.min_entries:
+        sys.exit('fewer than --min-entries collected - aborting without changes')
+
+    print('\n=== Phase B: hand the name over to KeePassXC ===')
+    if not stop_gnome_keyring():
+        sys.exit('gnome-keyring will not stop, still running: %s' % gk_pids())
+    os.makedirs(os.path.dirname(DBUS_OVERRIDE), exist_ok=True)
+    if os.path.exists(DBUS_OVERRIDE + '.off'):
+        os.rename(DBUS_OVERRIDE + '.off', DBUS_OVERRIDE)
+    else:
+        with open(DBUS_OVERRIDE, 'w') as handle:
+            handle.write('[D-BUS Service]\nName=org.freedesktop.secrets\n'
+                         'Exec=%s\n' % keepassxc_exec())
+    print('gnome-keyring stopped, its D-Bus activation is overridden')
+    print("""
+Now in KeePassXC, with the database open:
+  1. Tools -> Settings -> Secret Service Integration -> check -> OK
+  2. Database -> Database Settings -> Secret Service Integration ->
+     pick the group to expose -> OK""")
+
+    if wait_for(lambda o: bool(o and 'keepass' in o.lower()),
+                'KeePassXC to take the name', args.wait) is None:
+        print('KeePassXC did not take the name. Nothing was written.')
+        print('To put gnome-keyring back:')
+        print('  rm %s && systemctl --user start gnome-keyring-daemon.service'
+              % DBUS_OVERRIDE)
+        sys.exit(1)
+    print('the name is now held by:', owner())
+
+    print('\n=== Phase C: write into KeePassXC ===')
+    print('KeePassXC will ask to grant access - allow it.')
+    destination = target_collection()
+    if destination is None:
+        sys.exit('no unlocked KeePassXC collection - check the exposed group')
+    print('target collection:', destination.collection_path)
+
+    written = failed = 0
+    for label, attrs, secret in collected:
+        try:
+            destination.create_item(label, attrs, secret, replace=True)
+            written += 1
+        except Exception as error:                     # noqa: BLE001
+            failed += 1
+            print('  ERROR %-44s %s' % (label[:44], error))
+    print('written: %d, failed: %d' % (written, failed))
+
+    print('\n=== Verification ===')
+    back = {item.get_label(): item.get_secret()
+            for item in destination.get_all_items()}
+    mismatched = 0
+    for label, _attrs, secret in collected:
+        got = back.get(label)
+        if got != secret:
+            mismatched += 1
+        print('  %-9s %-44s %s -> %s'
+              % ('OK' if got == secret else 'MISMATCH', label[:44],
+                 fp(secret), fp(got)))
+    print('\nresult: %d of %d match' % (len(collected) - mismatched,
+                                        len(collected)))
+    print('Save the database in KeePassXC if it does not save by itself.')
+    return 1 if mismatched or failed else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

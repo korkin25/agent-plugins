@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""Point applications at libsecret and switch the legacy secret stores off.
+
+--launchers        write user-level .desktop files that pass
+                   --password-store=gnome-libsecret to Chromium/Electron apps
+--disable-legacy   mask gnome-keyring, disable KWallet, override the D-Bus
+                   activation of org.freedesktop.secrets, autostart KeePassXC
+--undo             reverse both of the above
+--dry-run          print what would happen and change nothing
+
+Every file this writes is user-level: nothing under /usr or /etc is touched, so
+a reinstall of any package restores the distribution behaviour.
+"""
+
+import argparse
+import configparser
+import os
+import shutil
+import subprocess
+import sys
+
+MARKER = 'X-KPXC-Patched'
+FLAG = '--password-store=gnome-libsecret'
+DEFAULT_APPS = ['opera.desktop', 'opera-beta.desktop', 'google-chrome.desktop',
+                'com.google.Chrome.desktop', 'chromium.desktop',
+                'chromium-browser.desktop', 'brave-browser.desktop',
+                'vivaldi-stable.desktop', 'microsoft-edge.desktop',
+                'code.desktop', 'code-insiders.desktop', 'codium.desktop',
+                'slack.desktop', 'signal-desktop.desktop']
+APPS = list(DEFAULT_APPS)
+SYSTEM_APPS = '/usr/share/applications'
+UNITS = ['gnome-keyring-daemon.service', 'gnome-keyring-daemon.socket']
+HIDDEN_AUTOSTART = {
+    'gnome-keyring-secrets.desktop': 'GNOME Keyring: Secret Service',
+    'pam_kwallet_init.desktop': 'KDE Wallet PAM init',
+}
+
+HOME = os.path.expanduser('~')
+DATA = os.environ.get('XDG_DATA_HOME') or os.path.join(HOME, '.local/share')
+CONFIG = os.environ.get('XDG_CONFIG_HOME') or os.path.join(HOME, '.config')
+USER_APPS = os.path.join(DATA, 'applications')
+AUTOSTART = os.path.join(CONFIG, 'autostart')
+KWALLETRC = os.path.join(CONFIG, 'kwalletrc')
+DBUS_OVERRIDE = os.path.join(DATA, 'dbus-1/services/org.freedesktop.secrets.service')
+KEEPASS_DESKTOP = 'org.keepassxc.KeePassXC.desktop'
+
+dry = False
+
+
+def say(action, detail):
+    print('%s %s %s' % ('would' if dry else '     ', action, detail))
+
+
+def keepassxc_exec():
+    """Absolute path to the KeePassXC binary, for the D-Bus service file."""
+    return shutil.which('keepassxc') or '/usr/bin/keepassxc'
+
+
+def patch_launchers():
+    os.makedirs(USER_APPS, exist_ok=True)
+    done = 0
+    for name in APPS:
+        source = os.path.join(SYSTEM_APPS, name)
+        if not os.path.isfile(source):
+            continue
+        with open(source) as handle:
+            lines = handle.readlines()
+        out, changed = [], False
+        for line in lines:
+            if line.startswith('Exec=') and FLAG not in line:
+                head, _, rest = line[5:].partition(' ')
+                line = 'Exec=%s %s %s' % (head, FLAG, rest.rstrip('\n'))
+                line = line.rstrip() + '\n'
+                changed = True
+            out.append(line)
+        if not changed:
+            continue
+        out.append('%s=true\n' % MARKER)
+        target = os.path.join(USER_APPS, name)
+        say('patch launcher', target)
+        if not dry:
+            with open(target, 'w') as handle:
+                handle.writelines(out)
+        done += 1
+    if not dry and done:
+        subprocess.run(['update-desktop-database', USER_APPS],
+                       capture_output=True)
+    print('launchers patched: %d' % done)
+
+
+def unpatch_launchers():
+    removed = 0
+    if not os.path.isdir(USER_APPS):
+        return
+    for name in os.listdir(USER_APPS):
+        path = os.path.join(USER_APPS, name)
+        try:
+            with open(path) as handle:
+                if MARKER not in handle.read():
+                    continue
+        except OSError:
+            continue
+        say('remove launcher', path)
+        if not dry:
+            os.remove(path)
+        removed += 1
+    print('launchers removed: %d' % removed)
+
+
+def write_dbus_override():
+    say('write D-Bus override', DBUS_OVERRIDE)
+    if dry:
+        return
+    os.makedirs(os.path.dirname(DBUS_OVERRIDE), exist_ok=True)
+    with open(DBUS_OVERRIDE, 'w') as handle:
+        handle.write('[D-BUS Service]\nName=org.freedesktop.secrets\n'
+                     'Exec=%s\n' % keepassxc_exec())
+
+
+def set_kwallet(enabled):
+    parser = configparser.RawConfigParser()
+    parser.optionxform = str
+    if os.path.exists(KWALLETRC):
+        parser.read(KWALLETRC)
+        backup = KWALLETRC + '.kpxc-backup'
+        if not os.path.exists(backup) and not dry:
+            shutil.copy2(KWALLETRC, backup)
+    if not parser.has_section('Wallet'):
+        parser.add_section('Wallet')
+    parser.set('Wallet', 'Enabled', 'true' if enabled else 'false')
+    say('set KWallet Enabled=%s in' % ('true' if enabled else 'false'), KWALLETRC)
+    if dry:
+        return
+    with open(KWALLETRC, 'w') as handle:
+        parser.write(handle, space_around_delimiters=False)
+
+
+def hide_autostart(hide):
+    os.makedirs(AUTOSTART, exist_ok=True)
+    for name, title in HIDDEN_AUTOSTART.items():
+        path = os.path.join(AUTOSTART, name)
+        if hide:
+            say('hide autostart', path)
+            if not dry:
+                with open(path, 'w') as handle:
+                    handle.write('[Desktop Entry]\nType=Application\n'
+                                 'Name=%s\nHidden=true\n' % title)
+        elif os.path.exists(path):
+            try:
+                with open(path) as handle:
+                    if 'Hidden=true' not in handle.read():
+                        continue
+            except OSError:
+                continue
+            say('restore autostart', path)
+            if not dry:
+                os.remove(path)
+
+
+def autostart_keepassxc(enable):
+    source = os.path.join(SYSTEM_APPS, KEEPASS_DESKTOP)
+    target = os.path.join(AUTOSTART, KEEPASS_DESKTOP)
+    if enable:
+        if not os.path.isfile(source):
+            print('     KeePassXC .desktop not found, autostart not set')
+            return
+        say('autostart KeePassXC', target)
+        if not dry:
+            os.makedirs(AUTOSTART, exist_ok=True)
+            shutil.copy2(source, target)
+    elif os.path.exists(target):
+        say('remove autostart', target)
+        if not dry:
+            os.remove(target)
+
+
+def units(action):
+    for unit in UNITS:
+        say('systemctl --user %s' % action, unit)
+        if not dry:
+            subprocess.run(['systemctl', '--user', action, unit],
+                           capture_output=True)
+
+
+def disable_legacy():
+    write_dbus_override()
+    units('mask')
+    hide_autostart(True)
+    set_kwallet(False)
+    autostart_keepassxc(True)
+    print('\nA running kwalletd is left alone on purpose: on KDE, killing it can '
+          'take\nthe Plasma panel down with it. It will not come back after a '
+          'reboot.')
+
+
+def undo():
+    if os.path.exists(DBUS_OVERRIDE):
+        say('remove D-Bus override', DBUS_OVERRIDE)
+        if not dry:
+            os.remove(DBUS_OVERRIDE)
+    units('unmask')
+    hide_autostart(False)
+    backup = KWALLETRC + '.kpxc-backup'
+    if os.path.exists(backup):
+        say('restore', KWALLETRC)
+        if not dry:
+            shutil.copy2(backup, KWALLETRC)
+    else:
+        set_kwallet(True)
+    autostart_keepassxc(False)
+    unpatch_launchers()
+    print('\nStart the old service again with: '
+          'systemctl --user start gnome-keyring-daemon.service')
+
+
+def main():
+    global dry
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument('--launchers', action='store_true')
+    parser.add_argument('--disable-legacy', action='store_true')
+    parser.add_argument('--undo', action='store_true')
+    parser.add_argument('--app', action='append', default=[], metavar='NAME',
+                        help='extra .desktop file to patch, repeatable '
+                             '(e.g. --app obsidian.desktop)')
+    parser.add_argument('--dry-run', action='store_true')
+    args = parser.parse_args()
+    dry = args.dry_run
+    for name in args.app:
+        if not name.endswith('.desktop'):
+            name += '.desktop'
+        if name not in APPS:
+            APPS.append(name)
+
+    if not (args.launchers or args.disable_legacy or args.undo):
+        parser.print_help()
+        return 2
+    if args.undo:
+        undo()
+        return 0
+    if args.launchers:
+        patch_launchers()
+    if args.disable_legacy:
+        disable_legacy()
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -1,0 +1,20 @@
+{
+  "name": "keepassxc-migration",
+  "displayName": "KeePassXC Migration",
+  "version": "0.1.0",
+  "description": "Moves a Linux desktop's secrets into KeePassXC: migrates entries out of gnome-keyring and KWallet, makes KeePassXC serve org.freedesktop.secrets, points browsers and Electron apps at libsecret, imports SSH keys into the database, and switches the old stores off — without losing a single browser session.",
+  "author": { "name": "Eugeny Kuzakov", "url": "https://github.com/korkin25" },
+  "homepage": "https://github.com/korkin25/agent-plugins/tree/main/keepassxc-migration",
+  "license": "MIT",
+  "keywords": [
+    "keepassxc",
+    "secret-service",
+    "gnome-keyring",
+    "kwallet",
+    "libsecret",
+    "ssh-agent",
+    "linux",
+    "kde",
+    "security"
+  ]
+}
