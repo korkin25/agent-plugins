@@ -9,7 +9,7 @@ Exactly one process on a session bus can own `org.freedesktop.secrets`. Everythi
 from that: the migration is a handover of that name from gnome-keyring to KeePassXC, and the
 secrets have to be read out through the old owner before it lets go.
 
-The plugin ships five executables. On Claude Code `bin/` is on `PATH`, so they can be called by
+The plugin ships seven executables. On Claude Code `bin/` is on `PATH`, so they can be called by
 name; anywhere else (Codex, a plain shell) call them by path from the plugin directory.
 
 | Command | What it does | Changes the system |
@@ -19,6 +19,8 @@ name; anywhere else (Codex, a plain shell) call them by path from the plugin dir
 | `kpxc-switch` | Patches app launchers, disables the legacy stores, `--undo` reverses both | yes |
 | `kpxc-ssh-import` | Imports SSH private keys into the database as agent-loadable entries | yes (database) |
 | `kpxc-verify` | Checks the end state, exit code 1 if a required check fails | no |
+| `kpxc-env` | Moves shell environment secrets out of dotfiles and loads them while unlocked | yes |
+| `kpxc-run` | Runs one command with selected secrets in its environment and nowhere else | no |
 
 ## Running it
 
@@ -48,6 +50,41 @@ Outside Claude Code, call the same commands by path: `<plugin>/bin/kpxc-inventor
 plain Python 3 executables and behave identically. `kpxc-migrate` needs a real terminal — it
 holds the secrets in memory while the user toggles the integration in KeePassXC — so it refuses
 to run when stdin is not a TTY, and it does nothing at all without `--run`.
+
+## Shell environment secrets
+
+Tokens exported from `~/.bashrc` are the other half of the problem: plain text in a file that
+gets backed up, synced and read over shoulders. `kpxc-env import --from ~/.bashrc` lists what it
+would move (names only), and with `--apply` stores the values, cuts the lines and leaves a single
+loader in their place:
+
+```sh
+command -v kpxc-env >/dev/null && eval "$(kpxc-env export)"
+```
+
+Four things decide whether this works, and all four have already gone wrong once:
+
+**The loader needs `kpxc-env` on `PATH`.** Inside Claude Code the plugin's `bin/` is on `PATH`,
+but an ordinary login shell knows nothing about it, so the line silently does nothing and every
+variable is empty. `kpxc-env install` symlinks the tools into `~/.local/bin`; the import warns
+when this is missing.
+
+**Position matters.** The loader replaces the first line it removed, not the end of the file: a
+later line may compute something from a variable that has just been moved, and appending would
+leave it empty.
+
+**Quoting decides what is a literal.** A value in single quotes is literal even when it contains
+`$` or a backtick — treating those as computed leaves a live password sitting in the file. Only
+unquoted and double-quoted values expand.
+
+**A locked database must not break shells.** `kpxc-env export` prints nothing and exits 0 when
+the service is unavailable, so shells start clean and silent rather than prompting or failing.
+
+For a secret that should not be in the ambient environment at all, mark it `kpxc-env hot NAME`
+and give the tool that needs it a wrapper: `kpxc-env shim terraform` writes `~/.local/bin/terraform`,
+which injects the variables through `kpxc-run` and executes the real binary. Nothing else has to
+know the mechanism exists — not the user, not an agent, not a script — which is exactly why this
+is more reliable than telling every caller to remember a wrapper.
 
 ## Before touching anything: the trap that eats data
 

@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""Run a command with secrets from KeePassXC in its environment, and nowhere else.
+
+The variables never enter the ambient environment: they are read from the
+unlocked database, placed in the child process's environment, and gone when it
+exits. This is what the shims written by `kpxc-env shim` call.
+
+  kpxc-run --profile terraform -- terraform apply
+  kpxc-run --var GITHUB_TOKEN -- gh pr list
+  kpxc-run --all -- env            # every stored variable, hot ones included
+
+A profile is just a name listed in an entry's kpxc-env-profile attribute, so a
+variable can serve several commands:
+
+  kpxc-env list                    # see what is stored
+"""
+
+import argparse
+import os
+import sys
+
+ATTR = 'kpxc-env'
+PROFILE = 'kpxc-env-profile'
+
+
+def collection():
+    try:
+        import secretstorage
+    except ImportError:
+        sys.exit('kpxc-run: the python secretstorage module is not installed')
+    try:
+        connection = secretstorage.dbus_init()
+        for item in secretstorage.get_all_collections(connection):
+            if item.collection_path.endswith('/session'):
+                continue
+            if not item.is_locked():
+                return item
+    except Exception as error:                         # noqa: BLE001
+        sys.exit('kpxc-run: cannot reach the secret service: %s' % error)
+    return None
+
+
+def wanted(attrs, name, args):
+    if args.all:
+        return True
+    if name in args.var:
+        return True
+    if args.profile:
+        profiles = [p.strip() for p in attrs.get(PROFILE, '').split(',')]
+        return args.profile in profiles
+    return False
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog='kpxc-run', description=__doc__.splitlines()[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
+    parser.add_argument('--profile', help='inject variables tagged with this '
+                                          'profile name')
+    parser.add_argument('--var', action='append', default=[],
+                        help='inject this variable, repeatable')
+    parser.add_argument('--all', action='store_true',
+                        help='inject every stored variable')
+    parser.add_argument('--quiet', action='store_true',
+                        help='do not warn when nothing could be injected')
+    parser.add_argument('command', nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+
+    command = args.command
+    if command and command[0] == '--':
+        command = command[1:]
+    if not command:
+        parser.print_help()
+        return 2
+    if not (args.all or args.var or args.profile):
+        sys.exit('kpxc-run: choose --profile, --var or --all')
+
+    environment = dict(os.environ)
+    coll = collection()
+    injected = 0
+    if coll is not None:
+        for item in coll.get_all_items():
+            try:
+                attrs = item.get_attributes()
+            except Exception:                          # noqa: BLE001
+                continue
+            name = attrs.get(ATTR)
+            if not name or not wanted(attrs, name, args):
+                continue
+            try:
+                environment[name] = item.get_secret().decode('utf-8', 'replace')
+                injected += 1
+            except Exception:                          # noqa: BLE001
+                continue
+
+    if injected == 0 and not args.quiet:
+        print('kpxc-run: nothing injected - is the database unlocked?',
+              file=sys.stderr)
+
+    try:
+        os.execvpe(command[0], command, environment)
+    except FileNotFoundError:
+        sys.exit('kpxc-run: command not found: %s' % command[0])
+    except OSError as error:
+        sys.exit('kpxc-run: cannot run %s: %s' % (command[0], error))
+
+
+if __name__ == '__main__':
+    sys.exit(main())

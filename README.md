@@ -19,7 +19,7 @@ then browse with `/plugin`, or install directly:
 | Plugin | What it does |
 |---|---|
 | [**calendar-agenda**](calendar-agenda/) | Your agenda from any number of Google Calendars at the start of every session, and scheduling that respects all of them |
-| [**keepassxc-migration**](keepassxc-migration/) | Moves a Linux desktop's secrets into KeePassXC — out of gnome-keyring and KWallet, with the browser sessions surviving the move |
+| [**keepassxc-migration**](keepassxc-migration/) | Moves a Linux desktop's secrets into KeePassXC — out of gnome-keyring, KWallet and shell dotfiles, with the browser sessions surviving the move |
 | [**plugin-factory**](plugin-factory/) | Scaffold, check and release plugins in this repository, with the same validation Anthropic's review pipeline runs |
 
 ## How releases work

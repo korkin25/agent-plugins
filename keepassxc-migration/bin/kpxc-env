@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+"""Keep shell environment secrets in KeePassXC instead of a dotfile.
+
+Variables live as entries in the database and reach a shell only while it is
+unlocked. Nothing is written to disk: `export` prints shell code, the shell
+evaluates it, and a locked database simply yields an empty environment.
+
+  kpxc-env list                      names only, never values
+  kpxc-env export                    shell code for eval, silent when locked
+  kpxc-env import --from ~/.bashrc   move export lines into the database
+  kpxc-env hot NAME...               keep a variable out of the ambient
+                                     environment; only kpxc-run injects it
+  kpxc-env shim terraform doctl      put wrappers in ~/.local/bin so any caller
+                                     gets the hot variables without knowing
+  kpxc-env install                   symlink these tools into ~/.local/bin,
+                                     which the loader line below needs
+
+Add this to ~/.bashrc, and to ~/.profile as BASH_ENV so that non-interactive
+shells are covered too:
+
+  command -v kpxc-env >/dev/null && eval "$(kpxc-env export)"
+"""
+
+import argparse
+import os
+import re
+import shlex
+import shutil
+import sys
+
+ATTR = 'kpxc-env'
+HOT = 'kpxc-env-hot'
+SECRETISH = re.compile(
+    r'(TOKEN|SECRET|PASSWORD|PASSWD|_KEY|APIKEY|API_KEY|CLIENT_ID|'
+    r'CREDENTIAL|AUTHORIZATION|_PAT|ACCESS_KEY)', re.I)
+EXPORT_LINE = re.compile(r'^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$')
+HOME = os.path.expanduser('~')
+LOCAL_BIN = os.path.join(HOME, '.local/bin')
+
+
+def collection():
+    """The unlocked KeePassXC collection, or None when it is not available."""
+    try:
+        import secretstorage
+    except ImportError:
+        return None
+    try:
+        connection = secretstorage.dbus_init()
+        for item in secretstorage.get_all_collections(connection):
+            if item.collection_path.endswith('/session'):
+                continue
+            if not item.is_locked():
+                return item
+    except Exception:                                  # noqa: BLE001
+        return None
+    return None
+
+
+def entries(coll):
+    """[(name, item, hot)] for every variable stored in the database."""
+    found = []
+    for item in coll.get_all_items():
+        try:
+            attrs = item.get_attributes()
+        except Exception:                              # noqa: BLE001
+            continue
+        name = attrs.get(ATTR)
+        if name:
+            found.append((name, item, attrs.get(HOT) == '1'))
+    return sorted(found, key=lambda row: row[0])
+
+
+def cmd_list(args):
+    coll = collection()
+    if coll is None:
+        print('the database is locked or the secret service is unavailable',
+              file=sys.stderr)
+        return 1
+    rows = entries(coll)
+    if not rows:
+        print('no variables stored yet')
+        return 0
+    for name, _item, hot in rows:
+        print('%-32s %s' % (name, 'hot (kpxc-run only)' if hot else 'exported'))
+    return 0
+
+
+def cmd_export(args):
+    coll = collection()
+    if coll is None:
+        return 0                       # a locked database must not break shells
+    for name, item, hot in entries(coll):
+        if hot:
+            continue
+        try:
+            value = item.get_secret().decode('utf-8', 'replace')
+        except Exception:                              # noqa: BLE001
+            continue
+        print('export %s=%s' % (name, shlex.quote(value)))
+    return 0
+
+
+def parse_exports(path):
+    """[(name, value, line_number)] for plain export lines in a shell file."""
+    found = []
+    with open(path, errors='replace') as handle:
+        for number, line in enumerate(handle, 1):
+            match = EXPORT_LINE.match(line)
+            if not match:
+                continue
+            name, raw = match.group(1), match.group(2).strip()
+            # Only unquoted and double-quoted values can expand. Inside single
+            # quotes a $ or a backtick is an ordinary character, and treating
+            # such a line as computed would silently leave a password behind.
+            if raw.startswith("'"):
+                computed = False
+            elif raw.startswith('"'):
+                computed = bool(re.search(r'(?<!\\)[$`]', raw))
+            else:
+                computed = bool(re.search(r'[$`]', raw))
+            if computed:
+                continue
+            try:
+                parts = shlex.split(raw, comments=True)
+            except ValueError:
+                continue
+            if len(parts) != 1:
+                continue
+            found.append((name, parts[0], number))
+    return found
+
+
+def cmd_import(args):
+    path = os.path.expanduser(args.source)
+    if not os.path.isfile(path):
+        return exit_with('no such file: %s' % path)
+    candidates = parse_exports(path)
+    if not candidates:
+        return exit_with('no plain export lines found in %s' % path)
+
+    chosen = [(n, v, ln) for n, v, ln in candidates
+              if (n in args.var) or (not args.var and SECRETISH.search(n))]
+    skipped = [n for n, _v, _ln in candidates
+               if n not in [c[0] for c in chosen]]
+
+    print('to move into KeePassXC:')
+    for name, _value, number in chosen:
+        print('  %-32s %s:%d' % (name, os.path.basename(path), number))
+    if skipped:
+        unique = sorted(set(skipped))
+        print('left alone (not secret-looking):')
+        print('  ' + ', '.join(unique))
+    if not chosen:
+        return exit_with('nothing selected; name variables with --var')
+    if not args.apply:
+        print('\nnothing was changed. Re-run with --apply to store these and '
+              'remove\nthe lines from the file (a .bak copy is kept).')
+        return 0
+
+    coll = collection()
+    if coll is None:
+        return exit_with('unlock the database first - it must be open to write')
+
+    hot = set(args.hot)
+    for name, value, _number in chosen:
+        attrs = {ATTR: name, 'xdg:schema': 'org.freedesktop.Secret.Generic'}
+        if name in hot:
+            attrs[HOT] = '1'
+        coll.create_item(name, attrs, value.encode(), replace=True)
+    print('stored in the database: %d' % len(chosen))
+
+    backup = path + '.kpxc-bak'
+    shutil.copy2(path, backup)
+    drop = {number for _n, _v, number in chosen}
+    with open(path, errors='replace') as handle:
+        lines = handle.readlines()
+    # The loader goes where the first removed line was, not at the end: a later
+    # line may compute something from a variable that has just been moved, and
+    # appending would leave it empty.
+    first = min(drop)
+    loader = ['# secrets now live in KeePassXC, loaded while unlocked\n',
+              'command -v kpxc-env >/dev/null && eval "$(kpxc-env export)"\n']
+    already = any('kpxc-env export' in line for line in lines)
+    kept = []
+    for number, line in enumerate(lines, 1):
+        if number == first and not already:
+            kept.extend(loader)
+        if number not in drop:
+            kept.append(line)
+    with open(path, 'w') as handle:
+        handle.writelines(kept)
+    print('%s rewritten, previous copy at %s' % (path, backup))
+    if shutil.which('kpxc-env') is None:
+        print('\nWARNING: kpxc-env is not on PATH, so the line just written to\n'
+              '%s cannot run and the variables would be missing from every\n'
+              'shell. Fix it now:  %s install'
+              % (os.path.basename(path), os.path.abspath(__file__)))
+    else:
+        print('open a new shell to pick up the change')
+    return 0
+
+
+def cmd_install(args):
+    """Symlink these tools into ~/.local/bin so ordinary shells can find them."""
+    os.makedirs(LOCAL_BIN, exist_ok=True)
+    here = os.path.dirname(os.path.abspath(__file__))
+    for name in ('kpxc-env', 'kpxc-run'):
+        source = os.path.join(here, name)
+        if not os.path.isfile(source):
+            continue
+        target = os.path.join(LOCAL_BIN, name)
+        if os.path.islink(target) or os.path.exists(target):
+            os.remove(target)
+        os.symlink(source, target)
+        print('%s -> %s' % (target, source))
+    if LOCAL_BIN not in os.environ.get('PATH', '').split(os.pathsep):
+        print('\nNote: %s is not in PATH yet - add it in ~/.profile' % LOCAL_BIN)
+    return 0
+
+
+def cmd_hot(args):
+    coll = collection()
+    if coll is None:
+        return exit_with('unlock the database first')
+    known = {name: item for name, item, _hot in entries(coll)}
+    for name in args.name:
+        item = known.get(name)
+        if item is None:
+            print('unknown variable: %s' % name, file=sys.stderr)
+            continue
+        attrs = dict(item.get_attributes())
+        if args.unset:
+            attrs.pop(HOT, None)
+        else:
+            attrs[HOT] = '1'
+        item.set_attributes(attrs)
+        print('%s: %s' % (name, 'exported again' if args.unset
+                          else 'hot, only kpxc-run injects it now'))
+    return 0
+
+
+SHIM = """#!/bin/sh
+# Written by kpxc-env: injects secrets from KeePassXC, then runs the real
+# %(name)s. Delete this file to go back to the plain binary.
+exec kpxc-run --profile %(name)s -- %(real)s "$@"
+"""
+
+
+def cmd_shim(args):
+    os.makedirs(LOCAL_BIN, exist_ok=True)
+    for name in args.name:
+        real = None
+        for candidate in os.environ.get('PATH', '').split(os.pathsep):
+            if os.path.realpath(candidate) == os.path.realpath(LOCAL_BIN):
+                continue
+            path = os.path.join(candidate, name)
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                real = path
+                break
+        if real is None:
+            print('%s: not found in PATH outside %s, skipped'
+                  % (name, LOCAL_BIN), file=sys.stderr)
+            continue
+        target = os.path.join(LOCAL_BIN, name)
+        with open(target, 'w') as handle:
+            handle.write(SHIM % {'name': name, 'real': shlex.quote(real)})
+        os.chmod(target, 0o755)
+        print('%s -> %s' % (target, real))
+    print('\nMake sure %s comes before the real binaries in PATH.' % LOCAL_BIN)
+    return 0
+
+
+def exit_with(message):
+    print(message, file=sys.stderr)
+    return 1
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog='kpxc-env', description=__doc__.splitlines()[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
+    sub = parser.add_subparsers(dest='command')
+
+    sub.add_parser('list', help='names of stored variables')
+    sub.add_parser('install', help='symlink the tools into ~/.local/bin')
+    sub.add_parser('export', help='shell code for eval')
+
+    imp = sub.add_parser('import', help='move export lines into the database')
+    imp.add_argument('--from', dest='source', default='~/.bashrc')
+    imp.add_argument('--var', action='append', default=[],
+                     help='variable to move, repeatable; default is every '
+                          'secret-looking name')
+    imp.add_argument('--hot', action='append', default=[],
+                     help='store this one as hot: never exported, only '
+                          'injected by kpxc-run')
+    imp.add_argument('--apply', action='store_true',
+                     help='actually store and rewrite the file')
+
+    hot = sub.add_parser('hot', help='mark variables as kpxc-run only')
+    hot.add_argument('name', nargs='+')
+    hot.add_argument('--unset', action='store_true')
+
+    shim = sub.add_parser('shim', help='wrappers so any caller gets hot vars')
+    shim.add_argument('name', nargs='+')
+
+    args = parser.parse_args()
+    handlers = {'list': cmd_list, 'export': cmd_export, 'import': cmd_import,
+                'hot': cmd_hot, 'shim': cmd_shim, 'install': cmd_install}
+    if args.command not in handlers:
+        parser.print_help()
+        return 2
+    return handlers[args.command](args)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

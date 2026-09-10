@@ -43,6 +43,8 @@ traps; the executables do the work.
 | `kpxc-switch` | `--launchers` patches app launchers, `--disable-legacy` turns the old stores off, `--undo` reverses both | yes |
 | `kpxc-ssh-import` | Imports SSH keys into the database so KeePassXC loads them into ssh-agent on unlock | database only |
 | `kpxc-verify` | Checks the end state, non-zero exit if a required check fails | no |
+| `kpxc-env` | Moves `export` lines out of shell dotfiles into the database and loads them while it is unlocked | yes |
+| `kpxc-run` | Runs a single command with selected secrets in its environment and nowhere else | no |
 
 On Claude Code `bin/` is on `PATH`, so the commands work by name. In Codex or a plain shell, call
 them by path — they are ordinary Python 3 executables with no dependencies beyond an optional
