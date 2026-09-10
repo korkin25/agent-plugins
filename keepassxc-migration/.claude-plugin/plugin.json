@@ -1,7 +1,7 @@
 {
   "name": "keepassxc-migration",
   "displayName": "KeePassXC Migration",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Moves a Linux desktop's secrets into KeePassXC: migrates entries out of gnome-keyring and KWallet, makes KeePassXC serve org.freedesktop.secrets, points browsers and Electron apps at libsecret, imports SSH keys and shell environment tokens into the database, and switches the old stores off - without losing a single browser session.",
   "author": {
     "name": "Eugeny Kuzakov",

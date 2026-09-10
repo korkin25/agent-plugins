@@ -80,6 +80,11 @@ unquoted and double-quoted values expand.
 **A locked database must not break shells.** `kpxc-env export` prints nothing and exits 0 when
 the service is unavailable, so shells start clean and silent rather than prompting or failing.
 
+The import leaves a `.kpxc-bak` copy of the dotfile beside it, and that copy still holds every
+secret in plain text. It exists so a broken shell can be undone; **delete it** — along with any
+other dotfile backup — as soon as a fresh shell proves the loader works. A backup that outlives
+its purpose is just the original problem with a different name.
+
 For a secret that should not be in the ambient environment at all, mark it `kpxc-env hot NAME`
 and give the tool that needs it a wrapper: `kpxc-env shim terraform` writes `~/.local/bin/terraform`,
 which injects the variables through `kpxc-run` and executes the real binary. Nothing else has to
@@ -125,7 +130,10 @@ two files back over a purged profile is the whole recovery path, and it works.
 8. **SSH keys, last.** `kpxc-ssh-import`, then enable Tools → Settings → SSH Agent, lock and
    unlock the database, confirm with `ssh-add -l`, confirm a real connection, and only then
    delete the key files.
-9. **Verify the end state.** `kpxc-verify`.
+9. **Shell secrets.** `kpxc-env import --from ~/.bashrc` to see the list, `--apply` to move it,
+   `kpxc-env install` so ordinary shells can find the loader, then a fresh shell to confirm and
+   the `.kpxc-bak` copy deleted.
+10. **Verify the end state.** `kpxc-verify`.
 
 ## Traps, each of which has already cost a session
 
@@ -179,6 +187,15 @@ Fingerprints are enough to prove that a migrated entry matches its source, and t
 stores disagree, which is the usual diagnosis. When a value must be moved, it goes from one API
 straight into the other inside one process — never through a file, an environment variable, a
 log line or the agent's own transcript.
+
+The scripts are only half of it: the commands used to *check* their work are where a secret
+actually escapes. Verifying an edited dotfile with `grep -A2`, `sed -n '130p'` or a bare `cat`
+prints neighbouring lines, and one of them is a password — that is precisely how a live
+credential ended up in a terminal and a transcript during this plugin's own development. Check
+by name and line number, never by content: `grep -oE '^\s*export\s+[A-Za-z_]+'` lists names,
+`kpxc-env list` lists what is stored, and `kpxc-verify` answers the rest. Treat anything that
+did reach a terminal as burnt: rotate that credential, and clear the shell history and scrollback
+that captured it.
 
 To identify which key a browser actually used, decrypt one cookie with each candidate: derive
 with PBKDF2-HMAC-SHA1, salt `saltysalt`, 1 iteration, 16 bytes, then AES-128-CBC with an IV of
