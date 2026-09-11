@@ -30,10 +30,24 @@ That makes a second user account on the same machine a clean and completely isol
 what happens there cannot affect the first account.
 
 What has to be installed: `python3`, `keepassxc` and `keepassxc-cli`, `busctl` (part of systemd),
-and `kwallet-query` if KWallet is in play. Reading gnome-keyring additionally needs the Python
-`secretstorage` module — `apt install python3-secretstorage`, `dnf install python3-secretstorage`,
-or `pip install --user secretstorage`. Without it the keyring cannot be read and the migration
-will collect nothing from it. `kpxc-inventory` reports which of these are missing.
+and `kwallet-query` if KWallet is in play. `kpxc-inventory` reports which of these are missing.
+
+The Python `secretstorage` module is the one prerequisite to **install yourself, first, before
+`kpxc-inventory`** — do not hand the user a command. Without it gnome-keyring cannot be read, the
+migration collects nothing from it, and the shell loader later exports nothing. It must go to the
+**system** `python3` through the distro package, because that is the interpreter a login shell
+resolves `#!/usr/bin/env python3` to; a copy in a venv, or `pip install` inside one, does not
+count:
+
+```sh
+sudo apt install python3-secretstorage      # Debian, Ubuntu, neon
+sudo dnf install python3-secretstorage      # Fedora, RHEL
+sudo pacman -S python-secretstorage         # Arch
+```
+
+`pip install --user secretstorage` is the fallback for a distro without the package, run outside
+any venv. Confirm with `/usr/bin/python3 -c 'import secretstorage'`; `kpxc-env install` and
+`kpxc-verify` check the same thing and print the right command for the machine.
 
 Invocation, in order, with the database open in KeePassXC:
 
@@ -145,8 +159,11 @@ two files back over a purged profile is the whole recovery path, and it works.
 8. **SSH keys, last.** `kpxc-ssh-import`, then enable Tools → Settings → SSH Agent, lock and
    unlock the database, confirm with `ssh-add -l`, confirm a real connection, and only then
    delete the key files.
-9. **Shell secrets.** `kpxc-env import --from ~/.bashrc` to see the list, `--apply` to move it,
-   `kpxc-env install` so ordinary shells can find the loader, then a fresh shell to confirm and
+9. **Shell secrets.** First, in KeePassXC, Tools → Settings → Secret Service Integration: untick
+   **Confirm when passwords are retrieved by clients** — otherwise every entry stays withheld from
+   the loader (see below). Then `kpxc-env import --from ~/.bashrc` to see the list, `--apply` to
+   move it, `kpxc-env install` so ordinary shells can find the loader and the system `python3`
+   can read the database, `kpxc-env list` with no `withheld`, then a fresh shell to confirm and
    the `.kpxc-bak` copy deleted.
 10. **Verify the end state.** `kpxc-verify`.
 

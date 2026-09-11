@@ -294,6 +294,28 @@ def check_ssh_agent():
     advisory(False, text, ['%s (SSH_AUTH_SOCK=%s)' % (reason, sock or 'not set')])
 
 
+def module_install_command():
+    """The distro's own secretstorage package, for the system python3."""
+    ids = set()
+    try:
+        with open('/etc/os-release') as handle:
+            for line in handle:
+                key, _sep, value = line.strip().partition('=')
+                if key in ('ID', 'ID_LIKE'):
+                    ids.update(value.strip('"').split())
+    except OSError:
+        pass
+    if ids & {'debian', 'ubuntu'}:
+        return 'sudo apt install python3-secretstorage'
+    if ids & {'fedora', 'rhel', 'centos'}:
+        return 'sudo dnf install python3-secretstorage'
+    if ids & {'arch', 'manjaro'}:
+        return 'sudo pacman -S python-secretstorage'
+    if ids & {'suse', 'opensuse'}:
+        return 'sudo zypper install python3-secretstorage'
+    return 'pip install --user secretstorage  (outside any venv)'
+
+
 def pythons_without_secretstorage():
     """Interpreters the loader's `#!/usr/bin/env python3` may land on that lack the module.
 
@@ -340,7 +362,7 @@ def check_shell_loader():
                  + ['  ' + python for python in missing]
                  + ['the loader runs under whichever python3 is first on PATH when',
                     '~/.bashrc reaches it - a venv activated later does not count.',
-                    'Fix: apt install python3-secretstorage'])
+                    'Fix: ' + module_install_command()])
         return
     leftovers = []
     try:

@@ -15,7 +15,9 @@ evaluates it, and a locked database simply yields an empty environment.
   kpxc-env shim terraform doctl      put wrappers in ~/.local/bin so any caller
                                      gets the hot variables without knowing
   kpxc-env install                   symlink these tools into ~/.local/bin,
-                                     which the loader line below needs
+                                     which the loader line below needs, and
+                                     check that the system python3 can read
+                                     the database
 
 Add this to ~/.bashrc, and to ~/.profile as BASH_ENV so that non-interactive
 shells are covered too:
@@ -33,6 +35,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 
 ATTR = 'kpxc-env'
@@ -52,13 +55,39 @@ CONFIRM_HINT = ('KeePassXC asks every client for a confirmation dialog, and a '
                 'Service Integration.')
 
 
+def module_install_command():
+    """The distro's own package for secretstorage, for the system python3.
+
+    The loader runs under `#!/usr/bin/env python3`, which in a login shell is
+    the system interpreter, so a copy inside a venv does not help it."""
+    ids = set()
+    try:
+        with open('/etc/os-release') as handle:
+            for line in handle:
+                key, _sep, value = line.strip().partition('=')
+                if key in ('ID', 'ID_LIKE'):
+                    ids.update(value.strip('"').split())
+    except OSError:
+        pass
+    if ids & {'debian', 'ubuntu'}:
+        return 'sudo apt install python3-secretstorage'
+    if ids & {'fedora', 'rhel', 'centos'}:
+        return 'sudo dnf install python3-secretstorage'
+    if ids & {'arch', 'manjaro'}:
+        return 'sudo pacman -S python-secretstorage'
+    if ids & {'suse', 'opensuse'}:
+        return 'sudo zypper install python3-secretstorage'
+    return 'pip install --user secretstorage  (outside any venv)'
+
+
 def collection():
     """(collection, None) when the database is unlocked, else (None, (why, text))."""
     try:
         import secretstorage
     except ImportError:
         return None, (NO_MODULE, 'the secretstorage module is not installed for '
-                                 '%s - install python3-secretstorage' % sys.executable)
+                                 '%s - fix: %s' % (sys.executable,
+                                                   module_install_command()))
     try:
         connection = secretstorage.dbus_init()
         for item in secretstorage.get_all_collections(connection):
@@ -264,6 +293,16 @@ def cmd_install(args):
         print('%s -> %s' % (target, source))
     if LOCAL_BIN not in os.environ.get('PATH', '').split(os.pathsep):
         print('\nNote: %s is not in PATH yet - add it in ~/.profile' % LOCAL_BIN)
+    # The loader will run under the system python3, whatever this one is.
+    system = '/usr/bin/python3'
+    if os.path.isfile(system):
+        probe = subprocess.run([system, '-c', 'import secretstorage'],
+                               capture_output=True)
+        if probe.returncode != 0:
+            print('\nWARNING: %s has no secretstorage module, so the loader line\n'
+                  'would export nothing. Install it for the system interpreter:\n'
+                  '  %s' % (system, module_install_command()))
+            return 1
     return 0
 
 
