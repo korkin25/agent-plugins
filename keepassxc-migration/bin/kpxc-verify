@@ -27,6 +27,11 @@ SECRETISH = re.compile(
     r'(TOKEN|SECRET|PASSWORD|PASSWD|_KEY|APIKEY|API_KEY|CLIENT_ID|'
     r'CREDENTIAL|AUTHORIZATION|_PAT|ACCESS_KEY)', re.I)
 ELECTRON_STEMS = ('code', 'code-insiders', 'claude')
+ENV_ATTR = 'kpxc-env'
+CONFIRM_HINT = ['KeePassXC asks every client for a confirmation dialog, and a shell',
+                'start cannot answer one, so the loader gets nothing.',
+                'Fix: untick "Confirm when passwords are retrieved by clients" in',
+                'KeePassXC: Settings > Secret Service Integration']
 # *-url-handler entries only hand a URL to a running instance: they never
 # open a store of their own, so a missing flag there is not a finding.
 
@@ -289,6 +294,26 @@ def check_ssh_agent():
     advisory(False, text, ['%s (SSH_AUTH_SOCK=%s)' % (reason, sock or 'not set')])
 
 
+def pythons_without_secretstorage():
+    """Interpreters the loader's `#!/usr/bin/env python3` may land on that lack the module.
+
+    ~/.bashrc runs the loader with whatever python3 is first on PATH at that
+    line - a venv activated further down the file does not count - so both the
+    current python3 and the system one are tried."""
+    # Deduplicate by path, not by realpath: a venv's python3 is a symlink to
+    # the system binary, yet sees a different set of modules.
+    candidates = []
+    for python in (shutil.which('python3'), '/usr/bin/python3'):
+        if python and os.path.isfile(python) and python not in candidates:
+            candidates.append(python)
+    missing = []
+    for python in candidates:
+        out = run([python, '-c', 'import secretstorage'])
+        if out is None or out[0] != 0:
+            missing.append(python)
+    return missing
+
+
 def check_shell_loader():
     """The loader line is useless unless kpxc-env is on PATH - and it fails silently."""
     text = 'shell secrets load from the database'
@@ -308,6 +333,15 @@ def check_shell_loader():
                   'every variable would be empty in a normal shell.',
                   'Fix: kpxc-env install'])
         return
+    missing = pythons_without_secretstorage()
+    if missing:
+        advisory(False, text,
+                 ['kpxc-env is on PATH, but python3 has no secretstorage module:']
+                 + ['  ' + python for python in missing]
+                 + ['the loader runs under whichever python3 is first on PATH when',
+                    '~/.bashrc reaches it - a venv activated later does not count.',
+                    'Fix: apt install python3-secretstorage'])
+        return
     leftovers = []
     try:
         with open(rc, errors='replace') as handle:
@@ -326,6 +360,49 @@ def check_shell_loader():
         if os.path.exists(path):
             detail.append('%s still holds the old secrets - delete it' % name)
     advisory(not leftovers, text, detail)
+
+
+def check_shell_secrets_released():
+    """An open database is not enough: KeePassXC can still hold every entry back
+    until the client answers a dialog, and the shell loader never can."""
+    text = 'KeePassXC hands shell secrets over without a dialog'
+    try:
+        import secretstorage
+    except ImportError:
+        advisory(True, text, ['not checked: the secretstorage module is not installed'])
+        return
+    try:
+        bus = secretstorage.dbus_init()
+        collections = [c for c in secretstorage.get_all_collections(bus)
+                       if not c.collection_path.endswith('/session')]
+    except Exception as exc:  # noqa: BLE001 - reported, not fatal, for an advisory check
+        advisory(True, text, ['not checked: cannot reach the Secret Service (%s)'
+                              % exc.__class__.__name__])
+        return
+    open_ones = [c for c in collections if not c.is_locked()]
+    if not open_ones:
+        advisory(True, text, ['not checked: the database is locked'])
+        return
+    names, held = [], []
+    for coll in open_ones:
+        for item in coll.get_all_items():
+            try:
+                name = item.get_attributes().get(ENV_ATTR)
+                if not name:
+                    continue
+                names.append(name)
+                if item.is_locked():
+                    held.append(name)
+            except Exception:  # noqa: BLE001 - an entry that vanished mid-scan is not a finding
+                continue
+    if not names:
+        advisory(True, text, ['no kpxc-env variables stored - shell secrets not in use'])
+        return
+    if held:
+        advisory(False, text, ['%d of %d variables withheld from this client'
+                               % (len(held), len(names))] + CONFIRM_HINT)
+        return
+    advisory(True, text, ['%d variables readable by a fresh client' % len(names)])
 
 
 def main():
@@ -349,7 +426,7 @@ def main():
                      ['%s: %s' % (exc.__class__.__name__, exc)])
     print('advisory')
     for check in (check_kwallet_disabled, check_launchers, check_shell_loader,
-                  check_ssh_keys_on_disk, check_ssh_agent):
+                  check_shell_secrets_released, check_ssh_keys_on_disk, check_ssh_agent):
         try:
             check()
         except Exception as exc:  # noqa: BLE001 - a broken advisory probe is only a warning

@@ -62,7 +62,7 @@ loader in their place:
 command -v kpxc-env >/dev/null && eval "$(kpxc-env export)"
 ```
 
-Four things decide whether this works, and all four have already gone wrong once:
+Six things decide whether this works, and all six have already gone wrong once:
 
 **The loader needs `kpxc-env` on `PATH`.** Inside Claude Code the plugin's `bin/` is on `PATH`,
 but an ordinary login shell knows nothing about it, so the line silently does nothing and every
@@ -77,8 +77,23 @@ leave it empty.
 `$` or a backtick — treating those as computed leaves a live password sitting in the file. Only
 unquoted and double-quoted values expand.
 
+**KeePassXC must hand entries over without a dialog.** With "Confirm when passwords are
+retrieved by clients" ticked (Settings > Secret Service Integration, on by default), an open
+database still reports every entry as locked to a client that has not clicked Allow — and the
+"Remember" in that dialog lives only as long as the D-Bus connection, so each shell start would
+be a new client with a new dialog. The loader cannot answer one, so it gets nothing and the shell
+stays empty. `kpxc-env list` marks such entries `withheld`, `kpxc-env export` says so once on
+stderr, and `kpxc-verify` warns. Untick the option.
+
+**The loader runs under whichever `python3` is first on `PATH` at that line.** `kpxc-env` needs
+the `secretstorage` module; if it lives only in a venv that `~/.bashrc` activates *later*, the
+loader runs on the system interpreter, finds no module and exports nothing. Install it system-wide
+(`apt install python3-secretstorage`) rather than moving the line.
+
 **A locked database must not break shells.** `kpxc-env export` prints nothing and exits 0 when
 the service is unavailable, so shells start clean and silent rather than prompting or failing.
+The two cases above are not a locked database, and they are not silent: a missing module or a
+withheld entry gets one line on stderr, which `eval "$(...)"` does not capture.
 
 The import leaves a `.kpxc-bak` copy of the dotfile beside it, and that copy still holds every
 secret in plain text. It exists so a broken shell can be undone; **delete it** — along with any

@@ -5,8 +5,10 @@ Variables live as entries in the database and reach a shell only while it is
 unlocked. Nothing is written to disk: `export` prints shell code, the shell
 evaluates it, and a locked database simply yields an empty environment.
 
-  kpxc-env list                      names only, never values
-  kpxc-env export                    shell code for eval, silent when locked
+  kpxc-env list                      names and whether each one is actually
+                                     released, never values
+  kpxc-env export                    shell code for eval: silent when locked,
+                                     loud on stderr when something is broken
   kpxc-env import --from ~/.bashrc   move export lines into the database
   kpxc-env hot NAME...               keep a variable out of the ambient
                                      environment; only kpxc-run injects it
@@ -19,6 +21,11 @@ Add this to ~/.bashrc, and to ~/.profile as BASH_ENV so that non-interactive
 shells are covered too:
 
   command -v kpxc-env >/dev/null && eval "$(kpxc-env export)"
+
+KeePassXC must hand entries over without a dialog: untick "Confirm when
+passwords are retrieved by clients" under Settings > Secret Service
+Integration. Every shell start is a new client, and nobody is there to click
+Allow - with the option on, the loader gets nothing and the shell stays empty.
 """
 
 import argparse
@@ -36,24 +43,42 @@ SECRETISH = re.compile(
 EXPORT_LINE = re.compile(r'^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$')
 HOME = os.path.expanduser('~')
 LOCAL_BIN = os.path.join(HOME, '.local/bin')
+# Why collection() came back empty. Only a broken install is worth a line on
+# stderr at every shell start; a locked database is normal and stays silent.
+NO_MODULE, UNREACHABLE, LOCKED = 'module', 'unreachable', 'locked'
+CONFIRM_HINT = ('KeePassXC asks every client for a confirmation dialog, and a '
+                'shell start cannot answer one. Untick "Confirm when passwords '
+                'are retrieved by clients" in KeePassXC: Settings > Secret '
+                'Service Integration.')
 
 
 def collection():
-    """The unlocked KeePassXC collection, or None when it is not available."""
+    """(collection, None) when the database is unlocked, else (None, (why, text))."""
     try:
         import secretstorage
     except ImportError:
-        return None
+        return None, (NO_MODULE, 'the secretstorage module is not installed for '
+                                 '%s - install python3-secretstorage' % sys.executable)
     try:
         connection = secretstorage.dbus_init()
         for item in secretstorage.get_all_collections(connection):
             if item.collection_path.endswith('/session'):
                 continue
             if not item.is_locked():
-                return item
+                return item, None
+    except Exception as error:                         # noqa: BLE001
+        return None, (UNREACHABLE, 'cannot reach the secret service (%s)'
+                                   % error.__class__.__name__)
+    return None, (LOCKED, 'the database is locked')
+
+
+def withheld(item):
+    """True when KeePassXC holds this entry back from us until a dialog is
+    answered: the collection is open, yet the item reports itself locked."""
+    try:
+        return item.is_locked()
     except Exception:                                  # noqa: BLE001
-        return None
-    return None
+        return False
 
 
 def entries(coll):
@@ -71,32 +96,51 @@ def entries(coll):
 
 
 def cmd_list(args):
-    coll = collection()
+    coll, problem = collection()
     if coll is None:
-        print('the database is locked or the secret service is unavailable',
-              file=sys.stderr)
+        print(problem[1], file=sys.stderr)
         return 1
     rows = entries(coll)
     if not rows:
         print('no variables stored yet')
         return 0
-    for name, _item, hot in rows:
-        print('%-32s %s' % (name, 'hot (kpxc-run only)' if hot else 'exported'))
+    held = 0
+    for name, item, hot in rows:
+        state = 'hot (kpxc-run only)' if hot else 'exported'
+        if withheld(item):
+            held += 1
+            state += ', withheld'
+        print('%-32s %s' % (name, state))
+    if held:
+        print('\n%d of %d withheld: %s' % (held, len(rows), CONFIRM_HINT))
     return 0
 
 
 def cmd_export(args):
-    coll = collection()
+    coll, problem = collection()
     if coll is None:
-        return 0                       # a locked database must not break shells
+        # A locked database must not break shells. A missing module is not a
+        # locked database: it means every shell will be empty until someone
+        # notices, so say so - stderr is not part of what eval picks up.
+        if problem[0] == NO_MODULE:
+            print('kpxc-env: %s' % problem[1], file=sys.stderr)
+        return 0
+    from secretstorage.exceptions import LockedException
+    held = []
     for name, item, hot in entries(coll):
         if hot:
             continue
         try:
             value = item.get_secret().decode('utf-8', 'replace')
+        except LockedException:
+            held.append(name)
+            continue
         except Exception:                              # noqa: BLE001
             continue
         print('export %s=%s' % (name, shlex.quote(value)))
+    if held:
+        print('kpxc-env: %d variable(s) withheld, see `kpxc-env list`. %s'
+              % (len(held), CONFIRM_HINT), file=sys.stderr)
     return 0
 
 
@@ -157,17 +201,22 @@ def cmd_import(args):
               'remove\nthe lines from the file (a .bak copy is kept).')
         return 0
 
-    coll = collection()
+    coll, problem = collection()
     if coll is None:
-        return exit_with('unlock the database first - it must be open to write')
+        return exit_with('unlock the database first - it must be open to write '
+                         '(%s)' % problem[1])
 
     hot = set(args.hot)
+    stored = []
     for name, value, _number in chosen:
         attrs = {ATTR: name, 'xdg:schema': 'org.freedesktop.Secret.Generic'}
         if name in hot:
             attrs[HOT] = '1'
-        coll.create_item(name, attrs, value.encode(), replace=True)
+        stored.append(coll.create_item(name, attrs, value.encode(), replace=True))
     print('stored in the database: %d' % len(chosen))
+    if any(withheld(item) for item in stored):
+        print('\nWARNING: stored, but KeePassXC will not hand them to the loader.\n'
+              '%s' % CONFIRM_HINT)
 
     backup = path + '.kpxc-bak'
     shutil.copy2(path, backup)
@@ -219,9 +268,9 @@ def cmd_install(args):
 
 
 def cmd_hot(args):
-    coll = collection()
+    coll, problem = collection()
     if coll is None:
-        return exit_with('unlock the database first')
+        return exit_with('unlock the database first (%s)' % problem[1])
     known = {name: item for name, item, _hot in entries(coll)}
     for name in args.name:
         item = known.get(name)

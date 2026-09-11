@@ -21,6 +21,10 @@ import sys
 
 ATTR = 'kpxc-env'
 PROFILE = 'kpxc-env-profile'
+CONFIRM_HINT = ('KeePassXC asks every client for a confirmation dialog and '
+                'this one was never answered. Untick "Confirm when passwords '
+                'are retrieved by clients" in KeePassXC: Settings > Secret '
+                'Service Integration.')
 
 
 def collection():
@@ -78,7 +82,9 @@ def main():
     environment = dict(os.environ)
     coll = collection()
     injected = 0
+    withheld = []
     if coll is not None:
+        from secretstorage.exceptions import LockedException
         for item in coll.get_all_items():
             try:
                 attrs = item.get_attributes()
@@ -90,12 +96,19 @@ def main():
             try:
                 environment[name] = item.get_secret().decode('utf-8', 'replace')
                 injected += 1
+            except LockedException:
+                withheld.append(name)
             except Exception:                          # noqa: BLE001
                 continue
 
-    if injected == 0 and not args.quiet:
-        print('kpxc-run: nothing injected - is the database unlocked?',
-              file=sys.stderr)
+    if not args.quiet:
+        if withheld:
+            print('kpxc-run: %d variable(s) withheld (%s). %s'
+                  % (len(withheld), ', '.join(withheld), CONFIRM_HINT),
+                  file=sys.stderr)
+        elif injected == 0:
+            print('kpxc-run: nothing injected - is the database unlocked?',
+                  file=sys.stderr)
 
     try:
         os.execvpe(command[0], command, environment)
