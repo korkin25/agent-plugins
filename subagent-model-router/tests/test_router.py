@@ -169,6 +169,8 @@ class Sandbox(unittest.TestCase):
         env = {"HOME": str(self.home), "PATH": str(self.fakebin), "LANG": "C.UTF-8",
                "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": str(self.root),
                "SUBAGENT_MODEL_ROUTER_CONFIG": str(self.config)}
+        if "LD_LIBRARY_PATH" in os.environ:  # python из actions/setup-python собран с разделяемой libpython
+            env["LD_LIBRARY_PATH"] = os.environ["LD_LIBRARY_PATH"]
         env.update(extra)
         return env
 
