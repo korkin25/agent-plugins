@@ -173,6 +173,7 @@ subagent-model-router codex-trust [--codex PATH] [--dry-run]
 
 ```bash
 python3 -B -m unittest discover -s tests
+python3 -B tests/run_parallel.py -j 4     # the same tests, one process per test class
 ```
 
 Standard library only; the Jev server and the `codex` program are faked, nothing leaves the machine.

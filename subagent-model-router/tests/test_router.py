@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -772,12 +773,17 @@ class CatalogTests(Sandbox):
                                  ("light", None, None, "rule:light;no_catalog"))
         self.assertFalse(self.cache.exists())
 
-    def test_slow_catalog_is_cut_at_three_seconds(self):
+    def test_slow_catalog_is_cut_at_the_limit(self):
+        self.assertEqual(router.CATALOG_TIMEOUT, 3)  # предел плагина не ослаблен; в тесте он укорочен до 0,5 с
         self.write_catalog(CATALOG, mode="sleep")
-        started = time.monotonic()
-        self.assertIsNone(self.updated(self.decide()))
-        self.assertLess(time.monotonic() - started, 6)
-        self.assertEqual(self.last_row()["reason"], "rule:light;no_catalog")
+        with mock.patch.dict(os.environ, {"HOME": str(self.home), "PATH": str(self.fakebin)}), \
+                mock.patch.object(router, "parent_codex", return_value=None), \
+                mock.patch.object(router, "CATALOG_TIMEOUT", 0.5):
+            started = time.monotonic()
+            self.assertEqual(router.codex_catalog(router.normalize_config({})), (None, "no_catalog"))
+            self.assertLess(time.monotonic() - started, 0.5 + 1)
+        self.assertEqual(len(self.codex_calls("debug", "models")), 1)
+        self.assertFalse(self.cache.exists())
 
     def test_catalog_is_cached_for_24_hours(self):
         self.updated(self.decide())
@@ -1177,6 +1183,23 @@ class CodexTrustTests(Sandbox):
         self.scenario([OURS_NEW], crash_on="hooks/list")
         self.assert_refused(self.trust(), "codex-trust: app-server exited with code 3")
 
+    def test_exit_code_is_read_after_the_process_ends(self):
+        self.scenario([OURS_NEW], crash_on="hooks/list", exit_delay=0.5)
+        self.assert_refused(self.trust(), "codex-trust: app-server exited with code 3")
+
+    def test_server_that_does_not_exit_is_killed_and_reported_without_code(self):
+        server = router.AppServer.__new__(router.AppServer)
+        server.proc = mock.Mock(pid=424242)
+        server.proc.wait.side_effect = [subprocess.TimeoutExpired("codex", router.APP_SERVER_EXIT_WAIT), 0]
+        with mock.patch.object(router.os, "killpg") as killpg:
+            self.assertEqual(server._exit_message(time.monotonic() + 60), "app-server exited")
+        killpg.assert_called_once_with(424242, signal.SIGKILL)
+        self.assertEqual(server.proc.wait.call_args_list[0], mock.call(timeout=router.APP_SERVER_EXIT_WAIT))
+        server.proc.wait.side_effect = None
+        server.proc.wait.return_value = 3
+        self.assertEqual(server._exit_message(time.monotonic() + 1), "app-server exited with code 3")
+        self.assertLessEqual(server.proc.wait.call_args.kwargs["timeout"], 1)
+
     def test_unknown_method_is_a_protocol_refusal(self):
         self.scenario(replies={"hooks/list": {"error": {
             "code": -32600, "message": "Invalid request: unknown variant `hooks/list`"}}})
@@ -1266,7 +1289,7 @@ class CodexTrustTests(Sandbox):
 class FailureTests(Sandbox):
     """Сбои Jev: выход 0 без вывода, причина в журнале, не дольше бюджета + 1 с."""
 
-    BUDGET = 1
+    BUDGET = 0.5  # timeout_seconds из конфига; 0,5 с хватает на запрос и один повтор 429/5xx
 
     def fail_case(self, *replies, reason, requests=None):
         self.serve(*replies)

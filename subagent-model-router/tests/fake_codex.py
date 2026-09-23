@@ -54,6 +54,10 @@ def app_server(state):
         if method is None or request_id is None:
             continue
         if scenario.get("crash_on") == method:
+            if scenario.get("exit_delay"):  # клиент видит EOF, а процесс ещё жив: гонка кода выхода
+                sys.stdout.flush()
+                os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+                time.sleep(scenario["exit_delay"])
             return 3
         if method not in KNOWN_METHODS and method not in replies:
             send({"error": {"code": -32600, "message": f"Invalid request: unknown variant `{method}`"},

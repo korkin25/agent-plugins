@@ -33,6 +33,7 @@ TASK_FALLBACK_CHARS = 1500
 SUM_TOLERANCE = 0.02
 HOOK_TIMEOUT = 10
 APP_SERVER_TIMEOUT = 30
+APP_SERVER_EXIT_WAIT = 5
 HIDDEN = "[redacted]"
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 PROVIDERS = {
@@ -1253,6 +1254,24 @@ class AppServer:
         except OSError:
             raise TrustError("app-server closed the connection") from None
 
+    def _exit_message(self, deadline):
+        """Ждать завершения app-server (≤ APP_SERVER_EXIT_WAIT и ≤ остатка бюджета), затем текст с кодом.
+
+        Не завершился за предел — прибить группу процессов и сообщить без кода.
+        """
+        import signal
+        import subprocess
+        try:
+            code = self.proc.wait(timeout=max(0.0, min(APP_SERVER_EXIT_WAIT, deadline - time.monotonic())))
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            self.proc.wait()
+            return "app-server exited"
+        return f"app-server exited with code {code}"
+
     def _read_message(self, deadline):
         import selectors
         while b"\n" not in self.buffer:
@@ -1263,10 +1282,12 @@ class AppServer:
                 selector.register(self.proc.stdout, selectors.EVENT_READ)
                 if not selector.select(remaining):
                     continue
-            chunk = os.read(self.proc.stdout.fileno(), 65536)
-            if not chunk:
-                code = self.proc.poll()
-                raise TrustError("app-server exited" + (f" with code {code}" if code is not None else ""))
+            try:
+                chunk = os.read(self.proc.stdout.fileno(), 65536)
+            except OSError:
+                chunk = b""
+            if not chunk:  # EOF или обрыв stdout: код выхода известен только после завершения процесса
+                raise TrustError(self._exit_message(deadline))
             self.buffer += chunk
         line, self.buffer = self.buffer.split(b"\n", 1)
         try:
