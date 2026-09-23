@@ -2,8 +2,8 @@
 """Подставная программа codex для тестов: `debug models` и `app-server` (JSON-RPC построчно).
 
 Поведение и записи — в каталоге из переменной FAKE_CODEX_STATE:
-calls.log — argv каждого вызова; catalog.json — ответ debug models (catalog.mode: fail | sleep | garbage);
-app.json — сценарий app-server; app-requests.jsonl — полученные сообщения.
+calls.log — argv и pid каждого вызова; catalog.json — ответ debug models
+(catalog.mode: fail | sleep | garbage | slow:<секунды>); app.json — сценарий app-server; app-requests.jsonl — сообщения.
 """
 from __future__ import annotations
 
@@ -21,6 +21,9 @@ def state_dir():
 def debug_models(state):
     mode_file = state / "catalog.mode"
     mode = mode_file.read_text().strip() if mode_file.exists() else "ok"
+    if mode.startswith("slow:"):  # как Codex, который тянет каталог по сети
+        time.sleep(float(mode.split(":", 1)[1]))
+        mode = "ok"
     if mode == "fail":
         print("error: cannot load models", file=sys.stderr)
         return 1
@@ -92,7 +95,7 @@ DEFAULT_RESULTS = {
 def main():
     state = state_dir()
     with open(state / "calls.log", "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(sys.argv[1:]) + "\n")
+        fh.write(json.dumps({"argv": sys.argv[1:], "pid": os.getpid()}) + "\n")
     args = sys.argv[1:]
     if args[:2] == ["debug", "models"]:
         return debug_models(state)

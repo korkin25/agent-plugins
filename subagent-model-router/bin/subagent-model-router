@@ -22,8 +22,10 @@ DEFAULT_CONFIG = "~/.config/subagent-model-router/config.toml"
 DEFAULT_KEY = "~/.config/subagent-model-router/key"
 DEFAULT_LOG = "~/.local/state/subagent-model-router/decisions.jsonl"
 CATALOG_CACHE = "~/.cache/subagent-model-router/codex-models.json"
-CATALOG_TTL = 24 * 3600
-CATALOG_TIMEOUT = 3
+CATALOG_LOCK = "~/.cache/subagent-model-router/codex-models.lock"
+CATALOG_TTL = 24 * 3600  # свежий кэш: старше — обновляется в фоне
+CATALOG_STALE = 7 * 24 * 3600  # устаревший кэш ещё годится, пока идёт обновление
+CATALOG_REFRESH_TIMEOUT = 30  # `codex debug models` в фоне и в check
 CATALOG_MAX_BYTES = 32 * 1024 * 1024
 PARENT_DEPTH = 5
 USER_AGENT = "subagent-model-router/1"
@@ -621,6 +623,19 @@ def cache_path():
     return os.path.expanduser(CATALOG_CACHE)
 
 
+def lock_path():
+    return os.path.expanduser(CATALOG_LOCK)
+
+
+def _cache_dir():
+    """Каталог кэша (0700); создаётся при первой записи."""
+    directory = os.path.dirname(cache_path())
+    if not os.path.isdir(directory):
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        os.chmod(directory, 0o700)
+    return directory
+
+
 def _binary_key(binary):
     """(реальный путь, mtime в нс) бинарника codex; None — не читается."""
     try:
@@ -646,8 +661,8 @@ def _valid_models(models):
         isinstance(k, str) and isinstance(v, list) and all(isinstance(e, str) for e in v) for k, v in models.items())
 
 
-def load_cached_catalog(binary, now=None):
-    """(каталог, возраст в секундах) этого бинарника (путь и mtime) из кэша не старше 24 ч; иначе (None, None)."""
+def load_cached_catalog(binary, now=None, max_age=CATALOG_TTL):
+    """(каталог, возраст в секундах) этого бинарника (путь и mtime) из кэша моложе max_age; иначе (None, None)."""
     key = _binary_key(binary)
     if key is None:
         return None, None
@@ -656,7 +671,7 @@ def load_cached_catalog(binary, now=None):
     if not isinstance(entry, dict) or entry.get("mtime_ns") != key[1] or not _is_number(entry.get("ts")):
         return None, None
     age = now - entry["ts"]
-    if not -60 <= age < CATALOG_TTL or not _valid_models(entry.get("models")):
+    if not -60 <= age < max_age or not _valid_models(entry.get("models")):
         return None, None
     return entry["models"], max(0.0, age)
 
@@ -667,22 +682,17 @@ def save_catalog(binary, catalog):
     key = _binary_key(binary)
     if key is None:
         return
-    path = cache_path()
     try:
         now = time.time()
         entries = {real: entry for real, entry in _cache_entries().items() if isinstance(entry, dict)
-                   and _is_number(entry.get("ts")) and -60 <= now - entry["ts"] < CATALOG_TTL}
+                   and _is_number(entry.get("ts")) and -60 <= now - entry["ts"] < CATALOG_STALE}
         entries[key[0]] = {"mtime_ns": key[1], "ts": now, "models": catalog}
-        directory = os.path.dirname(path)
-        if not os.path.isdir(directory):
-            os.makedirs(directory, mode=0o700, exist_ok=True)
-            os.chmod(directory, 0o700)
-        fd, tmp = tempfile.mkstemp(prefix=".codex-models-", suffix=".tmp", dir=directory)
+        fd, tmp = tempfile.mkstemp(prefix=".codex-models-", suffix=".tmp", dir=_cache_dir())
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump({"binaries": entries}, fh, ensure_ascii=False)
             os.chmod(tmp, 0o600)
-            os.replace(tmp, path)
+            os.replace(tmp, cache_path())
         except BaseException:
             try:
                 os.unlink(tmp)
@@ -693,22 +703,75 @@ def save_catalog(binary, catalog):
         pass
 
 
-def codex_catalog(cfg, deadline=None):
-    """(каталог, None) или (None, no_codex | no_catalog): каталог бинарника, запустившего хук; кэш 24 ч, ≤ 3 с."""
+def refresh_running():
+    """Идёт ли фоновое обновление: блокировку рядом с кэшем держит другой процесс."""
+    import fcntl
+    try:
+        fd = os.open(lock_path(), os.O_RDONLY | os.O_CLOEXEC)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except OSError:
+        return True
+    finally:
+        os.close(fd)
+    return False
+
+
+def start_refresh(binary):
+    """Запустить фоновое обновление каталога и не ждать его; True — обновление идёт."""
+    import subprocess
+    if refresh_running():
+        return True
+    try:
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "refresh-catalog", binary], cwd="/",
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    except OSError:
+        return False
+    return True
+
+
+def refresh_catalog(binary, timeout=None):
+    """Обновить кэш каталога бинарника под блокировкой (занята — выйти); True — кэш свежий."""
+    import fcntl
+    if not os.path.isabs(binary) or not _executable(binary):
+        return False
+    try:
+        fd = os.open(os.path.join(_cache_dir(), os.path.basename(lock_path())),
+                     os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    except OSError:
+        return False
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return False  # обновление уже идёт в другом процессе
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode())
+        catalog, age = load_cached_catalog(binary)
+        if catalog is not None:
+            return True  # другое обновление только что закончилось
+        catalog = fetch_catalog(binary, CATALOG_REFRESH_TIMEOUT if timeout is None else timeout)
+        if catalog is None:
+            return False
+        save_catalog(binary, catalog)
+        return True
+    finally:
+        os.close(fd)
+
+
+def codex_catalog(cfg):
+    """(каталог, None) или (None, no_codex | no_catalog[;refreshing]): только из кэша, обновление — в фоне."""
     binary, _source = find_codex(cfg["codex_bin"])
     if binary is None:
         return None, "no_codex"
-    catalog, _age = load_cached_catalog(binary)
+    catalog, age = load_cached_catalog(binary, max_age=CATALOG_STALE)
+    refreshing = start_refresh(binary) if catalog is None or age >= CATALOG_TTL else False
     if catalog is not None:
         return catalog, None
-    timeout = CATALOG_TIMEOUT if deadline is None else min(CATALOG_TIMEOUT, deadline - time.monotonic())
-    if timeout <= 0.1:
-        return None, "no_catalog"
-    catalog = fetch_catalog(binary, timeout)
-    if catalog is None:
-        return None, "no_catalog"
-    save_catalog(binary, catalog)
-    return catalog, None
+    return None, "no_catalog;refreshing" if refreshing else "no_catalog"
 
 
 def verify_codex(cfg_model, cfg_effort, session_model, get_catalog):
@@ -821,9 +884,9 @@ def _claude_decision(cfg, tool_input, tier, rule, record):
     return output, record
 
 
-def _codex_decision(cfg, event, tool_input, tier, rule, record, deadline):
+def _codex_decision(cfg, event, tool_input, tier, rule, record):
     model, effort, notes = verify_codex(cfg["codex"]["models"][tier], cfg["codex"]["effort"][tier],
-                                        _text(event.get("model")), lambda: codex_catalog(cfg, deadline))
+                                        _text(event.get("model")), lambda: codex_catalog(cfg))
     record.update(model=model, effort=effort, reason=";".join(["rule:" + rule] + notes))
     updated = dict(tool_input)
     if model not in (None, "inherit"):
@@ -840,7 +903,7 @@ def _codex_decision(cfg, event, tool_input, tier, rule, record, deadline):
     return output, record
 
 
-def handle_event(event, agent, deadline=None):
+def handle_event(event, agent):
     """(вывод хука или None, строка журнала) для запуска субагента в Claude Code или Codex."""
     record = base_record(event, agent)
     tool_input = event.get("tool_input")
@@ -895,7 +958,7 @@ def handle_event(event, agent, deadline=None):
                   latency_ms=result["latency_ms"], answers=rounded_answers(result["probs"]), tier=tier)
     if agent == "claude":
         return _claude_decision(cfg, tool_input, tier, rule, record)
-    return _codex_decision(cfg, event, tool_input, tier, rule, record, deadline)
+    return _codex_decision(cfg, event, tool_input, tier, rule, record)
 
 
 def append_journal(record):
@@ -917,7 +980,6 @@ def append_journal(record):
 
 def hook_main():
     """Хук: всегда выход 0; вывод — только при подстановке; stderr молчит."""
-    started = time.monotonic()
     sys.stderr = open(os.devnull, "w")
     try:
         event = json.loads(sys.stdin.buffer.read().decode("utf-8"))
@@ -927,7 +989,7 @@ def hook_main():
     if agent is None:
         return 0
     try:
-        output, record = handle_event(event, agent, deadline=started + HOOK_TIMEOUT - 1)
+        output, record = handle_event(event, agent)
     except Exception:
         output, record = None, dict(base_record(event, agent), reason="error:internal")
     try:
@@ -1114,17 +1176,22 @@ def _print_codex_check(shown):
     binary, source = find_codex(shown["codex_bin"])
     print(f"codex binary for the catalog: {binary} ({source})" if binary else
           "codex binary for the catalog: not found — Codex subagents get neither model nor effort (set codex_bin)")
-    catalog, age = load_cached_catalog(binary) if binary else (None, None)
-    if catalog is not None:
-        origin = f"cache {cache_path()}, {age / 3600:.1f} h old"
-    elif binary:
-        catalog = fetch_catalog(binary, CATALOG_TIMEOUT)
-        origin = f"fetched now from {binary} debug models"
-        if catalog is not None:
-            save_catalog(binary, catalog)
-    if catalog is None:
+    if not binary:
         print("Codex model catalog: not available")
         return
+    started = time.monotonic()  # синхронно, до 30 с: заодно прогрев кэша для хука
+    catalog = fetch_catalog(binary, CATALOG_REFRESH_TIMEOUT)
+    elapsed = time.monotonic() - started
+    if catalog is not None:
+        save_catalog(binary, catalog)
+        origin = f"`{binary} debug models` answered in {elapsed:.1f} s; cache updated"
+    else:
+        print(f"`{binary} debug models` gave no catalog in {elapsed:.1f} s (limit {CATALOG_REFRESH_TIMEOUT} s)")
+        catalog, age = load_cached_catalog(binary, max_age=CATALOG_STALE)
+        if catalog is None:
+            print("Codex model catalog: not available")
+            return
+        origin = f"cache {cache_path()}, {age / 3600:.1f} h old"
     print(f"Codex model catalog: {len(catalog)} models ({origin})")
     for tier in TIERS:
         model, effort = shown["codex"]["models"][tier], shown["codex"]["effort"][tier]
@@ -1476,6 +1543,8 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv == ["hook"]:
         return hook_main()
+    if len(argv) == 2 and argv[0] == "refresh-catalog":  # служебная: фоновое обновление, которое запускает хук
+        return 0 if refresh_catalog(argv[1]) else 1
     import argparse
     parser = argparse.ArgumentParser(prog=NAME, description="Picks the model for Claude Code and Codex subagents "
                                                             "from a Jev (TypeSafe AI) judgement of their task.")

@@ -112,6 +112,7 @@ class Sandbox(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="smr-test-"))
         self.addCleanup(shutil.rmtree, self.root, True)
+        self.addCleanup(self.kill_background)  # до удаления каталога: фоновые процессы теста гасятся
         self.home = self.root / "home"
         self.home.mkdir()
         self.cfg_dir = self.root / "cfg"
@@ -126,6 +127,7 @@ class Sandbox(unittest.TestCase):
         self.fakebin = self.root / "bin"
         self.fake_codex = self.make_fake_codex(self.fakebin)
         self.write_catalog(CATALOG)
+        self.write_cache(CATALOG)  # прогретый кэш: хук каталог не ждёт, а берёт отсюда
         self.fake = None
         self.write_key()
 
@@ -143,8 +145,62 @@ class Sandbox(unittest.TestCase):
 
     def codex_calls(self, *argv):
         log = self.codex_state / "calls.log"
-        calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+        calls = [json.loads(line)["argv"] for line in log.read_text().splitlines()] if log.exists() else []
         return [c for c in calls if not argv or c[:len(argv)] == list(argv)]
+
+    def write_cache(self, catalog=CATALOG, age=0.0, binary=None):
+        """Кэш каталога в формате плагина: {реальный путь бинарника: {mtime_ns, ts, models}}."""
+        real = os.path.realpath(binary or self.fake_codex)
+        entries = json.loads(self.cache.read_text())["binaries"] if self.cache.exists() else {}
+        entries[real] = {"mtime_ns": os.stat(real).st_mtime_ns, "ts": time.time() - age,
+                         "models": {m["slug"]: [level["effort"] for level in m["supported_reasoning_levels"]]
+                                    for m in catalog["models"]}}
+        self.cache.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.cache.write_text(json.dumps({"binaries": entries}))
+
+    def cached_age(self, binary=None):
+        entry = json.loads(self.cache.read_text())["binaries"].get(os.path.realpath(binary or self.fake_codex))
+        return time.time() - entry["ts"] if entry else None
+
+    def live_background(self):
+        """Живые фоновые процессы теста: обновление каталога (PID в файле блокировки) и подставные codex."""
+        pids = set()
+        for log in self.root.rglob("calls.log"):
+            pids |= {json.loads(line)["pid"] for line in log.read_text().splitlines() if line}
+        lock = self.cache.parent / "codex-models.lock"
+        if lock.exists() and lock.read_text().strip().isdigit():
+            pids.add(int(lock.read_text().strip()))
+        live, marker = [], str(self.root).encode()
+        for pid in pids:
+            try:
+                cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+                environ = Path(f"/proc/{pid}/environ").read_bytes()
+            except OSError:
+                continue
+            if (b"refresh-catalog" in cmdline and marker in cmdline) or (b"fake_codex.py" in cmdline
+                                                                         and marker in environ):
+                live.append(pid)
+        return live
+
+    def kill_background(self):
+        for pid in self.live_background():
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+    def wait_until(self, predicate, timeout=15):
+        deadline = time.monotonic() + timeout
+        while not predicate():
+            if time.monotonic() > deadline:
+                return False
+            time.sleep(0.05)
+        return True
+
+    def wait_background(self, timeout=15):
+        """Дождаться конца фоновых процессов теста; вернуть тех, кто остался (сирот)."""
+        self.wait_until(lambda: not self.live_background(), timeout)
+        return self.live_background()
 
     def serve(self, *replies):
         self.fake = FakeJev(list(replies) or [Reply()], record_path=self.server_file).start()
@@ -717,7 +773,9 @@ class CodexTests(Sandbox):
 
 
 class CatalogTests(Sandbox):
-    """Сверка с каталогом `codex debug models`: кэш на 24 ч, модель и effort только из каталога."""
+    """Каталог Codex: хук берёт его только из кэша (свежий 24 ч, годный 7 суток) и обновляет в фоне."""
+
+    NO_LUNA = {"models": [m for m in CATALOG["models"] if m["slug"] != "gpt-5.6-luna"]}
 
     def decide(self, args=None, session_model="gpt-5.5", env=None, **cfg):
         if self.fake is None:
@@ -731,8 +789,16 @@ class CatalogTests(Sandbox):
         self.assertEqual((rc, err), (0, ""))
         return json.loads(out)["hookSpecificOutput"]["updatedInput"] if out else None
 
+    def refreshed(self, calls=1, state=None):
+        """Фоновое обновление отработало: вызовов debug models столько, сирот нет."""
+        log = (state or self.codex_state) / "calls.log"
+        count = lambda: len(log.read_text().splitlines()) if log.exists() else 0  # noqa: E731
+        self.assertTrue(self.wait_until(lambda: count() >= calls), "фоновое обновление не запустилось")
+        self.assertEqual(self.wait_background(), [], "после обновления остались процессы")
+        self.assertEqual(count(), calls)
+
     def test_model_missing_from_catalog_keeps_effort_checked_by_session_model(self):
-        self.write_catalog({"models": [m for m in CATALOG["models"] if m["slug"] != "gpt-5.6-luna"]})
+        self.write_cache(self.NO_LUNA)
         updated = self.updated(self.decide())
         self.assertNotIn("model", updated)
         self.assertEqual(updated["reasoning_effort"], "low")
@@ -741,7 +807,7 @@ class CatalogTests(Sandbox):
                          (None, "low", "rule:light;model_not_in_catalog"))
 
     def test_model_missing_and_session_model_unknown_gives_no_output(self):
-        self.write_catalog({"models": [m for m in CATALOG["models"] if m["slug"] != "gpt-5.6-luna"]})
+        self.write_cache(self.NO_LUNA)
         self.assertIsNone(self.updated(self.decide(session_model="gpt-unknown")))
         row = self.last_row()
         self.assertEqual((row["model"], row["effort"], row["reason"]),
@@ -750,7 +816,7 @@ class CatalogTests(Sandbox):
     def test_effort_not_supported_by_model_is_not_set(self):
         catalog = json.loads(json.dumps(CATALOG))
         catalog["models"][1]["supported_reasoning_levels"] = levels("medium", "high")
-        self.write_catalog(catalog)
+        self.write_cache(catalog)
         updated = self.updated(self.decide())
         self.assertEqual(updated["model"], "gpt-5.6-luna")
         self.assertNotIn("reasoning_effort", updated)
@@ -763,46 +829,88 @@ class CatalogTests(Sandbox):
         updated = self.updated(self.decide(session_model="gpt-5.6-terra", **cfg))
         self.assertEqual(updated, dict(v2_args(), reasoning_effort="max"))
 
+    def test_fresh_cache_is_used_without_refresh(self):
+        self.write_cache(age=23 * 3600)
+        self.assertEqual(self.updated(self.decide())["model"], "gpt-5.6-luna")
+        self.assertEqual(self.last_row()["reason"], "rule:light")
+        self.assertEqual(self.wait_background(), [])
+        self.assertEqual(self.codex_calls(), [])
+
+    def test_hook_never_waits_for_a_slow_catalog(self):
+        self.cache.unlink()
+        self.write_catalog(CATALOG, mode="slow:4")
+        started = time.monotonic()
+        self.assertIsNone(self.updated(self.decide()))
+        self.assertLess(time.monotonic() - started, 2)  # каталог отвечает 4 с, хук его не ждёт
+        row = self.last_row()
+        self.assertEqual((row["model"], row["effort"], row["reason"]),
+                         (None, None, "rule:light;no_catalog;refreshing"))
+        self.refreshed()
+        self.assertLess(self.cached_age(), 60)
+        self.assertEqual((mode_of(self.cache), mode_of(self.cache.parent)), (0o600, 0o700))
+        self.assertEqual(self.updated(self.decide())["model"], "gpt-5.6-luna")  # следующий хук — с моделью
+        self.assertEqual(len(self.codex_calls("debug", "models")), 1)
+
+    def test_one_background_refresh_at_a_time(self):
+        self.cache.unlink()
+        self.write_catalog(CATALOG, mode="slow:3")
+        for _ in range(3):
+            self.assertIsNone(self.updated(self.decide()))
+            self.assertEqual(self.last_row()["reason"], "rule:light;no_catalog;refreshing")
+        self.refreshed(calls=1)
+        self.assertEqual(self.updated(self.decide())["model"], "gpt-5.6-luna")
+
+    def test_lock_held_elsewhere_starts_no_refresh(self):
+        import fcntl
+        self.cache.unlink()
+        lock = os.open(self.cache.parent / "codex-models.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, lock)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        self.assertIsNone(self.updated(self.decide()))
+        self.assertEqual(self.last_row()["reason"], "rule:light;no_catalog;refreshing")
+        self.assertEqual(self.wait_background(), [])
+        self.assertEqual(self.codex_calls(), [])
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        self.assertIsNone(self.updated(self.decide()))
+        self.refreshed(calls=1)
+
+    def test_stale_cache_up_to_seven_days_is_used_and_refreshed(self):
+        self.write_cache(age=6 * 24 * 3600)
+        self.assertEqual(self.updated(self.decide())["model"], "gpt-5.6-luna")
+        self.assertEqual(self.last_row()["reason"], "rule:light")
+        self.refreshed(calls=1)
+        self.assertLess(self.cached_age(), 60)
+
+    def test_cache_older_than_seven_days_is_not_used(self):
+        self.write_cache(age=8 * 24 * 3600)
+        self.assertIsNone(self.updated(self.decide()))
+        self.assertEqual(self.last_row()["reason"], "rule:light;no_catalog;refreshing")
+        self.refreshed(calls=1)
+        self.assertEqual(self.updated(self.decide())["model"], "gpt-5.6-luna")
+
     def test_catalog_not_obtained_substitutes_nothing(self):
-        for mode in ("fail", "garbage"):
+        for index, mode in enumerate(("fail", "garbage"), start=1):
             with self.subTest(mode=mode):
+                self.cache.unlink(missing_ok=True)
                 self.write_catalog(CATALOG, mode=mode)
                 self.assertIsNone(self.updated(self.decide()))
                 row = self.last_row()
                 self.assertEqual((row["tier"], row["model"], row["effort"], row["reason"]),
-                                 ("light", None, None, "rule:light;no_catalog"))
-        self.assertFalse(self.cache.exists())
+                                 ("light", None, None, "rule:light;no_catalog;refreshing"))
+                self.refreshed(calls=index)
+                self.assertFalse(self.cache.exists())
 
-    def test_slow_catalog_is_cut_at_the_limit(self):
-        self.assertEqual(router.CATALOG_TIMEOUT, 3)  # предел плагина не ослаблен; в тесте он укорочен до 0,5 с
+    def test_refresh_is_cut_at_its_limit(self):
+        self.assertEqual(router.CATALOG_REFRESH_TIMEOUT, 30)  # предел плагина; в тесте он укорочен до 0,5 с
+        self.cache.unlink()
         self.write_catalog(CATALOG, mode="sleep")
-        with mock.patch.dict(os.environ, {"HOME": str(self.home), "PATH": str(self.fakebin)}), \
-                mock.patch.object(router, "parent_codex", return_value=None), \
-                mock.patch.object(router, "CATALOG_TIMEOUT", 0.5):
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
             started = time.monotonic()
-            self.assertEqual(router.codex_catalog(router.normalize_config({})), (None, "no_catalog"))
+            self.assertFalse(router.refresh_catalog(str(self.fake_codex), timeout=0.5))
             self.assertLess(time.monotonic() - started, 0.5 + 1)
         self.assertEqual(len(self.codex_calls("debug", "models")), 1)
+        self.assertEqual(self.wait_background(), [])
         self.assertFalse(self.cache.exists())
-
-    def test_catalog_is_cached_for_24_hours(self):
-        self.updated(self.decide())
-        self.updated(self.decide())
-        self.assertEqual(len(self.codex_calls("debug", "models")), 1)
-        self.assertEqual((mode_of(self.cache), mode_of(self.cache.parent)), (0o600, 0o700))
-        cached = json.loads(self.cache.read_text())
-        entry = cached["binaries"][os.path.realpath(self.fake_codex)]
-        self.assertEqual(entry["models"]["gpt-5.6-luna"], ["low", "medium", "high", "xhigh", "max"])
-        self.assertEqual(entry["mtime_ns"], os.stat(self.fake_codex).st_mtime_ns)
-        entry["ts"] -= 23 * 3600
-        self.cache.write_text(json.dumps(cached))
-        self.updated(self.decide())
-        self.assertEqual(len(self.codex_calls("debug", "models")), 1)
-        entry["ts"] -= 2 * 3600
-        self.cache.write_text(json.dumps(cached))
-        updated = self.updated(self.decide())
-        self.assertEqual(len(self.codex_calls("debug", "models")), 2)
-        self.assertEqual(updated["model"], "gpt-5.6-luna")
 
     def other_codex(self, catalog):
         state = self.root / "other-state"
@@ -816,20 +924,21 @@ class CatalogTests(Sandbox):
         return other, state
 
     def test_cache_of_one_binary_does_not_serve_another(self):
-        other, state = self.other_codex({"models": [m for m in CATALOG["models"] if m["slug"] != "gpt-5.6-luna"]})
+        other, state = self.other_codex(self.NO_LUNA)
         stamp = os.stat(self.fake_codex)
         os.utime(other, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))  # различает только путь бинарника
         self.assertEqual(self.updated(self.decide())["model"], "gpt-5.6-luna")
-        updated = self.updated(self.decide(codex_bin=str(other)))
-        self.assertNotIn("model", updated)
+        self.assertIsNone(self.updated(self.decide(codex_bin=str(other))))
+        self.assertEqual(self.last_row()["reason"], "rule:light;no_catalog;refreshing")
+        self.refreshed(calls=1, state=state)
+        self.assertNotIn("model", self.updated(self.decide(codex_bin=str(other))))
         self.assertEqual(self.last_row()["reason"], "rule:light;model_not_in_catalog")
-        self.assertEqual(len((state / "calls.log").read_text().splitlines()), 1)
         self.assertEqual(self.updated(self.decide())["model"], "gpt-5.6-luna")
-        self.assertEqual(len(self.codex_calls("debug", "models")), 1)
-        stamp = os.stat(self.fake_codex)
+        self.assertEqual(self.codex_calls(), [])
         os.utime(self.fake_codex, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 10 ** 9))
-        self.updated(self.decide())
-        self.assertEqual(len(self.codex_calls("debug", "models")), 2)
+        self.assertIsNone(self.updated(self.decide()))
+        self.assertEqual(self.last_row()["reason"], "rule:light;no_catalog;refreshing")
+        self.refreshed(calls=1)
         cached = json.loads(self.cache.read_text())["binaries"]
         self.assertEqual(set(cached), {os.path.realpath(self.fake_codex), os.path.realpath(other)})
 
@@ -838,24 +947,19 @@ class CatalogTests(Sandbox):
         evil = self.root / "codex"
         evil.write_text(f"#!/bin/sh\necho EVIL-RAN > '{marker}'\n")
         evil.chmod(0o755)
+        self.cache.unlink()
         self.decide(env=self.env(PATH="/usr/bin:/bin:"))
         self.decide(env=self.env(PATH=".:bin"))
+        self.assertEqual(self.wait_background(), [])
         self.assertFalse(marker.exists())
 
     def test_codex_bin_from_config_comes_first(self):
-        other_state = self.root / "other-state"
-        other_state.mkdir()
-        (other_state / "catalog.json").write_text(json.dumps(
-            {"models": [{"slug": "gpt-5.6-luna", "supported_reasoning_levels": levels("low")}]}))
-        other = self.root / "tools" / "codex"
-        other.parent.mkdir()
-        other.write_text(f'#!/bin/sh\nFAKE_CODEX_STATE="{other_state}" exec "{sys.executable}" '
-                         f'"{TESTS / "fake_codex.py"}" "$@"\n')
-        other.chmod(0o755)
-        updated = self.updated(self.decide(codex_bin=str(other)))
-        self.assertEqual((updated["model"], updated["reasoning_effort"]), ("gpt-5.6-luna", "low"))
-        self.assertEqual(self.codex_calls(), [])
-        self.assertTrue((other_state / "calls.log").exists())
+        other, state = self.other_codex(self.NO_LUNA)
+        self.write_cache(self.NO_LUNA, binary=other)
+        self.assertNotIn("model", self.updated(self.decide(codex_bin=str(other))))
+        self.assertEqual(self.last_row()["reason"], "rule:light;model_not_in_catalog")
+        self.assertEqual(self.wait_background(), [])
+        self.assertEqual((self.codex_calls(), (state / "calls.log").exists()), ([], False))
 
 
 class FindCodexTests(unittest.TestCase):
@@ -1677,6 +1781,33 @@ class CommandTests(Sandbox):
         empty.mkdir()
         rc, out, _err, _ = self.run_router("check", env=self.env(PATH=str(empty)))
         self.assertEqual(rc, 0)
+        self.assertIn("Codex model catalog: not available", out)
+
+    def test_check_waits_for_a_slow_catalog_and_reports_the_time(self):
+        self.assertEqual(router.CATALOG_REFRESH_TIMEOUT, 30)
+        self.cache.unlink()
+        self.write_catalog(CATALOG, mode="slow:4")  # дольше прежнего предела 3 с
+        self.write_config()
+        rc, out, _err, elapsed = self.run_router("check")
+        self.assertEqual(rc, 0)
+        self.assertGreaterEqual(elapsed, 4)
+        found = re.search(r"Codex model catalog: 3 models \(`.+ debug models` answered in (\d+\.\d) s; "
+                          r"cache updated\)", out)
+        self.assertIsNotNone(found, out)
+        self.assertGreaterEqual(float(found.group(1)), 3.9)
+        self.assertLess(self.cached_age(), 60)
+        self.assertIn("light: model gpt-5.6-luna — in the catalog; effort low — supported", out)
+
+    def test_check_without_a_fresh_catalog_reports_the_time_and_the_cache(self):
+        self.write_config()
+        self.write_catalog(CATALOG, mode="fail")
+        self.write_cache(age=3 * 24 * 3600)
+        rc, out, _err, _ = self.run_router("check")
+        self.assertEqual(rc, 0)
+        self.assertRegex(out, r"debug models` gave no catalog in \d+\.\d s \(limit 30 s\)")
+        self.assertRegex(out, r"Codex model catalog: 3 models \(cache .+, 72\.\d h old\)")
+        self.cache.unlink()
+        rc, out, _err, _ = self.run_router("check")
         self.assertIn("Codex model catalog: not available", out)
 
     def test_check_reports_bad_key_permissions(self):

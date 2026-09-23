@@ -31,8 +31,12 @@ Codex:
 - `light` → `gpt-5.6-luna` / `low`, `standard` → `gpt-5.6-terra` / `medium`, `heavy` → `inherit`.
 - Model and effort are checked against the catalog from `codex debug models` of the codex binary that runs the
   session — the `codex` process that started the hook, then `codex_bin`, then `codex` on `PATH` (absolute
-  entries only); cached for 24 hours per binary path and modification time. A model the catalog lacks is not
-  set; an effort the resulting model does not support is not set; no catalog, nothing set.
+  entries only). A model the catalog lacks is not set; an effort the resulting model does not support is not
+  set; no catalog, nothing set.
+- The hook never waits for that catalog: it reads it from its cache (per binary path and modification time;
+  fresh for 24 hours, used up to 7 days old) and starts a background refresh when the cache is missing or older
+  than 24 hours — one at a time, at most 30 s. With no usable cache nothing is set and the journal says
+  `no_catalog;refreshing`. `check` fetches the catalog synchronously (up to 30 s) and fills the cache.
 - The output is `permissionDecision: "allow"` with `updatedInput` — Codex rewrites arguments only that way.
 - A routed role whose file sets its own model overrides the choice.
 
@@ -66,13 +70,16 @@ Do not rely on it for anything else: a secret in any other form is sent as writt
    `provider = "openrouter"`. Then run `check`.
 3. Codex only: a hook runs there only once it is trusted. Run `subagent-model-router codex-trust` (add
    `--codex <path>` when `codex` is not on `PATH`, e.g. the binary of the VS Code extension; `--dry-run` shows
-   what would be trusted). The manual fallback is the `/hooks` screen in Codex.
+   what would be trusted). The manual fallback is the `/hooks` screen in Codex. Then run `check` once to fill
+   the model catalog cache. Installing for another account with `sudo -u`, run `codex plugin …` from that
+   account's home directory: Codex reads `.codex/config.toml` of the current directory as a project layer.
 
 ## Commands
 
 - `check [--live]` — config path, mode, provider, endpoint, Jev model, models for both products, the codex
-  binary and model catalog, whether the key exists with the right permissions (never its content). `--live`
-  makes one small request to Jev.
+  binary and model catalog (fetched now, up to 30 s, with the time it took; this fills the cache the hook
+  reads), whether the key exists with the right permissions (never its content). `--live` makes one small
+  request to Jev.
 - `explain [TEXT]` (or the text on stdin, `-d DESCRIPTION`) — ask Jev about a task and show the answers, the
   threshold bands and the result for Claude Code and for Codex. It is a real request: warn the user that the
   text goes to TypeSafe or OpenRouter. It does not write the journal.
@@ -101,7 +108,8 @@ per subagent call with `ts`, `agent` (`claude`/`codex`), `session_id`, `cwd`, `s
 
 Reasons: `explicit`, `fork`, `type`, `excluded`, `off`, `no_key`, `error:<kind>`; Jev decisions are
 `rule:light|standard|heavy|risky|review`. In Codex a decision may carry notes after `;`: `no_codex` (no codex
-binary found), `no_catalog`, `model_not_in_catalog`, `effort_not_supported`; `model`/`effort` are then `null`.
+binary found), `no_catalog` (followed by `;refreshing` while a background refresh runs), `model_not_in_catalog`,
+`effort_not_supported`; `model`/`effort` are then `null`.
 
 ## How to answer requests
 

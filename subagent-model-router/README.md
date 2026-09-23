@@ -32,10 +32,15 @@ The mapping and the thresholds live in the config. What the hook leaves alone:
 - anything that goes wrong: no config, no key, network trouble, a slow or odd answer. The hook exits 0 with no
   output, the subagent starts as usual, and the reason goes to the journal.
 
-In Codex the model and effort are checked against the catalog from `codex debug models` of the codex binary
-that runs the session (cached for 24 hours) before they are set, because Codex refuses to start a subagent on
-an unknown model or an unsupported effort. A model missing from the catalog, or an effort the resulting model
-does not support, is simply not set.
+In Codex the model and effort are checked against the model catalog of the codex binary that runs the session
+before they are set, because Codex refuses to start a subagent on an unknown model or an unsupported effort.
+A model missing from the catalog, or an effort the resulting model does not support, is simply not set.
+
+The hook never waits for `codex debug models`, which can take seconds when Codex fetches the catalog over the
+network. It reads the catalog from its own cache — fresh for 24 hours, still used up to 7 days old — and
+refreshes an old or missing one in a background process. Until a first refresh has finished, Codex subagents
+get neither model nor effort, so run `check` once after installing: it fetches the catalog and fills the
+cache.
 
 ## Why only subagents
 
@@ -59,9 +64,10 @@ choosing its model at start-up loses nothing.
   over https, and never along a redirect.
 - **A journal** of decisions (without task texts) is kept locally in
   `~/.local/state/subagent-model-router/decisions.jsonl`.
-- **In Codex**, the hook runs `codex debug models` of the codex binary that runs the session — at most once a
-  day per binary — and caches the catalog in `~/.cache/subagent-model-router/codex-models.json`, keyed by
-  the binary's real path and modification time. `codex-trust` talks to your local `codex app-server` and
+- **In Codex**, a background process runs `codex debug models` of the codex binary that runs the session when
+  the cached catalog is missing or older than 24 hours — one at a time, for at most 30 seconds — and caches
+  the catalog in `~/.cache/subagent-model-router/codex-models.json`, keyed by the binary's real path and
+  modification time. `codex-trust` talks to your local `codex app-server` and
   writes only the trust entries of this plugin's hooks into your Codex configuration.
 
 ## How to turn it off
@@ -112,8 +118,13 @@ Then create the config and the key:
 install -d -m 700 ~/.config/subagent-model-router
 install -m 600 <plugin dir>/config.example.toml ~/.config/subagent-model-router/config.toml
 ( umask 077; cat > ~/.config/subagent-model-router/key )   # paste the key, Enter, Ctrl-D
-<plugin dir>/bin/subagent-model-router check
+<plugin dir>/bin/subagent-model-router check                # also fills the Codex model catalog cache
 ```
+
+Installing for another account with `sudo -u <user>`, run the `codex plugin` commands from that account's home
+directory, for example `sudo -u <user> -H sh -c 'cd && codex plugin add subagent-model-router@korkin25'`.
+Otherwise Codex reads `.codex/config.toml` of the current directory as a project layer and may fail on its
+permissions.
 
 The key file must be a single line owned by you with permissions 0600 or 0400; otherwise the hook treats it
 as missing.
@@ -149,7 +160,7 @@ says what is wrong.
 ## Commands
 
 ```bash
-subagent-model-router check [--live]          # config, key, models, codex catalog; --live asks Jev once
+subagent-model-router check [--live]          # config, key, models, codex catalog (fetched now, ≤ 30 s)
 subagent-model-router explain "TASK: …"       # what Jev answers for a task and which model follows
 subagent-model-router stats [--days N]        # decisions from the journal
 subagent-model-router codex-trust [--codex PATH] [--dry-run]
