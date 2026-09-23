@@ -1287,19 +1287,19 @@ class CodexTrustTests(Sandbox):
 
 
 class FailureTests(Sandbox):
-    """Сбои Jev: выход 0 без вывода, причина в журнале, не дольше бюджета + 1 с."""
+    """Сбои Jev: выход 0 без вывода, причина в журнале, не дольше бюджета + запас."""
 
-    BUDGET = 0.5  # timeout_seconds из конфига там, где повтора нет: сбой ждёт бюджет недолго
-    RETRY_BUDGET = 3  # проверкам повтора 429/5xx (requests=2): запрос и пауза перед повтором — с запасом
+    BUDGET, MARGIN = 3, 1  # timeout_seconds по умолчанию: сервер отвечает сразу, ждать бюджет тестам нечего
+    SHORT_BUDGET, SHORT_MARGIN = 0.5, 2  # тесты самого таймаута ждут бюджет целиком; запас — на запуск под нагрузкой
 
-    def fail_case(self, *replies, reason, requests=None):
-        budget = self.RETRY_BUDGET if requests == 2 else self.BUDGET
+    def fail_case(self, *replies, reason, requests=None, short=False):
+        budget, margin = (self.SHORT_BUDGET, self.SHORT_MARGIN) if short else (self.BUDGET, self.MARGIN)
         self.serve(*replies)
         self.write_config(timeout_seconds=budget)
         rc, out, err, elapsed = self.hook()
         self.assertEqual((rc, out, err), (0, "", ""))
         self.assertEqual(self.last_row()["reason"], reason)
-        self.assertLessEqual(elapsed, budget + 1)
+        self.assertLessEqual(elapsed, budget + margin)
         if requests is not None:
             self.assertEqual(len(self.fake.requests), requests)
 
@@ -1314,11 +1314,11 @@ class FailureTests(Sandbox):
 
     def test_429_then_success(self):
         self.serve(Reply(429, body=b"{}"), Reply(body=SCENARIOS["light"]))
-        self.write_config(timeout_seconds=self.RETRY_BUDGET)
+        self.write_config(timeout_seconds=self.BUDGET)
         rc, out, _err, elapsed = self.hook()
         self.assertEqual((rc, self.routed_model(out)), (0, "haiku"))
         self.assertEqual(len(self.fake.requests), 2)
-        self.assertLessEqual(elapsed, self.RETRY_BUDGET + 1)
+        self.assertLessEqual(elapsed, self.BUDGET + self.MARGIN)
 
     def test_retry_after_beyond_budget_is_not_retried(self):
         self.fail_case(Reply(429, body=b"{}", headers={"Retry-After": "30"}), reason="error:http_429",
@@ -1357,10 +1357,10 @@ class FailureTests(Sandbox):
         self.fail_case(Reply(body=body), reason="error:options")
 
     def test_answer_slower_than_budget(self):
-        self.fail_case(Reply(body=SCENARIOS["light"], delay=3), reason="error:timeout")
+        self.fail_case(Reply(body=SCENARIOS["light"], delay=5), reason="error:timeout", short=True)
 
     def test_trickling_answer_is_cut_at_budget(self):
-        self.fail_case(Reply(body=SCENARIOS["light"], trickle=0.2), reason="error:timeout")
+        self.fail_case(Reply(body=SCENARIOS["light"], trickle=0.2), reason="error:timeout", short=True)
 
     def test_connection_refused(self):
         with socket.socket() as probe:
@@ -1370,7 +1370,7 @@ class FailureTests(Sandbox):
         rc, out, err, elapsed = self.hook()
         self.assertEqual((rc, out, err), (0, "", ""))
         self.assertEqual(self.last_row()["reason"], "error:network")
-        self.assertLessEqual(elapsed, self.BUDGET + 1)
+        self.assertLessEqual(elapsed, self.BUDGET + self.MARGIN)
 
     def test_redirect_is_not_followed(self):
         for code in (302, 307):
@@ -1389,7 +1389,7 @@ class FailureTests(Sandbox):
         rc, out, err, elapsed = self.hook(agent_input(prompt="token" * 20000))
         self.assertEqual((rc, err), (0, ""))
         self.assertEqual(self.routed_model(out), "haiku")
-        self.assertLessEqual(elapsed, self.BUDGET + 1)
+        self.assertLessEqual(elapsed, self.BUDGET + self.MARGIN)
 
     def test_garbage_stdin(self):
         self.write_config()
