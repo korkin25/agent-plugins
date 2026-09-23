@@ -13,6 +13,11 @@ on:
 permissions:
   contents: write
 
+# Releases run one at a time and are never cancelled halfway through tagging.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   tag:
     # Only pushes to main and manual runs start this job, never code from forks, so it runs on the

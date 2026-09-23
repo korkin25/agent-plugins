@@ -7,6 +7,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same branch or pull request cancels the run still in progress.
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate:
     # Own pushes run on the owner's self-hosted runner; pull requests and anything else run on
@@ -14,24 +19,113 @@ jobs:
     runs-on: ${{ (github.event_name == 'push' && github.actor == github.repository_owner) && 'pure-vps-linux-x64-agent-plugins' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0 # the next step compares with earlier commits
+
+      # Plugins to check: those with changed files. A change to the marketplace, plugin-factory or the
+      # workflows checks every plugin; a range that cannot be compared checks every plugin too.
+      - name: What changed
+        id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          market=.claude-plugin/marketplace.json
+          if [ "$EVENT" = pull_request ]; then
+            range="$PR_BASE...$PR_HEAD"
+          elif [ -z "$BEFORE" ] || [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
+            range="origin/main...$GITHUB_SHA"   # a new branch or tag: its changes against main
+          else
+            range="$BEFORE..$GITHUB_SHA"
+          fi
+          all=false; reason=""; tests=false; dirs=()
+          if git diff --name-only -z "$range" > "$RUNNER_TEMP/changed" 2>/dev/null; then
+            echo "changed in $range:"
+          else
+            all=true; reason="cannot compare $range"; tests=true; : > "$RUNNER_TEMP/changed"
+          fi
+          while IFS= read -r -d '' file; do
+            echo "  $file"
+            case "$file" in
+              .claude-plugin/marketplace.json|plugin-factory/*|.github/workflows/*) all=true; reason=${reason:-$file} ;;
+            esac
+            case "$file" in subagent-model-router/*|.github/workflows/*) tests=true ;; esac
+            case "$file" in */*) dirs+=("${file%%/*}") ;; esac
+          done < "$RUNNER_TEMP/changed"
+          if [ "$all" = true ]; then
+            plugins=$(jq -r '[.plugins[].name] | join(" ")' "$market")
+          else
+            names=()
+            while IFS= read -r dir; do
+              name=$(jq -r --arg s "./$dir" '.plugins[] | select(.source == $s) | .name' "$market")
+              if [ -n "$name" ]; then names+=("$name"); fi
+            done < <(printf '%s\n' "${dirs[@]}" | sort -u)
+            plugins="${names[*]}"
+          fi
+          echo "every plugin: $all${reason:+ ($reason)}"
+          echo "plugins to check: ${plugins:-none}"
+          echo "subagent-model-router unit tests: $tests"
+          { echo "all=$all"; echo "plugins=$plugins"; echo "router_tests=$tests"; } >> "$GITHUB_OUTPUT"
+
+      - name: marketplace — names and versions of every plugin
+        run: |
+          market=.claude-plugin/marketplace.json
+          jq -e . "$market" >/dev/null || { echo "::error::$market is not valid JSON"; exit 1; }
+          status=0
+          while IFS=$'\t' read -r name source version; do
+            manifest="$source/.claude-plugin/plugin.json"
+            if ! jq -e . "$manifest" >/dev/null 2>&1; then
+              echo "::error::$name: no valid manifest at $manifest"; status=1; continue
+            fi
+            ok=true
+            [ "$(jq -r '.name // ""' "$manifest")" = "$name" ] \
+              || { echo "::error::$name: plugin.json disagrees with the marketplace on the name"; ok=false; }
+            [ "$(jq -r '.version // ""' "$manifest")" = "$version" ] \
+              || { echo "::error::$name: version $version in the marketplace, $(jq -r '.version // ""' "$manifest") in plugin.json"; ok=false; }
+            jq -e '.description // empty' "$manifest" >/dev/null \
+              || { echo "::error::$name: plugin.json has no description"; ok=false; }
+            if [ "$ok" = true ]; then echo "✓ $name $version"; else status=1; fi
+          done < <(jq -r '.plugins[] | [.name, .source, (.version // "")] | @tsv' "$market")
+          exit $status
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: steps.changes.outputs.plugins != ''
         with:
           node-version: '22'
-      # Python is set up explicitly: the plugins' tools and tests are Python.
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.12'
 
-      - name: plugin-check — the same checks that run locally
+      - name: plugin-check — changed plugins, with the official validator
+        env:
+          ALL: ${{ steps.changes.outputs.all }}
+          PLUGINS: ${{ steps.changes.outputs.plugins }}
         run: |
+          if [ -z "$PLUGINS" ]; then echo "no plugin changed: plugin-check skipped"; exit 0; fi
           npm install -g @anthropic-ai/claude-code@2.1.280 >/dev/null 2>&1 \
             || echo "::warning::claude CLI unavailable; the official validator step will be skipped"
-          ./plugin-factory/bin/plugin-check
+          if [ "$ALL" = true ]; then exec ./plugin-factory/bin/plugin-check; fi
+          status=0
+          for plugin in $PLUGINS; do ./plugin-factory/bin/plugin-check "$plugin" || status=1; done
+          exit $status
 
-      - name: plugin-test — clean room, nothing preconfigured
-        run: ./plugin-factory/bin/plugin-test
-
-      - name: subagent-model-router — unit tests
+      - name: plugin-test — clean room, changed plugins
         env:
+          ALL: ${{ steps.changes.outputs.all }}
+          PLUGINS: ${{ steps.changes.outputs.plugins }}
+        run: |
+          if [ -z "$PLUGINS" ]; then echo "no plugin changed: plugin-test skipped"; exit 0; fi
+          if [ "$ALL" = true ]; then exec ./plugin-factory/bin/plugin-test; fi
+          status=0
+          for plugin in $PLUGINS; do ./plugin-factory/bin/plugin-test "$plugin" || status=1; done
+          exit $status
+
+      - name: subagent-model-router — unit tests, one process per test class
+        env:
+          RUN: ${{ steps.changes.outputs.router_tests }}
           TMPDIR: ${{ runner.temp }}
-        run: python3 -B -m unittest discover -s subagent-model-router/tests
+        run: |
+          if [ "$RUN" != true ]; then
+            echo "subagent-model-router and the workflows are unchanged: unit tests skipped"; exit 0
+          fi
+          python3 --version
+          python3 -B subagent-model-router/tests/run_parallel.py -j 4
