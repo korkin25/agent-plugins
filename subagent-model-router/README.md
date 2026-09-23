@@ -72,7 +72,8 @@ choosing its model at start-up loses nothing.
 
 ## How to turn it off
 
-- For some projects: `exclude = ["~/work/secret"]` — cwd prefixes from which no request is made at all.
+- For some projects: `exclude = ["~/work/secret"]` — directories and everything inside them; no request at all is
+  made from there. Directory names are compared whole: `~/work/secret` does not cover `~/work/secret.old`.
 - Entirely: `enabled = false` in the config, or uninstall the plugin.
 - Watch without changing anything: `mode = "shadow"` — requests are made and decisions are journalled, but
   no subagent call is modified.

@@ -340,23 +340,25 @@ def state_digest(state):
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def is_excluded(cwd, prefixes):
-    """cwd (или его realpath) начинается с одного из префиксов exclude."""
-    if not prefixes:
+def is_excluded(cwd, directories):
+    """cwd (или его realpath) — один из каталогов exclude (или его realpath) либо лежит внутри него."""
+    if not directories:
         return False
     candidates = {cwd}
     try:
         candidates.add(os.path.realpath(cwd))
     except (OSError, ValueError):
         pass
-    for raw in prefixes:
-        prefix = os.path.expanduser(raw.strip())
-        variants = {prefix.rstrip("/") or "/"}
+    for raw in directories:
+        directory = os.path.expanduser(raw.strip())
+        variants = {directory}
         try:
-            variants.add(os.path.realpath(prefix))
+            variants.add(os.path.realpath(directory))
         except (OSError, ValueError):
             pass
-        if any(c.startswith(v) for c in candidates for v in variants):
+        # по границе компонента: ~/work/gitlab не задевает ~/work/gitlab.com; «/» становится «» и исключает всё
+        variants = {v.rstrip(os.sep) for v in variants}
+        if any(c == v or c.startswith(v + os.sep) for c in candidates for v in variants):
             return True
     return False
 

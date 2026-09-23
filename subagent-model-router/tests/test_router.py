@@ -283,6 +283,11 @@ class SkipTests(Sandbox):
         if self.fake:
             self.assertEqual(self.fake.requests, [])
 
+    def assert_not_excluded(self, result):
+        rc, out, err, _ = result
+        self.assertEqual((rc, err, self.last_row()["reason"]), (0, "", "rule:light"))
+        self.assertEqual(self.routed_model(out), "haiku")
+
     def test_not_agent_tool_is_silent_and_not_logged(self):
         self.serve()
         self.write_config()
@@ -336,6 +341,62 @@ class SkipTests(Sandbox):
             with self.subTest(exclude=prefix.name, cwd=str(cwd.relative_to(self.root))):
                 self.write_config(exclude=[str(prefix)])
                 self.assert_skipped(self.hook(cwd=str(cwd)), "excluded")
+        self.assertFalse(self.server_file.exists())
+
+    def test_excluded_directory_does_not_cover_names_that_start_the_same(self):
+        work = self.home / "work"
+        for sub in ("gitlab/x", "gitlab.com/x"):
+            (work / sub).mkdir(parents=True)
+        self.serve()
+        self.write_config(exclude=["~/work/gitlab"])
+        for cwd in (work / "gitlab", work / "gitlab" / "x"):
+            with self.subTest(cwd=str(cwd.relative_to(self.home))):
+                self.assert_skipped(self.hook(cwd=str(cwd)), "excluded")
+        self.assert_not_excluded(self.hook(cwd=str(work / "gitlab.com" / "x")))
+        self.assertEqual(len(self.fake.requests), 1)
+
+    def test_excluded_directory_with_trailing_slash(self):
+        self.serve()
+        self.write_config(exclude=[str(self.root / "secret") + "/"])
+        for cwd in (self.root / "secret", self.root / "secret" / "sub"):
+            with self.subTest(cwd=str(cwd.relative_to(self.root))):
+                self.assert_skipped(self.hook(cwd=str(cwd)), "excluded")
+        self.assert_not_excluded(self.hook(cwd=str(self.root / "secret.old")))
+
+    def test_symlink_into_excluded_directory_is_excluded(self):
+        (self.root / "secret" / "deep" / "sub").mkdir(parents=True)
+        shortcut = self.root / "shortcut"
+        shortcut.symlink_to(self.root / "secret" / "deep")
+        self.serve()
+        self.write_config(exclude=[str(self.root / "secret")])
+        for cwd in (shortcut, shortcut / "sub"):
+            with self.subTest(cwd=str(cwd.relative_to(self.root))):
+                self.assert_skipped(self.hook(cwd=str(cwd)), "excluded")
+        self.assertFalse(self.server_file.exists())
+
+    def test_name_prefix_outside_excluded_directory_is_routed(self):
+        real = self.root / "real"
+        real.mkdir()
+        link = self.root / "link"
+        link.symlink_to(real)  # исключение задано ссылкой: сравниваются и она, и её realpath
+        for sibling in ("real.com", "real-old", "link.d"):
+            (self.root / sibling / "x").mkdir(parents=True)
+        alias = self.root / "alias"
+        alias.symlink_to(self.root / "real.com")
+        self.serve()
+        self.write_config(exclude=[str(link)])
+        cwds = (self.root / "real.com" / "x", self.root / "real-old" / "x", self.root / "link.d" / "x", alias / "x")
+        for cwd in cwds:
+            with self.subTest(cwd=str(cwd.relative_to(self.root))):
+                self.assert_not_excluded(self.hook(cwd=str(cwd)))
+        self.assertEqual(len(self.fake.requests), len(cwds))
+
+    def test_root_excludes_everything(self):
+        self.serve()
+        self.write_config(exclude=["/"])
+        for cwd in ("/", str(self.home), str(self.root / "proj")):
+            with self.subTest(cwd=cwd):
+                self.assert_skipped(self.hook(cwd=cwd), "excluded")
         self.assertFalse(self.server_file.exists())
 
     def test_config_or_its_directory_writable_by_others(self):
@@ -1935,6 +1996,21 @@ class UnitTests(unittest.TestCase):
         self.assertTrue(router.is_excluded("/srv/secret", ["/srv/secret/"]))
         self.assertFalse(router.is_excluded("/srv/public", ["/srv/secret"]))
         self.assertFalse(router.is_excluded("/srv/secret", []))
+
+    def test_is_excluded_compares_whole_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gitlab = os.path.join(os.path.realpath(tmp), "work", "gitlab")
+            cases = [
+                (gitlab, [gitlab], True), (gitlab + "/x", [gitlab], True),
+                (gitlab + ".com/x", [gitlab], False), (gitlab + ".com", [gitlab], False),
+                (gitlab + "-old", [gitlab], False), (os.path.dirname(gitlab), [gitlab], False),
+                (gitlab, [gitlab + "/"], True), (gitlab + "/x", [gitlab + "//"], True),
+                (gitlab + ".com/x", [gitlab + "/"], False),
+                ("/", ["/"], True), (gitlab + ".com/x", ["/"], True), ("/", [gitlab], False),
+            ]
+            for cwd, directories, expected in cases:
+                with self.subTest(cwd=cwd, exclude=directories):
+                    self.assertIs(router.is_excluded(cwd, directories), expected)
 
     def test_config_owned_by_someone_else(self):
         with tempfile.TemporaryDirectory() as tmp:

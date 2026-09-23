@@ -120,5 +120,6 @@ binary found), `no_catalog` (followed by `;refreshing` while a background refres
 - "Observe only" — `mode = "shadow"`; back with `mode = "active"`.
 - "Set up the key" — give the commands from Setup, then `check`; `check --live` only when asked to test the
   connection.
-- "Do not send tasks from project X" — add its path prefix to `exclude`.
+- "Do not send tasks from project X" — add its directory to `exclude`: that directory and everything inside it
+  are excluded, but not a neighbour whose name merely starts the same (`~/work/x` does not cover `~/work/x.com`).
 - "Trust the hook in Codex" — `codex-trust`, with `--dry-run` first when unsure what it will touch.
