@@ -17,6 +17,10 @@ jobs:
     # Own pushes run on the owner's self-hosted runner; pull requests and anything else run on
     # GitHub-hosted runners. Workflow runs for pull requests from forks require approval.
     runs-on: ${{ (github.event_name == 'push' && github.actor == github.repository_owner) && 'pure-vps-linux-x64-agent-plugins' || 'ubuntu-latest' }}
+    env:
+      # The claude CLI version for the official validator: installed on GitHub-hosted runners and built
+      # into the self-hosted runner image, which has to be rebuilt with it whenever it changes.
+      CLAUDE_CLI_VERSION: '2.1.280'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -90,10 +94,41 @@ jobs:
           done < <(jq -r '.plugins[] | [.name, .source, (.version // "")] | @tsv' "$market")
           exit $status
 
+      # A GitHub-hosted runner installs Node and the claude CLI on each run; the self-hosted runner image
+      # has them built in, along with python3, and the step after these two only checks that.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        if: steps.changes.outputs.plugins != ''
+        if: runner.environment == 'github-hosted' && steps.changes.outputs.plugins != ''
         with:
           node-version: '22'
+
+      - name: claude CLI — the pinned version, on a GitHub-hosted runner
+        if: runner.environment == 'github-hosted' && steps.changes.outputs.plugins != ''
+        run: |
+          npm install -g "@anthropic-ai/claude-code@$CLAUDE_CLI_VERSION" >/dev/null 2>&1 \
+            || echo "::warning::claude CLI unavailable; the official validator step will be skipped"
+
+      # python3 is for plugin-test and for the unit tests below: whatever turns those tests on (a change
+      # to subagent-model-router or a workflow, a range that cannot be compared) also lists a plugin.
+      - name: runner image — node, python3 and the pinned claude CLI, on the self-hosted runner
+        if: runner.environment == 'self-hosted' && steps.changes.outputs.plugins != ''
+        run: |
+          missing=""
+          for tool in node claude python3; do
+            command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::the runner image lacks:$missing; the image and this workflow have diverged," \
+                 "this job needs node, claude and python3"
+            exit 1
+          fi
+          version=$(claude --version | head -n 1)
+          case "$version" in
+            "$CLAUDE_CLI_VERSION" | "$CLAUDE_CLI_VERSION "*) ;;
+            *) echo "::error::the runner image has claude ${version:-of no known version}, this workflow" \
+                    "pins $CLAUDE_CLI_VERSION; the image and this workflow have diverged"
+               exit 1 ;;
+          esac
+          echo "claude $version, node $(node --version), $(python3 --version)"
 
       - name: plugin-check — changed plugins, with the official validator
         env:
@@ -101,8 +136,6 @@ jobs:
           PLUGINS: ${{ steps.changes.outputs.plugins }}
         run: |
           if [ -z "$PLUGINS" ]; then echo "no plugin changed: plugin-check skipped"; exit 0; fi
-          npm install -g @anthropic-ai/claude-code@2.1.280 >/dev/null 2>&1 \
-            || echo "::warning::claude CLI unavailable; the official validator step will be skipped"
           if [ "$ALL" = true ]; then exec ./plugin-factory/bin/plugin-check; fi
           status=0
           for plugin in $PLUGINS; do ./plugin-factory/bin/plugin-check "$plugin" || status=1; done
