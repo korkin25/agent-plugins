@@ -15,9 +15,22 @@ permissions:
 
 jobs:
   tag:
-    runs-on: ubuntu-latest
+    # Only pushes to main and manual runs start this job, never code from forks, so it runs on the
+    # owner's self-hosted runner.
+    runs-on: pure-vps-linux-x64-agent-plugins
     steps:
-      - uses: actions/checkout@v4
+      - name: Check the runner has gh, jq and git
+        run: |
+          missing=""
+          for tool in gh jq git; do
+            command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::the runner image lacks:$missing; the release job needs gh, jq and git"
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
