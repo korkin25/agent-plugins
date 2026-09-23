@@ -1289,15 +1289,17 @@ class CodexTrustTests(Sandbox):
 class FailureTests(Sandbox):
     """Сбои Jev: выход 0 без вывода, причина в журнале, не дольше бюджета + 1 с."""
 
-    BUDGET = 0.5  # timeout_seconds из конфига; 0,5 с хватает на запрос и один повтор 429/5xx
+    BUDGET = 0.5  # timeout_seconds из конфига там, где повтора нет: сбой ждёт бюджет недолго
+    RETRY_BUDGET = 3  # проверкам повтора 429/5xx (requests=2): запрос и пауза перед повтором — с запасом
 
     def fail_case(self, *replies, reason, requests=None):
+        budget = self.RETRY_BUDGET if requests == 2 else self.BUDGET
         self.serve(*replies)
-        self.write_config(timeout_seconds=self.BUDGET)
+        self.write_config(timeout_seconds=budget)
         rc, out, err, elapsed = self.hook()
         self.assertEqual((rc, out, err), (0, "", ""))
         self.assertEqual(self.last_row()["reason"], reason)
-        self.assertLessEqual(elapsed, self.BUDGET + 1)
+        self.assertLessEqual(elapsed, budget + 1)
         if requests is not None:
             self.assertEqual(len(self.fake.requests), requests)
 
@@ -1312,11 +1314,11 @@ class FailureTests(Sandbox):
 
     def test_429_then_success(self):
         self.serve(Reply(429, body=b"{}"), Reply(body=SCENARIOS["light"]))
-        self.write_config(timeout_seconds=self.BUDGET)
+        self.write_config(timeout_seconds=self.RETRY_BUDGET)
         rc, out, _err, elapsed = self.hook()
         self.assertEqual((rc, self.routed_model(out)), (0, "haiku"))
         self.assertEqual(len(self.fake.requests), 2)
-        self.assertLessEqual(elapsed, self.BUDGET + 1)
+        self.assertLessEqual(elapsed, self.RETRY_BUDGET + 1)
 
     def test_retry_after_beyond_budget_is_not_retried(self):
         self.fail_case(Reply(429, body=b"{}", headers={"Retry-After": "30"}), reason="error:http_429",
