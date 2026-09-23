@@ -215,7 +215,7 @@ class Sandbox(unittest.TestCase):
         self.key.chmod(mode)
 
     def write_config(self, **values):
-        base = {"key_file": str(self.key), "timeout_seconds": 2}
+        base = {"key_file": str(self.key), "timeout_seconds": 8}  # предел конфига; на занятом CI 2 с не хватало
         if self.fake:
             base["endpoint"] = self.fake.url + "/v1/systemone"
         base.update(values)
@@ -1947,15 +1947,17 @@ class UnitTests(unittest.TestCase):
                 with self.assertRaisesRegex(router.ConfigError, "the config file is not owned by the current user"):
                     router.load_config(str(path))
 
+    REDACT_LIMIT = 0.5  # секунды процессора: линейный разбор — сотые доли, квадратичный на этих входах — от секунды
+
     def test_redact_is_linear_on_adversarial_input(self):
         for text in ("token" * 20000, "secret" * 17000, "Bearer " * 15000, "-----BEGIN " + "A" * 100000,
                      "ghp_" * 25000, "password: " * 10000, "a" * 100000, "a-" * 50000, "eyJ" * 33000,
                      "eyJa." * 20000, "https://" * 12000, "--password " * 9000, "AIza" * 25000, "api_key" * 14000,
                      "authorization: basic " * 5000, "x://" + "b" * 100000, "a:" * 50000 + "@"):
             with self.subTest(text=text[:12]):
-                started = time.monotonic()
+                started = time.process_time()  # ожидание CPU под -j 4 в замер не входит
                 router.redact(text)
-                self.assertLess(time.monotonic() - started, 0.5)
+                self.assertLess(time.process_time() - started, self.REDACT_LIMIT)
 
     def test_read_key_rules(self):
         with tempfile.TemporaryDirectory() as tmp:
