@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Agent|spawn_agent$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/subagent-model-router\" hook; true",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

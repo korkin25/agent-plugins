@@ -1,0 +1,42 @@
+# subagent-model-router: ~/.config/subagent-model-router/config.toml (directory 0700, file 0600).
+# The SUBAGENT_MODEL_ROUTER_CONFIG variable overrides the path. An unknown key is a config error: the hook stays silent.
+
+enabled = true
+mode = "active"              # active — change the subagent call; shadow — only record the decision
+provider = "typesafe"        # typesafe | openrouter
+key_file = "~/.config/subagent-model-router/key"
+# endpoint = ""              # default: typesafe — https://api.typesafe.ai/v1/systemone,
+#                            #          openrouter — https://openrouter.ai/api/alpha/decisions
+# model = ""                 # default: typesafe — jev-1.13.0, openrouter — typesafe/jev-1.13
+exclude = []                 # cwd prefixes: no request at all is made from there
+timeout_seconds = 3          # for the whole Jev request, one retry included (at most 8)
+# codex_bin = ""             # codex binary for the model catalog (absolute or ~/ path); the hook looks for
+#                            # the codex process that runs it, then codex_bin, then codex on PATH
+
+[thresholds]
+risky_max = 0.3
+review_max = 0.5
+light_min = 0.75
+standard_min = 0.7           # P(light) + P(standard)
+heavy_max = 0.3              # for standard: P(heavy) below this
+
+[claude]
+route_types = ["general-purpose"]   # subagent types to route; a call without subagent_type is general-purpose
+
+[claude.models]
+light = "haiku"
+standard = "sonnet"
+heavy = "inherit"            # inherit — the call is left alone, the subagent runs on the session model
+
+[codex]
+route_agent_types = ["", "default", "worker"]   # roles to route; another role may set its own model
+
+[codex.models]
+light = "gpt-5.6-luna"
+standard = "gpt-5.6-terra"
+heavy = "inherit"
+
+[codex.effort]
+light = "low"
+standard = "medium"
+heavy = "inherit"

@@ -1,0 +1,1498 @@
+#!/usr/bin/env python3
+"""subagent-model-router: модель субагенту Claude Code и Codex выбирает Jev (TypeSafe AI).
+
+Хук PreToolUse и команды check/explain/stats/codex-trust; только stdlib, Python ≥ 3.11.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import os
+import re
+import stat
+import sys
+import time
+
+PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+NAME = "subagent-model-router"
+CONFIG_ENV = "SUBAGENT_MODEL_ROUTER_CONFIG"
+LOG_ENV = "SUBAGENT_MODEL_ROUTER_LOG"
+DEFAULT_CONFIG = "~/.config/subagent-model-router/config.toml"
+DEFAULT_KEY = "~/.config/subagent-model-router/key"
+DEFAULT_LOG = "~/.local/state/subagent-model-router/decisions.jsonl"
+CATALOG_CACHE = "~/.cache/subagent-model-router/codex-models.json"
+CATALOG_TTL = 24 * 3600
+CATALOG_TIMEOUT = 3
+CATALOG_MAX_BYTES = 32 * 1024 * 1024
+PARENT_DEPTH = 5
+USER_AGENT = "subagent-model-router/1"
+KEY_MAX_BYTES = 4096
+BODY_MAX_BYTES = 256 * 1024
+TASK_FALLBACK_CHARS = 1500
+SUM_TOLERANCE = 0.02
+HOOK_TIMEOUT = 10
+APP_SERVER_TIMEOUT = 30
+HIDDEN = "[redacted]"
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+PROVIDERS = {
+    "typesafe": {"endpoint": "https://api.typesafe.ai/v1/systemone", "model": "jev-1.13.0"},
+    "openrouter": {"endpoint": "https://openrouter.ai/api/alpha/decisions", "model": "typesafe/jev-1.13"},
+}
+TIERS = ("light", "standard", "heavy")
+DEFAULTS = {
+    "enabled": True,
+    "mode": "active",
+    "provider": "typesafe",
+    "key_file": DEFAULT_KEY,
+    "endpoint": "",
+    "model": "",
+    "exclude": [],
+    "timeout_seconds": 3,
+    "codex_bin": "",
+    "thresholds": {"risky_max": 0.3, "review_max": 0.5, "light_min": 0.75,
+                   "standard_min": 0.7, "heavy_max": 0.3},
+    "claude": {
+        "route_types": ["general-purpose"],
+        "models": {"light": "haiku", "standard": "sonnet", "heavy": "inherit"},
+    },
+    "codex": {
+        "route_agent_types": ["", "default", "worker"],
+        "models": {"light": "gpt-5.6-luna", "standard": "gpt-5.6-terra", "heavy": "inherit"},
+        "effort": {"light": "low", "standard": "medium", "heavy": "inherit"},
+    },
+}
+QUESTIONS = {
+    "tier": {
+        "type": "choice",
+        "instructions": "How demanding is this task for the AI assistant that will do it?",
+        "criteria": {
+            "light": ("Simple, mechanical work with an obvious result: find or list files, read and quote text, "
+                      "run a given command and report its output, make a small edit that the task fully "
+                      "specifies."),
+            "standard": ("Ordinary engineering work: research across several sources, summarize or compare "
+                         "documents, write or change code by a clear specification, run and fix tests."),
+            "heavy": ("Work that needs deep reasoning or judgment: designing a solution, choosing between "
+                      "approaches, independent review or audit, debugging an unknown cause, security analysis, "
+                      "or any task where a mistake is costly."),
+        },
+    },
+    "risky": {
+        "type": "noul",
+        "instructions": ("Can a mistake in this task delete or corrupt data, publish or send something outside "
+                         "the machine, change a shared system, or expose secrets?"),
+    },
+    "review": {
+        "type": "noul",
+        "instructions": ("Is the task to check someone else's finished work (code, a change, or a document) "
+                         "against its requirements and to approve or reject it?"),
+    },
+}
+MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,199}")
+EFFORT_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+_TOKEN_START = r"(?<![A-Za-z0-9_-])"  # только для sk-: иначе «desk-organizer» → «de[redacted]»
+REDACTIONS = (
+    (re.compile(r"-----BEGIN[A-Z0-9 ]*PRIVATE KEY-----.*?(?:-----END[A-Z0-9 ]*PRIVATE KEY-----|\Z)", re.S),
+     HIDDEN),
+    (re.compile(r"glpat-[A-Za-z0-9_.-]{8,}"), HIDDEN),
+    (re.compile(r"github_pat_[A-Za-z0-9_]{8,}"), HIDDEN),
+    (re.compile(r"gh[po]_[A-Za-z0-9]{8,}"), HIDDEN),
+    (re.compile(_TOKEN_START + r"sk-[A-Za-z0-9_-]{8,}"), HIDDEN),
+    (re.compile(r"xox[abpr]-[A-Za-z0-9-]{8,}"), HIDDEN),
+    (re.compile(r"AKIA[0-9A-Z]{16}"), HIDDEN),
+    (re.compile(r"AIza[0-9A-Za-z_-]{35}"), HIDDEN),
+    (re.compile(_TOKEN_START + r"eyJ[A-Za-z0-9_-]{1,4096}\.eyJ[A-Za-z0-9_-]{1,4096}\.[A-Za-z0-9_-]{0,4096}"), HIDDEN),
+    (re.compile(r"(?i)\b([a-z][a-z0-9+.-]{0,31}://)[^/\s:@]{1,256}:[^/\s@]{1,256}@"), r"\1" + HIDDEN + "@"),
+    (re.compile(r"(?i)(authorization\s*:\s*basic)\s+[A-Za-z0-9+/=._~-]+"), r"\1 " + HIDDEN),
+    (re.compile(r"(?i)\b(Bearer)\s+[A-Za-z0-9._~+/-]+=*"), r"\1 " + HIDDEN),
+    (re.compile(r"(?i)(--password)(=|\s+)\S+"), r"\1\2" + HIDDEN),
+    (re.compile(r"(?i)(password|passwd|token|secret|api[_-]?key)(\w{0,64}[\"']?\s*[:=]\s*)\S+"),
+     r"\1\2" + HIDDEN),
+)
+
+
+class ConfigError(Exception):
+    """Конфиг есть, но негоден; текст по-английски и без содержимого файла."""
+
+
+class JevError(Exception):
+    """Сбой запроса к Jev или разбора ответа; kind попадает в причину error:<kind>."""
+
+    def __init__(self, kind, latency_ms=None):
+        super().__init__(kind)
+        self.kind = kind
+        self.latency_ms = latency_ms
+
+
+# --- конфиг ---------------------------------------------------------------
+
+def plugin_version():
+    """Версия из ../.claude-plugin/plugin.json относительно скрипта; при любой ошибке — unknown."""
+    try:
+        with open(os.path.join(PLUGIN_ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8") as fh:
+            version = json.load(fh).get("version")
+    except (OSError, ValueError, AttributeError):
+        return "unknown"
+    return version if isinstance(version, str) and version else "unknown"
+
+
+def config_path():
+    return os.path.expanduser(os.environ.get(CONFIG_ENV) or DEFAULT_CONFIG)
+
+
+def log_path():
+    return os.path.expanduser(os.environ.get(LOG_ENV) or DEFAULT_LOG)
+
+
+def _is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _is_home_or_absolute(path):
+    return os.path.isabs(os.path.expanduser(path.strip()))
+
+
+def _check_endpoint(url):
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+    except ValueError:
+        raise ConfigError("endpoint is not a URL") from None
+    if parts.scheme == "https" and host:
+        return
+    if parts.scheme == "http" and host in LOOPBACK:
+        return
+    raise ConfigError("endpoint must be an https:// address (http:// only for 127.0.0.1 and localhost)")
+
+
+def _merge(defaults, data, where=""):
+    """Значения data поверх умолчаний; неизвестный ключ или не таблица там, где таблица, — ConfigError."""
+    unknown = sorted(set(data) - set(defaults))
+    if unknown:
+        place = f" in [{where}]" if where else ""
+        raise ConfigError(f"unknown keys{place}: " + ", ".join(unknown))
+    merged = {}
+    for key, default in defaults.items():
+        name = f"{where}.{key}" if where else key
+        if isinstance(default, dict):
+            table = data.get(key, {})
+            if not isinstance(table, dict):
+                raise ConfigError(f"[{name}] must be a table")
+            merged[key] = _merge(default, table, name)
+        else:
+            value = data.get(key, default)
+            merged[key] = list(value) if isinstance(value, list) else value
+    return merged
+
+
+def _check_models(table, name, pattern, hint):
+    for tier in TIERS:
+        value = table[tier]
+        if not isinstance(value, str) or not pattern.fullmatch(value):
+            raise ConfigError(f"{name}.{tier} must be {hint}")
+
+
+def normalize_config(data):
+    """Проверить разобранный TOML и дополнить умолчаниями."""
+    cfg = _merge(DEFAULTS, data)
+    if not isinstance(cfg["enabled"], bool):
+        raise ConfigError("enabled must be true or false")
+    if cfg["mode"] not in ("active", "shadow"):
+        raise ConfigError('mode must be "active" or "shadow"')
+    if cfg["provider"] not in PROVIDERS:
+        raise ConfigError('provider must be "typesafe" or "openrouter"')
+    if not isinstance(cfg["key_file"], str) or not cfg["key_file"].strip():
+        raise ConfigError("key_file must be a non-empty string")
+    for key in ("endpoint", "model"):
+        if not isinstance(cfg[key], str):
+            raise ConfigError(f"{key} must be a string")
+    cfg["endpoint"] = cfg["endpoint"].strip() or PROVIDERS[cfg["provider"]]["endpoint"]
+    _check_endpoint(cfg["endpoint"])
+    cfg["model"] = cfg["model"].strip() or PROVIDERS[cfg["provider"]]["model"]
+    if not MODEL_RE.fullmatch(cfg["model"]):
+        raise ConfigError("model must be a Jev model identifier")
+    exclude = cfg["exclude"]
+    if not isinstance(exclude, list) or not all(isinstance(p, str) and p.strip() for p in exclude):
+        raise ConfigError("exclude must be a list of non-empty strings")
+    if not all(_is_home_or_absolute(p) for p in exclude):
+        raise ConfigError("exclude must hold absolute paths or paths starting with ~")
+    timeout = cfg["timeout_seconds"]
+    if not _is_number(timeout) or not 0 < timeout <= HOOK_TIMEOUT - 2:
+        raise ConfigError(f"timeout_seconds must be a number above 0 and at most {HOOK_TIMEOUT - 2} "
+                          f"(the hook is cut off after {HOOK_TIMEOUT} s)")
+    codex_bin = cfg["codex_bin"]
+    if not isinstance(codex_bin, str):
+        raise ConfigError("codex_bin must be a string")
+    cfg["codex_bin"] = codex_bin.strip()
+    if cfg["codex_bin"] and not _is_home_or_absolute(cfg["codex_bin"]):
+        raise ConfigError("codex_bin must be an absolute path or a path starting with ~")
+    for name, value in cfg["thresholds"].items():
+        if not _is_number(value) or not 0 <= value <= 1:
+            raise ConfigError(f"thresholds.{name} must be a number from 0 to 1")
+    types = cfg["claude"]["route_types"]
+    if not isinstance(types, list) or not all(isinstance(t, str) and t for t in types):
+        raise ConfigError("claude.route_types must be a list of non-empty strings")
+    agent_types = cfg["codex"]["route_agent_types"]
+    if not isinstance(agent_types, list) or not all(isinstance(t, str) for t in agent_types):
+        raise ConfigError("codex.route_agent_types must be a list of strings")
+    _check_models(cfg["claude"]["models"], "claude.models", MODEL_RE, "an alias, a full model ID or inherit")
+    _check_models(cfg["codex"]["models"], "codex.models", MODEL_RE, "a Codex model slug or inherit")
+    _check_models(cfg["codex"]["effort"], "codex.effort", EFFORT_RE, "an effort level (low, medium, …) or inherit")
+    return cfg
+
+
+def _check_private(info, what):
+    """ConfigError, если владелец — не текущий пользователь или есть запись для группы/остальных."""
+    if info.st_uid != os.getuid():
+        raise ConfigError(f"{what} is not owned by the current user")
+    if info.st_mode & 0o022:
+        raise ConfigError(f"{what} is writable by group or others "
+                          f"(mode {stat.S_IMODE(info.st_mode):04o})")
+
+
+def load_config(path=None):
+    """Конфиг с умолчаниями; None — файла нет; ConfigError — файл негоден или чужой."""
+    import tomllib
+    path = path or config_path()
+    try:
+        with open(path, "rb") as fh:
+            _check_private(os.fstat(fh.fileno()), "the config file")
+            for directory in dict.fromkeys((os.path.dirname(os.path.abspath(path)),
+                                            os.path.dirname(os.path.realpath(path)))):
+                _check_private(os.stat(directory), f"the config directory {directory}")
+            data = tomllib.load(fh)
+    except FileNotFoundError:
+        return None
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"not valid TOML ({exc})") from None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ConfigError(f"unreadable ({exc.__class__.__name__})") from None
+    return normalize_config(data)
+
+
+DEFAULT_RULES = normalize_config({})
+
+
+def read_key(path):
+    """(ключ, None) или (None, причина): обычный файл владельца, 0600/0400, одна строка ≤ 4 КиБ."""
+    path = os.path.expanduser(path)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None, "no such file"
+    except OSError:
+        return None, "cannot be opened"
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None, "not a regular file"
+        if info.st_uid != os.getuid():
+            return None, "not owned by the current user"
+        mode = stat.S_IMODE(info.st_mode)
+        if mode not in (0o600, 0o400):
+            return None, f"mode {mode:04o}, needs 0600 or 0400"
+        chunks, size = [], 0
+        while size <= KEY_MAX_BYTES:
+            chunk = os.read(fd, KEY_MAX_BYTES + 1 - size)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+    except OSError:
+        return None, "cannot be read"
+    finally:
+        os.close(fd)
+    if size > KEY_MAX_BYTES:
+        return None, "larger than 4 KiB"
+    try:
+        text = b"".join(chunks).decode("ascii").strip()
+    except UnicodeDecodeError:
+        return None, "not ASCII"
+    if not text or not all("\x21" <= ch <= "\x7e" for ch in text):
+        return None, "must be a single line without spaces"
+    return text, None
+
+
+# --- состояние запроса ------------------------------------------------------
+
+def redact(text):
+    """Заменить похожее на секрет на [скрыто]."""
+    for pattern, replacement in REDACTIONS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def build_state(description, text):
+    """state для Jev: описание и строки TASK:/ROLE: (иначе первые 1500 символов задания), без секретов."""
+    text = text if isinstance(text, str) else ""
+    description = description if isinstance(description, str) else ""
+    lines = [line.strip() for line in text.splitlines() if line.lstrip().startswith(("TASK:", "ROLE:"))]
+    task = redact("\n".join(lines)) if lines else redact(text)[:TASK_FALLBACK_CHARS]
+    return {"description": redact(description), "task": task}
+
+
+def state_digest(state):
+    blob = json.dumps(state, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def is_excluded(cwd, prefixes):
+    """cwd (или его realpath) начинается с одного из префиксов exclude."""
+    if not prefixes:
+        return False
+    candidates = {cwd}
+    try:
+        candidates.add(os.path.realpath(cwd))
+    except (OSError, ValueError):
+        pass
+    for raw in prefixes:
+        prefix = os.path.expanduser(raw.strip())
+        variants = {prefix.rstrip("/") or "/"}
+        try:
+            variants.add(os.path.realpath(prefix))
+        except (OSError, ValueError):
+            pass
+        if any(c.startswith(v) for c in candidates for v in variants):
+            return True
+    return False
+
+
+# --- запрос к Jev -----------------------------------------------------------
+
+def _is_probability(value):
+    return _is_number(value) and 0 <= value <= 1
+
+
+def parse_response(raw, header_request_id=None):
+    """Строгий разбор ответа TypeSafe/OpenRouter: вероятности по вопросам или JevError."""
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise JevError("json") from None
+    if not isinstance(data, dict):
+        raise JevError("json")
+    answers = data.get("answers")
+    if not isinstance(answers, dict) or set(answers) != set(QUESTIONS):
+        raise JevError("answers")
+    probs = {}
+    for qid, question in QUESTIONS.items():
+        answer = answers[qid]
+        if not isinstance(answer, dict) or answer.get("type") != question["type"]:
+            raise JevError("type")
+        if question["type"] == "noul":
+            if not _is_probability(answer.get("noul")):
+                raise JevError("range")
+            probs[qid] = float(answer["noul"])
+            continue
+        table = answer.get("probabilities")
+        if not isinstance(table, dict) or set(table) != set(question["criteria"]):
+            raise JevError("options")
+        if not all(_is_probability(v) for v in table.values()):
+            raise JevError("range")
+        if abs(sum(table.values()) - 1) > SUM_TOLERANCE:
+            raise JevError("sum")
+        probs[qid] = {k: float(v) for k, v in table.items()}
+    request_id = header_request_id or data.get("id")
+    return {
+        "probs": probs,
+        "jev_model": data.get("model") if isinstance(data.get("model"), str) else None,
+        "request_id": request_id[:200] if isinstance(request_id, str) and request_id else None,
+    }
+
+
+def _retry_delay(headers):
+    for name, scale in (("retry-after-ms", 0.001), ("retry-after", 1.0)):
+        try:
+            value = float(headers.get(name)) * scale
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if math.isfinite(value) and value >= 0:
+            return value
+    return 0.2
+
+
+def _opener(url):
+    import urllib.request
+    from urllib.parse import urlsplit
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None  # ключ не уходит по перенаправлению: 30x — ошибка
+
+    handlers = [NoRedirect()]
+    if (urlsplit(url).hostname or "") in LOOPBACK:
+        handlers.append(urllib.request.ProxyHandler({}))
+    return urllib.request.build_opener(*handlers)
+
+
+def _exchange(cfg, key, state, deadline):
+    import http.client
+    import urllib.error
+    import urllib.request
+    body = json.dumps({"state": state, "model": cfg["model"], "questions": QUESTIONS}).encode("utf-8")
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+               "User-Agent": USER_AGENT}
+    opener = _opener(cfg["endpoint"])
+    for attempt in (1, 2):
+        started = time.monotonic()
+        if deadline - started <= 0:
+            raise JevError("timeout")
+        request = urllib.request.Request(cfg["endpoint"], data=body, headers=headers, method="POST")
+        try:
+            with opener.open(request, timeout=deadline - started) as resp:
+                raw = resp.read(BODY_MAX_BYTES + 1)
+                header_request_id = resp.headers.get("x-typesafe-request-id")
+        except urllib.error.HTTPError as exc:
+            code, delay = exc.code, _retry_delay(exc.headers)
+            exc.close()
+            spent = time.monotonic() - started
+            retryable = code == 429 or 500 <= code <= 599
+            if attempt == 1 and retryable and deadline - time.monotonic() >= delay + max(spent, 0.1):
+                time.sleep(delay)
+                continue
+            raise JevError(f"http_{code}") from None
+        except TimeoutError:
+            raise JevError("timeout") from None
+        except urllib.error.URLError as exc:
+            raise JevError("timeout" if isinstance(exc.reason, TimeoutError) else "network") from None
+        except (OSError, http.client.HTTPException):
+            raise JevError("network") from None
+        if len(raw) > BODY_MAX_BYTES:
+            raise JevError("size")
+        return parse_response(raw, header_request_id)
+    raise JevError("internal")
+
+
+def ask_jev(cfg, key, state):
+    """Один запрос (с одним повтором) в общем бюджете timeout_seconds; иначе JevError."""
+    import queue
+    import threading
+    started = time.monotonic()
+    deadline = started + float(cfg["timeout_seconds"])
+    box = queue.Queue(maxsize=1)
+
+    def work():
+        try:
+            box.put((True, _exchange(cfg, key, state, deadline)))
+        except JevError as exc:
+            box.put((False, exc))
+        except Exception:
+            box.put((False, JevError("internal")))
+
+    threading.Thread(target=work, daemon=True).start()
+    try:
+        ok, value = box.get(timeout=max(0.0, deadline - time.monotonic()) + 0.05)
+    except queue.Empty:
+        ok, value = False, JevError("timeout")
+    latency = int((time.monotonic() - started) * 1000)
+    if not ok:
+        value.latency_ms = latency
+        raise value
+    value["latency_ms"] = latency
+    return value
+
+
+def choose_tier(probs, thresholds):
+    """(tier, правило) по ответам Jev и порогам конфига."""
+    tier = probs["tier"]
+    if probs["risky"] >= thresholds["risky_max"]:
+        return "heavy", "risky"
+    if probs["review"] >= thresholds["review_max"]:
+        return "heavy", "review"
+    if tier["light"] >= thresholds["light_min"]:
+        return "light", "light"
+    if tier["light"] + tier["standard"] >= thresholds["standard_min"] and tier["heavy"] < thresholds["heavy_max"]:
+        return "standard", "standard"
+    return "heavy", "heavy"
+
+
+def rounded_answers(probs):
+    return {k: ({o: round(p, 4) for o, p in v.items()} if isinstance(v, dict) else round(v, 4))
+            for k, v in probs.items()}
+
+
+# --- каталог моделей Codex --------------------------------------------------
+
+def _executable(path):
+    return bool(path) and os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def _parent_pid(proc_root, pid):
+    try:
+        with open(os.path.join(proc_root, str(pid), "status"), encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("PPid:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def parent_codex(proc_root="/proc", start_pid=None, depth=PARENT_DEPTH):
+    """Первый исполняемый файл с именем codex среди предков процесса (не глубже depth уровней)."""
+    pid = os.getppid() if start_pid is None else start_pid
+    for _ in range(depth):
+        if not isinstance(pid, int) or pid <= 1:
+            return None
+        try:
+            exe = os.readlink(os.path.join(proc_root, str(pid), "exe"))
+        except OSError:
+            exe = None
+        if exe and os.path.basename(exe) == "codex" and _executable(exe):
+            return exe
+        pid = _parent_pid(proc_root, pid)
+    return None
+
+
+def which_absolute(name, path=None):
+    """Исполняемый name из абсолютных каталогов PATH; пустые, «.» и относительные элементы пропускаются."""
+    for directory in (os.environ.get("PATH", "") if path is None else path).split(os.pathsep):
+        if directory and os.path.isabs(directory):
+            candidate = os.path.join(directory, name)
+            if _executable(candidate):
+                return candidate
+    return None
+
+
+def find_codex(codex_bin="", path=None, proc_root="/proc", start_pid=None):
+    """(путь, источник) бинарника codex для хука: процесс codex-предок, codex_bin конфига, PATH; иначе (None, None)."""
+    found = parent_codex(proc_root, start_pid)
+    if found:
+        return found, "parent process"
+    if codex_bin:
+        candidate = os.path.expanduser(codex_bin)
+        if os.path.isabs(candidate) and _executable(candidate):
+            return candidate, "codex_bin"
+    found = which_absolute("codex", path)
+    if found:
+        return found, "PATH"
+    return None, None
+
+
+def parse_catalog(raw):
+    """{slug: [effort, …]} из JSON `codex debug models`; None — не похоже на каталог."""
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    models = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(models, list):
+        return None
+    catalog = {}
+    for entry in models:
+        if not isinstance(entry, dict) or not isinstance(entry.get("slug"), str) or not entry["slug"]:
+            continue
+        levels = entry.get("supported_reasoning_levels")
+        efforts = []
+        for level in levels if isinstance(levels, list) else []:
+            effort = level.get("effort") if isinstance(level, dict) else level
+            if isinstance(effort, str) and effort and effort not in efforts:
+                efforts.append(effort)
+        catalog[entry["slug"]] = efforts
+    return catalog or None
+
+
+def fetch_catalog(binary, timeout):
+    """Каталог из `<binary> debug models` не дольше timeout секунд; None — не получен."""
+    import signal
+    import subprocess
+    try:
+        proc = subprocess.Popen([binary, "debug", "models"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        return None
+    try:
+        out, _err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        proc.wait()
+        return None
+    if proc.returncode != 0 or len(out) > CATALOG_MAX_BYTES:
+        return None
+    return parse_catalog(out)
+
+
+def cache_path():
+    return os.path.expanduser(CATALOG_CACHE)
+
+
+def _binary_key(binary):
+    """(реальный путь, mtime в нс) бинарника codex; None — не читается."""
+    try:
+        real = os.path.realpath(binary)
+        return real, os.stat(real).st_mtime_ns
+    except (OSError, ValueError):
+        return None
+
+
+def _cache_entries():
+    """Записи общего кэша: {реальный путь бинарника: {mtime_ns, ts, models}}."""
+    try:
+        with open(cache_path(), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    entries = data.get("binaries") if isinstance(data, dict) else None
+    return entries if isinstance(entries, dict) else {}
+
+
+def _valid_models(models):
+    return isinstance(models, dict) and bool(models) and all(
+        isinstance(k, str) and isinstance(v, list) and all(isinstance(e, str) for e in v) for k, v in models.items())
+
+
+def load_cached_catalog(binary, now=None):
+    """(каталог, возраст в секундах) этого бинарника (путь и mtime) из кэша не старше 24 ч; иначе (None, None)."""
+    key = _binary_key(binary)
+    if key is None:
+        return None, None
+    now = time.time() if now is None else now
+    entry = _cache_entries().get(key[0])
+    if not isinstance(entry, dict) or entry.get("mtime_ns") != key[1] or not _is_number(entry.get("ts")):
+        return None, None
+    age = now - entry["ts"]
+    if not -60 <= age < CATALOG_TTL or not _valid_models(entry.get("models")):
+        return None, None
+    return entry["models"], max(0.0, age)
+
+
+def save_catalog(binary, catalog):
+    """Записать каталог бинарника в общий кэш атомарно (каталог 0700, файл 0600); ошибки не важны."""
+    import tempfile
+    key = _binary_key(binary)
+    if key is None:
+        return
+    path = cache_path()
+    try:
+        now = time.time()
+        entries = {real: entry for real, entry in _cache_entries().items() if isinstance(entry, dict)
+                   and _is_number(entry.get("ts")) and -60 <= now - entry["ts"] < CATALOG_TTL}
+        entries[key[0]] = {"mtime_ns": key[1], "ts": now, "models": catalog}
+        directory = os.path.dirname(path)
+        if not os.path.isdir(directory):
+            os.makedirs(directory, mode=0o700, exist_ok=True)
+            os.chmod(directory, 0o700)
+        fd, tmp = tempfile.mkstemp(prefix=".codex-models-", suffix=".tmp", dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump({"binaries": entries}, fh, ensure_ascii=False)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except Exception:
+        pass
+
+
+def codex_catalog(cfg, deadline=None):
+    """(каталог, None) или (None, no_codex | no_catalog): каталог бинарника, запустившего хук; кэш 24 ч, ≤ 3 с."""
+    binary, _source = find_codex(cfg["codex_bin"])
+    if binary is None:
+        return None, "no_codex"
+    catalog, _age = load_cached_catalog(binary)
+    if catalog is not None:
+        return catalog, None
+    timeout = CATALOG_TIMEOUT if deadline is None else min(CATALOG_TIMEOUT, deadline - time.monotonic())
+    if timeout <= 0.1:
+        return None, "no_catalog"
+    catalog = fetch_catalog(binary, timeout)
+    if catalog is None:
+        return None, "no_catalog"
+    save_catalog(binary, catalog)
+    return catalog, None
+
+
+def verify_codex(cfg_model, cfg_effort, session_model, get_catalog):
+    """(model, effort, заметки): что можно подставить после сверки с каталогом; None — не подставлять."""
+    want_model = None if cfg_model == "inherit" else cfg_model
+    want_effort = None if cfg_effort == "inherit" else cfg_effort
+    if want_model is None and want_effort is None:
+        return cfg_model, cfg_effort, []
+    catalog, problem = get_catalog()
+    if catalog is None:
+        return (None if want_model else cfg_model), (None if want_effort else cfg_effort), [problem]
+    notes, model, effort = [], cfg_model, cfg_effort
+    if want_model is not None and want_model not in catalog:
+        model = None
+        notes.append("model_not_in_catalog")
+    if want_effort is not None:
+        final = model if model not in (None, "inherit") else session_model
+        if not isinstance(final, str) or want_effort not in catalog.get(final, ()):
+            effort = None
+            notes.append("effort_not_supported")
+    return model, effort, notes
+
+
+# --- хук --------------------------------------------------------------------
+
+def _text(value):
+    return value if isinstance(value, str) else None
+
+
+def detect_agent(event):
+    """claude, codex или None: чей это запуск субагента (иначе хук молчит и не пишет журнал)."""
+    name = event.get("tool_name")
+    if not isinstance(name, str):
+        return None
+    if "turn_id" in event:  # Codex: только свой spawn_agent, не MCP-инструмент и не чужое пространство имён
+        own = name.endswith("spawn_agent") and not name.startswith("mcp__") and "__" not in name
+        return "codex" if own else None
+    return "claude" if name == "Agent" else None
+
+
+def codex_version(tool_name, args):
+    """2 — пространство collaboration (task_name, fork_turns), 1 — multi_agent_v1."""
+    if "task_name" in args or "fork_turns" in args:
+        return 2
+    return 1 if tool_name == "spawn_agent" else 2
+
+
+def codex_is_fork(version, args):
+    """Полный форк контекста: v2 без fork_turns или с fork_turns ≠ none, v1 с fork_context: true."""
+    if version == 2:
+        return args.get("fork_turns") != "none"
+    return args.get("fork_context") is True
+
+
+def codex_task_text(args):
+    """Текст задания: message (строка) или текстовые части items; None — задания нет."""
+    message = args.get("message")
+    if isinstance(message, str):
+        return message
+    items = args.get("items")
+    parts = [item["text"] for item in items if isinstance(item, dict) and item.get("type") == "text"
+             and isinstance(item.get("text"), str)] if isinstance(items, list) else []
+    return "\n".join(parts) if parts else None
+
+
+def codex_description(args):
+    for key in ("task_name", "agent_type"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def base_record(event, agent):
+    tool_input = event.get("tool_input") if isinstance(event.get("tool_input"), dict) else {}
+    if agent == "codex":
+        subagent_type = _text(tool_input.get("agent_type"))
+        description = codex_description(tool_input)
+        session_model = _text(event.get("model"))
+    else:
+        subagent_type = _text(tool_input.get("subagent_type"))
+        description = _text(tool_input.get("description"))
+        session_model = None
+    return {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "agent": agent,
+        "session_id": _text(event.get("session_id")),
+        "cwd": _text(event.get("cwd")),
+        "subagent_type": subagent_type,
+        "description": redact(description) if description is not None else None,
+        "state_sha256": None, "provider": None, "jev_model": None, "request_id": None,
+        "latency_ms": None, "answers": None, "tier": None, "model": None, "effort": None,
+        "session_model": session_model, "reason": None, "mode": None,
+    }
+
+
+def _claude_decision(cfg, tool_input, tier, rule, record):
+    model = cfg["claude"]["models"][tier]
+    record.update(model=model, reason="rule:" + rule)
+    if cfg["mode"] != "active" or model == "inherit":
+        return None, record
+    updated = dict(tool_input)
+    updated["model"] = model
+    description = _text(tool_input.get("description")) or ""
+    output = {"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "updatedInput": updated,
+        "additionalContext": f'{NAME}: subagent "{description}" runs on {model} ({tier})',
+    }}
+    return output, record
+
+
+def _codex_decision(cfg, event, tool_input, tier, rule, record, deadline):
+    model, effort, notes = verify_codex(cfg["codex"]["models"][tier], cfg["codex"]["effort"][tier],
+                                        _text(event.get("model")), lambda: codex_catalog(cfg, deadline))
+    record.update(model=model, effort=effort, reason=";".join(["rule:" + rule] + notes))
+    updated = dict(tool_input)
+    if model not in (None, "inherit"):
+        updated["model"] = model
+    if effort not in (None, "inherit"):
+        updated["reasoning_effort"] = effort
+    if cfg["mode"] != "active" or updated == tool_input:
+        return None, record
+    output = {"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "allow",
+        "updatedInput": updated,
+    }}
+    return output, record
+
+
+def handle_event(event, agent, deadline=None):
+    """(вывод хука или None, строка журнала) для запуска субагента в Claude Code или Codex."""
+    record = base_record(event, agent)
+    tool_input = event.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None, dict(record, reason="error:input")
+    if agent == "claude":
+        if "model" in tool_input:
+            return None, dict(record, reason="explicit")
+        description, text = tool_input.get("description"), tool_input.get("prompt")
+    else:
+        if tool_input.get("model") is not None or tool_input.get("reasoning_effort") is not None:
+            return None, dict(record, reason="explicit")
+        if codex_is_fork(codex_version(event.get("tool_name"), tool_input), tool_input):
+            return None, dict(record, reason="fork")
+        text = codex_task_text(tool_input)
+        if text is None:
+            return None, dict(record, reason="error:input")
+        description = codex_description(tool_input)
+    try:
+        cfg = load_config()
+    except ConfigError:
+        return None, dict(record, reason="error:config")
+    if cfg is not None:
+        record.update(provider=cfg["provider"], mode=cfg["mode"])
+    rules = cfg or DEFAULT_RULES
+    if agent == "claude":
+        subagent_type = tool_input.get("subagent_type")
+        if not isinstance(subagent_type, str) or not subagent_type:
+            subagent_type = "general-purpose"
+        if subagent_type not in rules["claude"]["route_types"]:
+            return None, dict(record, reason="type")
+    else:  # роль со своей моделью в файле перекрыла бы выбор, а effort сверен не с той моделью
+        agent_type = tool_input.get("agent_type")
+        if agent_type is not None and agent_type not in rules["codex"]["route_agent_types"]:
+            return None, dict(record, reason="type")
+    cwd = event.get("cwd") if isinstance(event.get("cwd"), str) and event.get("cwd") else os.getcwd()
+    if is_excluded(cwd, rules["exclude"]):
+        return None, dict(record, reason="excluded")
+    if cfg is None or not cfg["enabled"]:
+        return None, dict(record, reason="off")
+    key, _problem = read_key(cfg["key_file"])
+    if key is None:
+        return None, dict(record, reason="no_key")
+    state = build_state(description, text)
+    record["state_sha256"] = state_digest(state)
+    try:
+        result = ask_jev(cfg, key, state)
+    except JevError as exc:
+        return None, dict(record, reason="error:" + exc.kind, latency_ms=exc.latency_ms)
+    tier, rule = choose_tier(result["probs"], cfg["thresholds"])
+    record.update(jev_model=result["jev_model"], request_id=result["request_id"],
+                  latency_ms=result["latency_ms"], answers=rounded_answers(result["probs"]), tier=tier)
+    if agent == "claude":
+        return _claude_decision(cfg, tool_input, tier, rule, record)
+    return _codex_decision(cfg, event, tool_input, tier, rule, record, deadline)
+
+
+def append_journal(record):
+    """Дописать строку JSON в журнал (каталог 0700, файл 0600)."""
+    path = log_path()
+    directory = os.path.dirname(path)
+    if directory and not os.path.isdir(directory):
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        os.chmod(directory, 0o700)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC, 0o600)
+    try:
+        if stat.S_IMODE(os.fstat(fd).st_mode) != 0o600:
+            os.fchmod(fd, 0o600)
+        line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+        os.write(fd, line.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def hook_main():
+    """Хук: всегда выход 0; вывод — только при подстановке; stderr молчит."""
+    started = time.monotonic()
+    sys.stderr = open(os.devnull, "w")
+    try:
+        event = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+    except Exception:
+        return 0
+    agent = detect_agent(event) if isinstance(event, dict) else None
+    if agent is None:
+        return 0
+    try:
+        output, record = handle_event(event, agent, deadline=started + HOOK_TIMEOUT - 1)
+    except Exception:
+        output, record = None, dict(base_record(event, agent), reason="error:internal")
+    try:
+        append_journal(record)
+    except Exception:
+        pass
+    if output is not None:
+        sys.stdout.write(json.dumps(output, ensure_ascii=True))
+        sys.stdout.flush()
+    return 0
+
+
+# --- команды ----------------------------------------------------------------
+
+def _create_hint():
+    path = config_path()
+    return (f"install -d -m 700 {os.path.dirname(path)} && "
+            f"install -m 600 {os.path.join(PLUGIN_ROOT, 'config.example.toml')} {path}")
+
+
+def _load_or_report():
+    """Конфиг для команд; при ошибке — сообщение в stderr и None."""
+    path = config_path()
+    try:
+        cfg = load_config(path)
+    except ConfigError as exc:
+        print(f"Config {path} is unusable: {exc}", file=sys.stderr)
+        return None
+    if cfg is None:
+        print(f"No config at {path}. Create it from the plugin's example: {_create_hint()}", file=sys.stderr)
+    return cfg
+
+
+def _fmt(value):
+    return f"{value:.2f}"
+
+
+def _mapping(table):
+    return ", ".join(f"{t} → {table[t]}" for t in TIERS)
+
+
+def cmd_explain(text, description):
+    cfg = _load_or_report()
+    if cfg is None:
+        return 1
+    key, problem = read_key(cfg["key_file"])
+    if key is None:
+        print(f"Key {os.path.expanduser(cfg['key_file'])}: {problem}.", file=sys.stderr)
+        return 1
+    state = build_state(description, text)
+    source = "TASK:/ROLE: lines" if any(
+        line.lstrip().startswith(("TASK:", "ROLE:")) for line in text.splitlines()) else "first 1500 characters"
+    print(f"Provider: {cfg['provider']}, {cfg['endpoint']}, Jev model {cfg['model']}")
+    print(f"Sent: description {len(state['description'])} chars, task ({source}) "
+          f"{len(state['task'])} chars, after hiding secrets")
+    try:
+        result = ask_jev(cfg, key, state)
+    except JevError as exc:
+        print(f"Jev did not answer: error:{exc.kind} ({exc.latency_ms} ms)", file=sys.stderr)
+        return 1
+    probs, th = result["probs"], cfg["thresholds"]
+    tier_p = probs["tier"]
+    print(f"Answer in {result['latency_ms']} ms, model {result['jev_model']}, request_id {result['request_id']}")
+    print(f"tier: light {_fmt(tier_p['light'])} · standard {_fmt(tier_p['standard'])} · "
+          f"heavy {_fmt(tier_p['heavy'])}")
+    print(f"risky: {_fmt(probs['risky'])}   review: {_fmt(probs['review'])}")
+    print("Bands:")
+    print(f"  risky ≥ {th['risky_max']} → heavy: {'yes' if probs['risky'] >= th['risky_max'] else 'no'}")
+    print(f"  review ≥ {th['review_max']} → heavy: {'yes' if probs['review'] >= th['review_max'] else 'no'}")
+    print(f"  P(light) {_fmt(tier_p['light'])} ≥ light_min {th['light_min']} → light: "
+          f"{'yes' if tier_p['light'] >= th['light_min'] else 'no'}")
+    both = tier_p["light"] + tier_p["standard"]
+    fits = both >= th["standard_min"] and tier_p["heavy"] < th["heavy_max"]
+    print(f"  P(light)+P(standard) {_fmt(both)} ≥ standard_min {th['standard_min']} and "
+          f"P(heavy) {_fmt(tier_p['heavy'])} < heavy_max {th['heavy_max']} → standard: {'yes' if fits else 'no'}")
+    tier, rule = choose_tier(probs, th)
+    print(f"Result: {tier} (rule {rule})")
+    claude_model = cfg["claude"]["models"][tier]
+    codex_model, codex_effort = cfg["codex"]["models"][tier], cfg["codex"]["effort"][tier]
+    if cfg["mode"] != "active":
+        claude_effect = codex_effect = "shadow mode — the call is not changed, the decision only goes to the journal"
+    else:
+        claude_effect = ("inherit — the call is not changed, the subagent runs on the session model"
+                         if claude_model == "inherit"
+                         else f"a subagent without an explicit model gets model={claude_model}")
+        codex_effect = ("inherit — the call is not changed" if codex_model == codex_effort == "inherit"
+                        else "set after checking the `codex debug models` catalog")
+    print(f"Claude Code → model {claude_model}; {claude_effect}")
+    print(f"Codex → model {codex_model}, effort {codex_effort}; {codex_effect}")
+    return 0
+
+
+def _parse_ts(value):
+    from datetime import datetime, timezone
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _decision_key(row):
+    if row.get("agent") == "codex":
+        return f"Codex {row.get('model') or '—'}, effort {row.get('effort') or '—'}"
+    return str(row.get("model"))
+
+
+def _changed(row):
+    values = (row.get("model"), row.get("effort")) if row.get("agent") == "codex" else (row.get("model"),)
+    return any(v not in (None, "inherit") for v in values)
+
+
+def cmd_stats(days):
+    from collections import Counter
+    from datetime import datetime, timedelta, timezone
+    path = log_path()
+    since = datetime.now(timezone.utc) - timedelta(days=days) if days else None
+    rows = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                if since is not None:
+                    ts = _parse_ts(row.get("ts"))
+                    if ts is None or ts < since:
+                        continue
+                rows.append(row)
+    except FileNotFoundError:
+        print(f"No journal: {path}")
+        return 0
+    print(f"Journal: {path}")
+    print(f"Period: last {days} days" if days else "Period: whole journal")
+    codex_rows = sum(1 for r in rows if r.get("agent") == "codex")
+    print(f"Subagent calls: {len(rows)} (Claude Code {len(rows) - codex_rows}, Codex {codex_rows})")
+    if not rows:
+        return 0
+    decisions = [r for r in rows if str(r.get("reason", "")).startswith("rule:")]
+    by_model, applied, shadow = Counter(), Counter(), Counter()
+    for row in decisions:
+        key = _decision_key(row)
+        by_model[key] += 1
+        if row.get("mode") == "shadow":
+            shadow[key] += 1
+        elif _changed(row):
+            applied[key] += 1
+    print(f"Jev decisions: {len(decisions)}")
+    for key, count in by_model.most_common():
+        notes = []
+        if applied[key]:
+            notes.append(f"applied {applied[key]}")
+        if shadow[key]:
+            notes.append(f"shadow {shadow[key]}")
+        if count > applied[key] + shadow[key]:
+            notes.append("call unchanged")
+        print(f"  {key}: {count}" + (f" ({', '.join(notes)})" if notes else ""))
+    print("By reason:")
+    for reason, count in Counter(str(r.get("reason")) for r in rows).most_common():
+        print(f"  {reason}: {count}")
+    attempted = [r for r in rows if r.get("state_sha256")]
+    failed = [r for r in attempted if str(r.get("reason", "")).startswith("error:")]
+    if attempted:
+        share = 100 * len(failed) / len(attempted)
+        print(f"Failures: {len(failed)} of {len(attempted)} Jev requests ({share:.1f} %)")
+    latencies = [r["latency_ms"] for r in decisions if _is_number(r.get("latency_ms"))]
+    if latencies:
+        print(f"Average latency: {round(sum(latencies) / len(latencies))} ms "
+              f"(successful requests: {len(latencies)})")
+    return 0
+
+
+def _print_codex_check(shown):
+    print("Codex models: " + _mapping(shown["codex"]["models"]))
+    print("Codex effort: " + _mapping(shown["codex"]["effort"]))
+    print("Codex agent types routed: " + json.dumps(shown["codex"]["route_agent_types"]))
+    if shown["codex_bin"] and not _executable(os.path.expanduser(shown["codex_bin"])):  # путь проверен конфигом
+        print(f"codex_bin: {os.path.expanduser(shown['codex_bin'])} is not an executable file, looking further")
+    binary, source = find_codex(shown["codex_bin"])
+    print(f"codex binary for the catalog: {binary} ({source})" if binary else
+          "codex binary for the catalog: not found — Codex subagents get neither model nor effort (set codex_bin)")
+    catalog, age = load_cached_catalog(binary) if binary else (None, None)
+    if catalog is not None:
+        origin = f"cache {cache_path()}, {age / 3600:.1f} h old"
+    elif binary:
+        catalog = fetch_catalog(binary, CATALOG_TIMEOUT)
+        origin = f"fetched now from {binary} debug models"
+        if catalog is not None:
+            save_catalog(binary, catalog)
+    if catalog is None:
+        print("Codex model catalog: not available")
+        return
+    print(f"Codex model catalog: {len(catalog)} models ({origin})")
+    for tier in TIERS:
+        model, effort = shown["codex"]["models"][tier], shown["codex"]["effort"][tier]
+        verdict = ("session model" if model == "inherit" else
+                   "in the catalog" if model in catalog else "not in the catalog, will not be set")
+        parts = [f"model {model} — {verdict}"]
+        if effort != "inherit":
+            if model == "inherit":
+                parts.append(f"effort {effort} — checked against the session model at spawn time")
+            else:
+                parts.append(f"effort {effort} — " + ("supported" if effort in catalog.get(model, ())
+                                                       else "not supported by the model, will not be set"))
+        print(f"  {tier}: " + "; ".join(parts))
+
+
+def cmd_check(live):
+    path = config_path()
+    ok = True
+    print(f"Config: {path} ({'present' if os.path.exists(path) else 'missing'})")
+    try:
+        cfg = load_config(path)
+    except ConfigError as exc:
+        print(f"Config is unusable: {exc}")
+        return 1
+    if cfg is None:
+        ok = False
+        print(f"Without a config the hook is off (reason off); create it: {_create_hint()}")
+    shown = cfg or DEFAULT_RULES
+    print(f"Enabled: {'yes' if shown['enabled'] else 'no'}")
+    print(f"Mode: {shown['mode']}")
+    print(f"Provider: {shown['provider']}")
+    print(f"Endpoint: {shown['endpoint']}")
+    print(f"Jev model: {shown['model']}")
+    print(f"Excluded: {', '.join(shown['exclude']) or 'none'}")
+    print(f"Request budget: {shown['timeout_seconds']} s")
+    print(f"Claude Code subagent types: {', '.join(shown['claude']['route_types'])}")
+    print("Claude Code models: " + _mapping(shown["claude"]["models"]))
+    _print_codex_check(shown)
+    key_file = os.path.expanduser(shown["key_file"])
+    key, problem = read_key(key_file)
+    print(f"Key: {key_file} — {'present, permissions OK' if key else problem}")
+    if key is None:
+        ok = False
+    print(f"Journal: {log_path()}")
+    if live:
+        if cfg is None or key is None:
+            print("Live request: skipped — no config or key")
+            ok = False
+        else:
+            state = {"description": "check", "task": "List the files in the current directory."}
+            try:
+                result = ask_jev(cfg, key, state)
+            except JevError as exc:
+                print(f"Live request: failed, error:{exc.kind} ({exc.latency_ms} ms)")
+                ok = False
+            else:
+                tier, _rule = choose_tier(result["probs"], cfg["thresholds"])
+                print(f"Live request: answer in {result['latency_ms']} ms, model {result['jev_model']}, "
+                      f"request_id {result['request_id']}, tier {tier} → Claude Code "
+                      f"{cfg['claude']['models'][tier]}, Codex {cfg['codex']['models'][tier]}/"
+                      f"{cfg['codex']['effort'][tier]}")
+    return 0 if ok else 1
+
+
+# --- codex-trust: доверие хуку через app-server Codex ----------------------
+
+HOOKS_LIST = "hooks/list"
+BATCH_WRITE = "config/batchWrite"
+TRUST_NEEDED = ("untrusted", "modified")
+PROTOCOL_ERRORS = (-32600, -32601, -32602)
+PLUGIN_ROOT_VARS = ("${CLAUDE_PLUGIN_ROOT}", "${PLUGIN_ROOT}")
+SAFE_PATH_RE = re.compile(r"/[A-Za-z0-9._/+@:,= -]*")
+
+
+class TrustError(Exception):
+    """Отказ codex-trust: текст по-английски для пользователя, выход 1."""
+
+
+class RpcError(TrustError):
+    """Ответ app-server с error: код, текст и data как есть."""
+
+    def __init__(self, method, error):
+        self.method = method
+        self.code = error.get("code")
+        text = error.get("message")
+        self.text = text[:300] if isinstance(text, str) else ""
+        self.data = error.get("data") if isinstance(error.get("data"), dict) else {}
+        super().__init__(f"app-server rejected {method}: {self.text or 'no message'} (code {self.code})")
+
+
+class AppServer:
+    """Клиент `codex app-server` по stdio: JSON построчно, без поля jsonrpc (протокол app-server)."""
+
+    def __init__(self, binary, timeout=APP_SERVER_TIMEOUT):
+        import subprocess
+        self.timeout = timeout
+        self.next_id = 1
+        self.buffer = b""
+        try:
+            self.proc = subprocess.Popen([binary, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError as exc:
+            raise TrustError(f"cannot start {binary} app-server "
+                             f"({exc.strerror or exc.__class__.__name__})") from None
+
+    def close(self):
+        import signal
+        import subprocess
+        try:
+            self.proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            self.proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            self.proc.wait()
+        self.proc.stdout.close()
+
+    def send(self, message):
+        try:
+            self.proc.stdin.write(json.dumps(message, ensure_ascii=False).encode("utf-8") + b"\n")
+            self.proc.stdin.flush()
+        except OSError:
+            raise TrustError("app-server closed the connection") from None
+
+    def _read_message(self, deadline):
+        import selectors
+        while b"\n" not in self.buffer:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TrustError(f"app-server did not answer within {self.timeout} s")
+            with selectors.DefaultSelector() as selector:
+                selector.register(self.proc.stdout, selectors.EVENT_READ)
+                if not selector.select(remaining):
+                    continue
+            chunk = os.read(self.proc.stdout.fileno(), 65536)
+            if not chunk:
+                code = self.proc.poll()
+                raise TrustError("app-server exited" + (f" with code {code}" if code is not None else ""))
+            self.buffer += chunk
+        line, self.buffer = self.buffer.split(b"\n", 1)
+        try:
+            message = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            raise TrustError("app-server sent something that is not JSON — "
+                             "this Codex version speaks another protocol") from None
+        if not isinstance(message, dict):
+            raise TrustError("app-server sent JSON that is not an object — this Codex version speaks another protocol")
+        return message
+
+    def request(self, method, params):
+        request_id = self.next_id
+        self.next_id += 1
+        self.send({"id": request_id, "method": method, "params": params})
+        deadline = time.monotonic() + self.timeout
+        while True:
+            message = self._read_message(deadline)
+            if "method" in message:
+                if "id" in message:  # запрос сервера клиенту: codex-trust такие не обслуживает
+                    self.send({"id": message["id"], "error": {"code": -32601,
+                                                              "message": f"{NAME} does not handle this request"}})
+                continue
+            if message.get("id") != request_id:
+                continue
+            if isinstance(message.get("error"), dict):
+                raise RpcError(method, message["error"])
+            if "result" not in message:
+                raise TrustError(f"the answer to {method} has no result — this Codex version speaks another protocol")
+            return message["result"]
+
+    def notify(self, method):
+        self.send({"method": method})
+
+
+def _call(server, method, params):
+    """Запрос, где ошибка протокола (неизвестный метод, чужие параметры) — внятный отказ без записи."""
+    try:
+        return server.request(method, params)
+    except RpcError as exc:
+        write_code = exc.data.get("config_write_error_code")
+        if write_code:
+            raise TrustError(f"Codex did not write the trust: {write_code} ({exc.text})") from None
+        if exc.code in PROTOCOL_ERRORS:
+            raise TrustError(f"this Codex version does not accept {method} in the expected form "
+                             f"({exc.text or exc.code}); nothing changed — trust the hook by hand in /hooks") from None
+        raise
+
+
+def _hook_command(hook):
+    command = hook.get("command")
+    return command if hook.get("handlerType") == "command" and isinstance(command, str) else ""
+
+
+def is_our_command(command):
+    """Ровно «<путь>/bin/subagent-model-router hook» и, может быть, «; true»; путь — без подстановок shell."""
+    import shlex
+    if not isinstance(command, str):
+        return False
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        words = list(lexer)
+    except ValueError:
+        return False
+    if not words or words[1:] not in (["hook"], ["hook", ";", "true"]):
+        return False
+    path = words[0]
+    for variable in PLUGIN_ROOT_VARS:
+        if path.startswith(variable + "/"):
+            return path[len(variable):] == f"/bin/{NAME}"
+    return (SAFE_PATH_RE.fullmatch(path) is not None and os.path.normpath(path) == path
+            and path.endswith(f"/bin/{NAME}"))
+
+
+def is_our_hook(hook):
+    """Хук этого плагина: pluginId «subagent-model-router@…», источник — плагин, команда — ровно наш хук."""
+    plugin_id = hook.get("pluginId")
+    if not isinstance(plugin_id, str) or plugin_id.partition("@")[0] != NAME:
+        return False
+    if hook.get("source") not in (None, "plugin"):
+        return False
+    return hook.get("handlerType") == "command" and is_our_command(hook.get("command"))
+
+
+def parse_hooks_list(result):
+    """Хуки из ответа hooks/list (HookMetadata: key, currentHash, trustStatus, …); иначе TrustError."""
+    data = result.get("data") if isinstance(result, dict) else None
+    if not isinstance(data, list):
+        raise TrustError(f"the {HOOKS_LIST} answer has no data list — this Codex version speaks another protocol; "
+                         "nothing changed")
+    hooks = {}
+    for entry in data:
+        items = entry.get("hooks") if isinstance(entry, dict) else None
+        if not isinstance(items, list):
+            raise TrustError(f"the {HOOKS_LIST} answer has no hooks[] — this Codex version speaks another protocol; "
+                             "nothing changed")
+        for hook in items:
+            if not isinstance(hook, dict) or not all(isinstance(hook.get(k), str) and hook.get(k)
+                                                     for k in ("key", "currentHash", "trustStatus")):
+                raise TrustError(f"a hook in the {HOOKS_LIST} answer lacks key/currentHash/trustStatus — this Codex "
+                                 "version speaks another protocol; nothing changed")
+            hooks.setdefault(hook["key"], hook)
+    return list(hooks.values())
+
+
+def _trust_binary(explicit):
+    """(бинарник, откуда) для codex-trust: --codex, codex_bin конфига, PATH; иначе TrustError."""
+    if explicit:
+        path = os.path.abspath(os.path.expanduser(explicit))
+        if not _executable(path):
+            raise TrustError(f"--codex {path}: not an executable file")
+        return path, "--codex"
+    try:
+        cfg = load_config()
+    except ConfigError as exc:
+        print(f"Config {config_path()} is unusable ({exc}); ignoring codex_bin.", file=sys.stderr)
+        cfg = None
+    codex_bin = os.path.expanduser(cfg["codex_bin"]) if cfg and cfg["codex_bin"] else ""
+    if codex_bin:
+        if os.path.isabs(codex_bin) and _executable(codex_bin):
+            return codex_bin, "codex_bin"
+        print(f"codex_bin {codex_bin}: not an executable file — looking for codex on PATH.", file=sys.stderr)
+    found = which_absolute("codex")
+    if found:
+        return found, "PATH"
+    raise TrustError("codex is neither in codex_bin of the config nor on PATH. Name the binary: "
+                     f"{NAME} codex-trust --codex /path/to/codex (for example the VS Code extension's binary "
+                     "~/.vscode/extensions/openai.chatgpt-<version>/bin/linux-x86_64/codex)")
+
+
+def _describe(hook):
+    parts = [hook.get("eventName"), hook.get("pluginId") or _hook_command(hook)]
+    return " · ".join(str(p) for p in parts if isinstance(p, str) and p)
+
+
+def cmd_codex_trust(explicit, dry_run):
+    try:
+        binary, source = _trust_binary(explicit)
+        print(f"Codex: {binary} ({source})")
+        server = AppServer(binary)
+        try:
+            _call(server, "initialize", {"clientInfo": {"name": NAME, "title": "Subagent Model Router",
+                                                        "version": plugin_version()}})
+            server.notify("initialized")
+            hooks = parse_hooks_list(_call(server, HOOKS_LIST, {"cwds": [os.path.expanduser("~")]}))
+            ours = [h for h in hooks if is_our_hook(h)]
+            if not ours:
+                raise TrustError(f"Codex lists no {NAME} hooks: the plugin is not installed or is disabled "
+                                 f"(codex plugin add {NAME}@korkin25), or hooks are turned off in Codex")
+            pending = [h for h in ours if h["trustStatus"] in TRUST_NEEDED]
+            for hook in ours:
+                if hook not in pending:
+                    state = "already trusted" if hook["trustStatus"] == "trusted" else f"status {hook['trustStatus']}"
+                    print(f"  {state}: {hook['key']} ({_describe(hook)})")
+            for hook in ours:
+                if hook.get("enabled") is False:
+                    print(f"  disabled in Codex (enable it in /hooks): {hook['key']}")
+            if not pending:
+                print("Nothing to trust.")
+                return 0
+            if dry_run:
+                for hook in pending:
+                    print(f"  would trust ({hook['trustStatus']}): {hook['key']} ({_describe(hook)})")
+                print("--dry-run: nothing written.")
+                return 0
+            value = {hook["key"]: {"trusted_hash": hook["currentHash"]} for hook in pending}
+            result = _call(server, BATCH_WRITE, {
+                "edits": [{"keyPath": "hooks.state", "value": value, "mergeStrategy": "upsert"}],
+                "filePath": None, "expectedVersion": None, "reloadUserConfig": True,
+            })
+            for hook in pending:
+                print(f"  trusted ({hook['trustStatus']} → trusted): {hook['key']} ({_describe(hook)})")
+            if isinstance(result, dict) and result.get("status") == "okOverridden":
+                print("Warning: Codex wrote the trust, but a config layer above the user's overrides it.")
+            return 0
+        finally:
+            server.close()
+    except TrustError as exc:
+        print(f"codex-trust: {exc}", file=sys.stderr)
+        return 1
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv == ["hook"]:
+        return hook_main()
+    import argparse
+    parser = argparse.ArgumentParser(prog=NAME, description="Picks the model for Claude Code and Codex subagents "
+                                                            "from a Jev (TypeSafe AI) judgement of their task.")
+    sub = parser.add_subparsers(dest="cmd")
+    sub.add_parser("hook", help="PreToolUse hook: the event JSON on stdin")
+    explain = sub.add_parser("explain", help="ask Jev about a task text and show the decision")
+    explain.add_argument("text", nargs="?", help="task text (stdin when omitted)")
+    explain.add_argument("-d", "--description", default="", help="short subagent description")
+    stats = sub.add_parser("stats", help="summary of the decision journal")
+    stats.add_argument("--days", type=int, help="only the last N days")
+    check = sub.add_parser("check", help="check the config, the key and the Codex model catalog")
+    check.add_argument("--live", action="store_true", help="make one small request to Jev")
+    trust = sub.add_parser("codex-trust", help="trust this plugin's hooks in Codex (like /hooks) through app-server")
+    trust.add_argument("--codex", metavar="PATH",
+                       help="path to the codex binary (default: codex_bin from the config, then PATH)")
+    trust.add_argument("--dry-run", action="store_true", help="only show what would be trusted")
+    args = parser.parse_args(argv)
+    if args.cmd is None:
+        parser.print_help()
+        return 0
+    if args.cmd == "hook":
+        return hook_main()
+    if args.cmd == "explain":
+        text = args.text if args.text is not None else sys.stdin.read()
+        return cmd_explain(text, args.description)
+    if args.cmd == "stats":
+        return cmd_stats(args.days)
+    if args.cmd == "check":
+        return cmd_check(args.live)
+    return cmd_codex_trust(args.codex, args.dry_run)
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["hook"]:
+        try:
+            hook_main()
+            sys.stdout.flush()
+        except BaseException:
+            pass
+        os._exit(0)  # любой сбой — выход 0; не ждать поток запроса после бюджета
+    sys.exit(main())

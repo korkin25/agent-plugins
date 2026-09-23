@@ -21,6 +21,7 @@ then browse with `/plugin`, or install directly:
 | [**calendar-agenda**](calendar-agenda/) | Your agenda from any number of Google Calendars at the start of every session, and scheduling that respects all of them |
 | [**keepassxc-migration**](keepassxc-migration/) | Moves a Linux desktop's secrets into KeePassXC — out of gnome-keyring, KWallet and shell dotfiles, with the browser sessions surviving the move |
 | [**plugin-factory**](plugin-factory/) | Scaffold, check and release plugins in this repository, with the same validation Anthropic's review pipeline runs |
+| [**subagent-model-router**](subagent-model-router/) | Every subagent gets a model that fits its task, chosen by Jev (TypeSafe AI) — in Claude Code and Codex — while your main session keeps the model you chose |
 
 ## How releases work
 
