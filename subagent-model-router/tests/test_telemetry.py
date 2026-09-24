@@ -215,7 +215,10 @@ class TelemetryTests(unittest.TestCase):
             db.execute("BEGIN IMMEDIATE")
             started = time.monotonic()
             self.assertFalse(self.enqueue())
-            self.assertLess(time.monotonic() - started, .3)
+            # SQLite has a 100 ms busy timeout per operation; shared macOS CI
+            # can deschedule this process between operations. Still require
+            # return well before the hook's 10 s deadline, without waiting for unlock.
+            self.assertLess(time.monotonic() - started, 1.0)
         finally:
             db.rollback()
             db.close()
