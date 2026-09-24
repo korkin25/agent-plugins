@@ -48,7 +48,8 @@ subagent starts as usual and the reason goes to the journal.
 After each successful Jev decision, the hook emits a top-level `systemMessage` for the user in both Claude
 Code and Codex: the subagent label, selected model, Codex reasoning effort and decision reason. This is emitted
 by synchronous `PreToolUse`, before the launch tool runs. `additionalContext` is not a user-facing notice.
-Inherited model/effort are reported as unchanged; catalog-rejected choices are not shown as selected. Shadow
+Inherited models show the session model supplied by the host plus `(unchanged)`; if omitted, `unknown
+(unchanged)` is used. No transcript or private client config is read to guess it. Inherited effort stays unchanged; catalog-rejected choices are not shown as selected. Shadow
 mode explicitly labels its recommendation and says launch arguments are unchanged. No extra request is made.
 Skipped calls and failed Jev requests remain silent. Labels are redacted, stripped of control characters and
 bounded; task text is never included. The notice is a selection, not proof of a successful launch or a

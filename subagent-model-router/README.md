@@ -52,7 +52,8 @@ subagent-model-router: "find_readme" — selected for launch: model=haiku; rule:
 subagent-model-router: "list_toml" — selected for launch: model=gpt-5.6-luna, effort=low; rule:light
 ```
 
-Inherited models are shown as `model=session (unchanged)`; unchanged Codex effort as `effort=unchanged`.
+Inherited models use the hook's session model, e.g. `model=gpt-6-astra (unchanged)`
+(`unknown (unchanged)` if the host omits its model); unchanged Codex effort as `effort=unchanged`.
 Catalog restrictions are included in the notice, so an unavailable model is never advertised as selected.
 Shadow mode says `shadow recommendation` and `launch arguments unchanged`. Disabled, excluded, explicit,
 forked or unsupported calls and request failures remain silent. There is no extra network request.
