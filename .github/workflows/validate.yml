@@ -13,6 +13,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  router-platforms:
+    name: router telemetry (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Python 3.11 or newer
+        run: python3 -c 'import sys; assert sys.version_info >= (3, 11), "Python 3.11+ required"'
+      - name: Shared hook, delivery and dashboard tests
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: >-
+          python3 -B subagent-model-router/tests/run_parallel.py -j 4
+          DecisionTests CodexTests TelemetryTests DashboardTests TelemetryIntegrationTests
+
   validate:
     # Own pushes run on the owner's self-hosted runner; pull requests and anything else run on
     # GitHub-hosted runners. Workflow runs for pull requests from forks require approval.

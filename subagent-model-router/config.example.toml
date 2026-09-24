@@ -40,3 +40,23 @@ heavy = "inherit"
 light = "low"
 standard = "medium"
 heavy = "inherit"
+
+# Optional monitoring, shared by Claude Code and Codex. No telemetry network I/O in the hook.
+# With victoriametrics the JSONL journal is no longer appended; existing files are not deleted.
+# Only counters/histograms + bounded delivery state remain locally, never raw decisions or task text.
+[telemetry]
+backend = "local"           # local | victoriametrics | off
+write_url = ""              # full URL, e.g. http://vm.example:8428/api/v1/import/prometheus
+query_url = ""              # API base, e.g. http://vm.example:8428
+# Cluster: write .../insert/0/prometheus/api/v1/import/prometheus; query .../select/0/prometheus
+instance = "default"        # set a unique stable name for EACH writer installation; not a session ID
+user = ""                   # defaults to OS login; set a stable alias to group the same person across hosts
+token_file = ""             # optional separate VM Bearer token file, owner-only; never put token in URL
+flush_interval_seconds = 5
+timeout_seconds = 3
+max_queue_events = 1000     # above this, coalesce pending aggregates; retain counts, lose time detail
+
+# Project defaults to the nearest Git root's directory name (cwd name outside Git).
+# Map local roots to a shared label when names differ across machines or collide.
+# [telemetry.projects]
+# "/work/my-repository" = "my-project"

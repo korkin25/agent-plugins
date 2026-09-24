@@ -407,7 +407,10 @@ class SkipTests(Sandbox):
                              (self.cfg_dir, 0o707)):
             with self.subTest(target=target.name, mode=oct(mode)):
                 target.chmod(mode)
-                self.assert_skipped(self.hook(), "error:config")
+                rc, out, err, _ = self.hook()
+                self.assertEqual((rc, out, err), (0, "", ""))
+                self.assertFalse(self.journal.exists())  # unsafe config cannot select a private-data sink
+                self.assertEqual(self.fake.requests, [])
                 target.chmod(0o600 if target == self.config else 0o700)
 
     def test_no_config_is_off(self):
@@ -480,9 +483,11 @@ class DecisionTests(Sandbox):
         self.assertEqual((row["tier"], row["model"], row["reason"], row["mode"], row["agent"]),
                          (tier, model, "rule:" + tier, "active", "claude"))
 
-    def assert_silent(self, result, tier, model, reason):
+    def assert_notice_only(self, result, tier, model, reason):
         rc, out, err, _ = result
-        self.assertEqual((rc, out, err), (0, "", ""))
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(set(json.loads(out)), {"systemMessage"})
+        self.assertIn("model=session (unchanged)", json.loads(out)["systemMessage"])
         row = self.last_row()
         self.assertEqual((row["tier"], row["model"], row["reason"]), (tier, model, reason))
 
@@ -492,21 +497,21 @@ class DecisionTests(Sandbox):
     def test_standard_goes_to_sonnet(self):
         self.assert_routed(self.decide("standard"), "sonnet", "standard")
 
-    def test_heavy_is_inherit_without_output(self):
-        self.assert_silent(self.decide("heavy"), "heavy", "inherit", "rule:heavy")
+    def test_heavy_is_inherit_with_notice(self):
+        self.assert_notice_only(self.decide("heavy"), "heavy", "inherit", "rule:heavy")
 
     def test_uncertain_answer_goes_heavy(self):
-        self.assert_silent(self.decide("uncertain"), "heavy", "inherit", "rule:heavy")
+        self.assert_notice_only(self.decide("uncertain"), "heavy", "inherit", "rule:heavy")
 
     def test_standard_needs_low_heavy_probability(self):
         body = jev_body(0.40, 0.30, 0.30, 0.05, 0.05)
-        self.assert_silent(self.decide(body), "heavy", "inherit", "rule:heavy")
+        self.assert_notice_only(self.decide(body), "heavy", "inherit", "rule:heavy")
 
     def test_risky_goes_heavy(self):
-        self.assert_silent(self.decide("risky"), "heavy", "inherit", "rule:risky")
+        self.assert_notice_only(self.decide("risky"), "heavy", "inherit", "rule:risky")
 
     def test_review_goes_heavy(self):
-        self.assert_silent(self.decide("review"), "heavy", "inherit", "rule:review")
+        self.assert_notice_only(self.decide("review"), "heavy", "inherit", "rule:review")
 
     def test_heavy_with_explicit_mapping(self):
         rc, out, _err, _ = self.decide("heavy", claude={"models": {"heavy": "opus"}})
@@ -529,18 +534,21 @@ class DecisionTests(Sandbox):
         rc, out, err, _ = self.decide("light", tool_input)
         self.assertEqual((rc, err), (0, ""))
         output = json.loads(out)
-        self.assertEqual(set(output), {"hookSpecificOutput"})
+        self.assertEqual(set(output), {"hookSpecificOutput", "systemMessage"})
         specific = output["hookSpecificOutput"]
-        self.assertEqual(set(specific), {"hookEventName", "updatedInput", "additionalContext"})
+        self.assertEqual(set(specific), {"hookEventName", "updatedInput"})
         self.assertEqual(specific["hookEventName"], "PreToolUse")
         self.assertEqual(specific["updatedInput"], dict(tool_input, model="haiku"))
         self.assertNotIn("permissionDecision", out)
-        self.assertEqual(specific["additionalContext"],
-                         'subagent-model-router: subagent "Найти README" runs on haiku (light)')
+        self.assertEqual(output["systemMessage"],
+                         'subagent-model-router: "Найти README" — selected for launch: model=haiku; rule:light')
 
-    def test_shadow_logs_decision_without_output(self):
+    def test_shadow_logs_decision_with_notice_only(self):
         rc, out, err, _ = self.decide("light", mode="shadow")
-        self.assertEqual((rc, out, err), (0, "", ""))
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(set(json.loads(out)), {"systemMessage"})
+        self.assertIn("shadow recommendation: model=haiku", json.loads(out)["systemMessage"])
+        self.assertIn("launch arguments unchanged", json.loads(out)["systemMessage"])
         row = self.last_row()
         self.assertEqual((row["tier"], row["model"], row["reason"], row["mode"]),
                          ("light", "haiku", "rule:light", "shadow"))
@@ -548,6 +556,20 @@ class DecisionTests(Sandbox):
     def test_claude_branch_never_asks_codex(self):
         self.assert_routed(self.decide("light"), "haiku", "light")
         self.assertEqual(self.codex_calls(), [])
+
+    def test_notice_redacts_label_and_never_includes_task(self):
+        args = agent_input(description="helper\n\x1b[31m\u202e token=private-value " + "x" * 300,
+                           prompt="TASK: unique-task-not-for-display")
+        output = json.loads(self.decide("light", args)[1])
+        notice = output["systemMessage"]
+        self.assertNotIn("private-value", notice)
+        self.assertNotIn("unique-task-not-for-display", notice)
+        self.assertNotIn("\n", notice)
+        self.assertNotIn("\x1b", notice)
+        self.assertNotIn("\u202e", notice)
+        self.assertIn("[redacted]", notice)
+        self.assertLess(len(notice), 240)
+        self.assertEqual(output["hookSpecificOutput"]["updatedInput"], dict(args, model="haiku"))
 
     def test_request_format_typesafe(self):
         self.serve(Reply(body=SCENARIOS["light"], headers={"x-typesafe-request-id": "req-42"}))
@@ -636,9 +658,12 @@ class CodexTests(Sandbox):
     def test_light_gives_model_and_effort_with_allow(self):
         args = v2_args(agent_type="worker")
         output = self.output(self.decide("light", args))
-        self.assertEqual(output, {"hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "allow",
-            "updatedInput": dict(args, model="gpt-5.6-luna", reasoning_effort="low")}})
+        self.assertEqual(output, {
+            "systemMessage": 'subagent-model-router: "list_toml" — selected for launch: '
+                             'model=gpt-5.6-luna, effort=low; rule:light',
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "allow",
+                "updatedInput": dict(args, model="gpt-5.6-luna", reasoning_effort="low")}})
         row = self.last_row()
         self.assertEqual(set(row), JOURNAL_FIELDS)
         self.assertEqual((row["agent"], row["tier"], row["model"], row["effort"], row["reason"], row["mode"],
@@ -651,10 +676,23 @@ class CodexTests(Sandbox):
         updated = output["hookSpecificOutput"]["updatedInput"]
         self.assertEqual((updated["model"], updated["reasoning_effort"]), ("gpt-5.6-terra", "medium"))
 
-    def test_heavy_and_uncertain_are_silent_without_catalog(self):
+    def test_notice_uses_safe_task_name_not_task_text(self):
+        args = v2_args(task_name="helper\n\x1b\u202e token=private-value " + "x" * 300)
+        output = self.output(self.decide("light", args))
+        notice = output["systemMessage"]
+        for value in ("private-value", CODEX_TASK, "\n", "\x1b", "\u202e"):
+            self.assertNotIn(value, notice)
+        self.assertIn("[redacted]", notice)
+        self.assertLess(len(notice), 260)
+        self.assertEqual(output["hookSpecificOutput"]["updatedInput"]["task_name"], args["task_name"])
+
+    def test_heavy_and_uncertain_notify_without_catalog(self):
         for scenario in ("heavy", "uncertain", "risky", "review"):
             with self.subTest(scenario=scenario):
-                row = self.assert_silent(self.decide(scenario))
+                output = self.output(self.decide(scenario))
+                self.assertEqual(set(output), {"systemMessage"})
+                self.assertIn("model=session (unchanged), effort=unchanged", output["systemMessage"])
+                row = self.last_row()
                 self.assertEqual((row["tier"], row["model"], row["effort"]), ("heavy", "inherit", "inherit"))
         self.assertEqual(self.codex_calls(), [])
 
@@ -662,7 +700,7 @@ class CodexTests(Sandbox):
         args = v2_args(agent_type="worker", extra_field={"nested": [1, {"ключ": "значение"}]})
         output = self.output(self.decide("light", args))
         specific = output["hookSpecificOutput"]
-        self.assertEqual(set(output), {"hookSpecificOutput"})
+        self.assertEqual(set(output), {"hookSpecificOutput", "systemMessage"})
         self.assertEqual(set(specific), {"hookEventName", "permissionDecision", "updatedInput"})
         self.assertEqual(specific["permissionDecision"], "allow")
         updated = specific["updatedInput"]
@@ -809,8 +847,12 @@ class CodexTests(Sandbox):
         self.assertEqual(row["reason"], "type")
         self.assertEqual(len(self.fake.requests), 1)
 
-    def test_shadow_logs_model_and_effort_without_output(self):
-        row = self.assert_silent(self.decide("light", mode="shadow"))
+    def test_shadow_logs_model_and_effort_with_notice_only(self):
+        output = self.output(self.decide("light", mode="shadow"))
+        self.assertEqual(set(output), {"systemMessage"})
+        self.assertIn("shadow recommendation: model=gpt-5.6-luna, effort=low", output["systemMessage"])
+        self.assertIn("launch arguments unchanged", output["systemMessage"])
+        row = self.last_row()
         self.assertEqual((row["model"], row["effort"], row["reason"], row["mode"]),
                          ("gpt-5.6-luna", "low", "rule:light", "shadow"))
 
@@ -848,7 +890,7 @@ class CatalogTests(Sandbox):
     def updated(self, result):
         rc, out, err, _ = result
         self.assertEqual((rc, err), (0, ""))
-        return json.loads(out)["hookSpecificOutput"]["updatedInput"] if out else None
+        return json.loads(out).get("hookSpecificOutput", {}).get("updatedInput") if out else None
 
     def refreshed(self, calls=1, state=None):
         """Фоновое обновление отработало: вызовов debug models столько, сирот нет."""
@@ -860,14 +902,19 @@ class CatalogTests(Sandbox):
 
     def test_model_missing_from_catalog_keeps_effort_checked_by_session_model(self):
         self.write_cache(self.NO_LUNA)
-        updated = self.updated(self.decide())
+        result = self.decide()
+        updated = self.updated(result)
+        notice = json.loads(result[1])["systemMessage"]
+        self.assertIn("model=session (unchanged), effort=low", notice)
+        self.assertIn("model_not_in_catalog", notice)
+        self.assertNotIn("gpt-5.6-luna", notice)
         self.assertNotIn("model", updated)
         self.assertEqual(updated["reasoning_effort"], "low")
         row = self.last_row()
         self.assertEqual((row["model"], row["effort"], row["reason"]),
                          (None, "low", "rule:light;model_not_in_catalog"))
 
-    def test_model_missing_and_session_model_unknown_gives_no_output(self):
+    def test_model_missing_and_session_model_unknown_does_not_rewrite(self):
         self.write_cache(self.NO_LUNA)
         self.assertIsNone(self.updated(self.decide(session_model="gpt-unknown")))
         row = self.last_row()
@@ -878,7 +925,11 @@ class CatalogTests(Sandbox):
         catalog = json.loads(json.dumps(CATALOG))
         catalog["models"][1]["supported_reasoning_levels"] = levels("medium", "high")
         self.write_cache(catalog)
-        updated = self.updated(self.decide())
+        result = self.decide()
+        updated = self.updated(result)
+        notice = json.loads(result[1])["systemMessage"]
+        self.assertIn("model=gpt-5.6-luna, effort=unchanged", notice)
+        self.assertIn("effort_not_supported", notice)
         self.assertEqual(updated["model"], "gpt-5.6-luna")
         self.assertNotIn("reasoning_effort", updated)
         self.assertEqual(self.last_row()["reason"], "rule:light;effort_not_supported")
@@ -901,7 +952,12 @@ class CatalogTests(Sandbox):
         self.cache.unlink()
         self.write_catalog(CATALOG, mode="slow:4")
         started = time.monotonic()
-        self.assertIsNone(self.updated(self.decide()))
+        result = self.decide()
+        self.assertIsNone(self.updated(result))
+        output = json.loads(result[1])
+        self.assertEqual(set(output), {"systemMessage"})
+        self.assertIn("model=session (unchanged), effort=unchanged", output["systemMessage"])
+        self.assertIn("no_catalog;refreshing", output["systemMessage"])
         self.assertLess(time.monotonic() - started, 2)  # каталог отвечает 4 с, хук его не ждёт
         row = self.last_row()
         self.assertEqual((row["model"], row["effort"], row["reason"]),

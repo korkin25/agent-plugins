@@ -15,6 +15,7 @@ import sys
 import time
 
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(PLUGIN_ROOT, "lib"))
 NAME = "subagent-model-router"
 CONFIG_ENV = "SUBAGENT_MODEL_ROUTER_CONFIG"
 LOG_ENV = "SUBAGENT_MODEL_ROUTER_LOG"
@@ -198,7 +199,9 @@ def _check_models(table, name, pattern, hint):
 
 def normalize_config(data):
     """Проверить разобранный TOML и дополнить умолчаниями."""
-    cfg = _merge(DEFAULTS, data)
+    # Observability configuration cannot disable routing or silently restore a private journal.
+    telemetry_data = data.get("telemetry", {})
+    cfg = _merge(DEFAULTS, {k: v for k, v in data.items() if k != "telemetry"})
     if not isinstance(cfg["enabled"], bool):
         raise ConfigError("enabled must be true or false")
     if cfg["mode"] not in ("active", "shadow"):
@@ -242,6 +245,12 @@ def normalize_config(data):
     _check_models(cfg["claude"]["models"], "claude.models", MODEL_RE, "an alias, a full model ID or inherit")
     _check_models(cfg["codex"]["models"], "codex.models", MODEL_RE, "a Codex model slug or inherit")
     _check_models(cfg["codex"]["effort"], "codex.effort", EFFORT_RE, "an effort level (low, medium, …) or inherit")
+    from router_telemetry import validate_config
+    try:
+        cfg["telemetry"] = validate_config(telemetry_data)
+    except (ValueError, TypeError):
+        cfg["telemetry"] = validate_config({"backend": "off"})
+        cfg["_telemetry_error"] = "invalid telemetry configuration; collection disabled, routing unaffected"
     return cfg
 
 
@@ -254,7 +263,7 @@ def _check_private(info, what):
                           f"(mode {stat.S_IMODE(info.st_mode):04o})")
 
 
-def load_config(path=None):
+def load_config(path=None, *, telemetry_only=False):
     """Конфиг с умолчаниями; None — файла нет; ConfigError — файл негоден или чужой."""
     import tomllib
     path = path or config_path()
@@ -271,6 +280,8 @@ def load_config(path=None):
         raise ConfigError(f"not valid TOML ({exc})") from None
     except (OSError, UnicodeDecodeError) as exc:
         raise ConfigError(f"unreadable ({exc.__class__.__name__})") from None
+    if telemetry_only:
+        return normalize_config({"telemetry": data.get("telemetry", {})})
     return normalize_config(data)
 
 
@@ -877,11 +888,9 @@ def _claude_decision(cfg, tool_input, tier, rule, record):
         return None, record
     updated = dict(tool_input)
     updated["model"] = model
-    description = _text(tool_input.get("description")) or ""
     output = {"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "updatedInput": updated,
-        "additionalContext": f'{NAME}: subagent "{description}" runs on {model} ({tier})',
     }}
     return output, record
 
@@ -903,6 +912,29 @@ def _codex_decision(cfg, event, tool_input, tier, rule, record):
         "updatedInput": updated,
     }}
     return output, record
+
+
+def decision_notice(record):
+    """Сообщение до запуска: только проверенный выбор, без текста задачи и обещания запуска."""
+    def safe(value):
+        import unicodedata
+        value = redact(value or "")
+        value = "".join(c if not unicodedata.category(c).startswith("C") else " " for c in value)
+        return " ".join(value.split())[:120]
+
+    label = safe(record["description"]) or "subagent"
+    model, effort = record["model"], record["effort"]
+    if model not in (None, "inherit"):
+        choice = "model=" + safe(model)
+    else:
+        choice = "model=session (unchanged)"
+    if record["agent"] == "codex":
+        choice += ", effort=" + (safe(effort) if effort not in (None, "inherit") else "unchanged")
+    action = "shadow recommendation" if record["mode"] == "shadow" else "selected for launch"
+    message = f'{NAME}: "{label}" — {action}: {choice}; {record["reason"]}'
+    if record["mode"] == "shadow":
+        message += "; launch arguments unchanged"
+    return message
 
 
 def handle_event(event, agent):
@@ -959,8 +991,13 @@ def handle_event(event, agent):
     record.update(jev_model=result["jev_model"], request_id=result["request_id"],
                   latency_ms=result["latency_ms"], answers=rounded_answers(result["probs"]), tier=tier)
     if agent == "claude":
-        return _claude_decision(cfg, tool_input, tier, rule, record)
-    return _codex_decision(cfg, event, tool_input, tier, rule, record)
+        output, record = _claude_decision(cfg, tool_input, tier, rule, record)
+    else:
+        output, record = _codex_decision(cfg, event, tool_input, tier, rule, record)
+    # systemMessage is user-facing in both hosts; additionalContext only informs the model.
+    output = output or {}
+    output["systemMessage"] = decision_notice(record)
+    return output, record
 
 
 def append_journal(record):
@@ -981,7 +1018,8 @@ def append_journal(record):
 
 
 def hook_main():
-    """Хук: всегда выход 0; вывод — только при подстановке; stderr молчит."""
+    """Хук: всегда выход 0; вывод после решения Jev; stderr молчит."""
+    started = time.monotonic()
     sys.stderr = open(os.devnull, "w")
     try:
         event = json.loads(sys.stdin.buffer.read().decode("utf-8"))
@@ -995,7 +1033,21 @@ def hook_main():
     except Exception:
         output, record = None, dict(base_record(event, agent), reason="error:internal")
     try:
-        append_journal(record)
+        try:
+            cfg = load_config()
+        except ConfigError:
+            # A routing-field error must not silently restore JSONL in a VM installation.
+            cfg = load_config(telemetry_only=True)
+        telemetry = (cfg or DEFAULT_RULES)["telemetry"]
+        if telemetry["backend"] == "local":
+            append_journal(record)
+        elif telemetry["backend"] == "victoriametrics":
+            from router_telemetry import enqueue, resolve_project, resolve_user
+            applied = bool((output or {}).get("hookSpecificOutput", {}).get("updatedInput"))
+            project = resolve_project(_text(event.get("cwd")) or os.getcwd(), telemetry)
+            enqueue(telemetry, dict(record, applied=applied, project=project, user=resolve_user(telemetry)),
+                    time.monotonic() - started,
+                    worker_command=[sys.executable, os.path.abspath(__file__), "telemetry-worker"])
     except Exception:
         pass
     if output is not None:
@@ -1106,7 +1158,7 @@ def _changed(row):
     return any(v not in (None, "inherit") for v in values)
 
 
-def cmd_stats(days):
+def cmd_local_stats(days):
     from collections import Counter
     from datetime import datetime, timedelta, timezone
     path = log_path()
@@ -1166,6 +1218,70 @@ def cmd_stats(days):
     if latencies:
         print(f"Average latency: {round(sum(latencies) / len(latencies))} ms "
               f"(successful requests: {len(latencies)})")
+    return 0
+
+
+def cmd_stats(days, source="auto", html_path=None, as_json=False, project=None, user=None):
+    try:
+        cfg = load_config()
+    except ConfigError:
+        print("stats: configuration unavailable", file=sys.stderr)
+        return 1
+    cfg = cfg or DEFAULT_RULES
+    if cfg.get("_telemetry_error") and source != "local":
+        print("stats: " + cfg["_telemetry_error"], file=sys.stderr)
+        return 1
+    backend = cfg["telemetry"]["backend"] if source == "auto" else source
+    if backend == "local":
+        if html_path or as_json or project or user:
+            print("stats: --html, --json, --project and --user require VictoriaMetrics", file=sys.stderr)
+            return 1
+        return cmd_local_stats(days)
+    if backend == "off":
+        print("Statistics collection is off. Use --source local explicitly for the old journal.")
+        return 0
+    from router_dashboard import query_stats, render_html, format_summary
+    try:
+        filters = {k: v for k, v in (("project", project), ("user", user)) if v is not None}
+        data = query_stats(cfg["telemetry"], days=days or 7, **filters)
+        if html_path:
+            render_html(data, html_path)
+    except (ValueError, OSError):
+        print("stats: query configuration or report destination unavailable", file=sys.stderr)
+        return 1
+    if as_json:
+        print(json.dumps({k: v for k, v in data.items() if k != "series"}, ensure_ascii=False))
+    else:
+        print(format_summary(data))
+        print("Period: last " + str(days or 7) + " days")
+        for name, error in data.get("errors", {}).items():
+            print(name + ": " + str(error), file=sys.stderr)
+        if html_path:
+            print("Dashboard: " + os.path.abspath(html_path))
+    return 1 if data["status"] in ("error", "partial") else 0
+
+
+def cmd_telemetry(worker_mode=False):
+    cfg = _load_or_report()
+    if cfg is None:
+        return 1
+    if cfg.get("_telemetry_error"):
+        print(cfg["_telemetry_error"], file=sys.stderr)
+        return 1
+    telemetry = cfg["telemetry"]
+    if telemetry["backend"] != "victoriametrics":
+        if not worker_mode:
+            print("Telemetry backend: " + telemetry["backend"])
+        return 0
+    from router_telemetry import worker, snapshot
+    if worker_mode:
+        def current_config():
+            try:
+                return (load_config() or DEFAULT_RULES)["telemetry"]
+            except ConfigError:
+                return {"backend": "off"}
+        return worker(telemetry, reload_config=current_config)
+    print(json.dumps(snapshot(telemetry), indent=2))
     return 0
 
 
@@ -1237,7 +1353,14 @@ def cmd_check(live):
     print(f"Key: {key_file} — {'present, permissions OK' if key else problem}")
     if key is None:
         ok = False
-    print(f"Journal: {log_path()}")
+    print("Telemetry backend: " + shown["telemetry"]["backend"])
+    if shown.get("_telemetry_error"):
+        print(shown["_telemetry_error"])
+        ok = False
+    if shown["telemetry"]["backend"] == "local":
+        print(f"Journal: {log_path()}")
+    elif shown["telemetry"]["backend"] == "victoriametrics":
+        print("Decision journal: disabled; bounded aggregate delivery state only")
     if live:
         if cfg is None or key is None:
             print("Live request: skipped — no config or key")
@@ -1545,6 +1668,8 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv == ["hook"]:
         return hook_main()
+    if argv == ["telemetry-worker"]:
+        return cmd_telemetry(worker_mode=True)
     if len(argv) == 2 and argv[0] == "refresh-catalog":  # служебная: фоновое обновление, которое запускает хук
         return 0 if refresh_catalog(argv[1]) else 1
     import argparse
@@ -1555,8 +1680,14 @@ def main(argv=None):
     explain = sub.add_parser("explain", help="ask Jev about a task text and show the decision")
     explain.add_argument("text", nargs="?", help="task text (stdin when omitted)")
     explain.add_argument("-d", "--description", default="", help="short subagent description")
-    stats = sub.add_parser("stats", help="summary of the decision journal")
+    stats = sub.add_parser("stats", help="statistics from configured storage (VM or local journal)")
     stats.add_argument("--days", type=int, help="only the last N days")
+    stats.add_argument("--source", choices=("auto", "local", "victoriametrics"), default="auto")
+    stats.add_argument("--html", metavar="PATH", help="save a standalone dashboard from VM")
+    stats.add_argument("--json", action="store_true", help="compact VM summary for agents")
+    stats.add_argument("--project", help="only this project cohort (VM)")
+    stats.add_argument("--user", help="only this user cohort (VM)")
+    sub.add_parser("telemetry-status", help="local delivery health, without network access")
     check = sub.add_parser("check", help="check the config, the key and the Codex model catalog")
     check.add_argument("--live", action="store_true", help="make one small request to Jev")
     trust = sub.add_parser("codex-trust", help="trust this plugin's hooks in Codex (like /hooks) through app-server")
@@ -1573,7 +1704,11 @@ def main(argv=None):
         text = args.text if args.text is not None else sys.stdin.read()
         return cmd_explain(text, args.description)
     if args.cmd == "stats":
-        return cmd_stats(args.days)
+        if args.days is not None and not 1 <= args.days <= 90:
+            parser.error("--days must be between 1 and 90")
+        return cmd_stats(args.days, args.source, args.html, args.json, args.project, args.user)
+    if args.cmd == "telemetry-status":
+        return cmd_telemetry()
     if args.cmd == "check":
         return cmd_check(args.live)
     return cmd_codex_trust(args.codex, args.dry_run)

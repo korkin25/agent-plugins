@@ -1,0 +1,100 @@
+# VictoriaMetrics monitoring
+
+The same Python hook/worker serves Claude Code and Codex. Routine collection, retries, queries and HTML
+rendering execute as code; no language-model requests, extra Jev requests or agent turns are scheduled.
+Linux and macOS use the same Python 3.11+ standard-library implementation (SQLite, POSIX locks, detached
+subprocesses). No systemd, launchd, `/proc`, Docker or platform-specific collector is needed for telemetry.
+State defaults to `~/.local/state/subagent-model-router/telemetry` on both systems, or `XDG_STATE_HOME` when set.
+The user supplies VM endpoints. The plugin is independent of VPNs, network topology and hosting provider.
+
+## Configure
+
+Set `[telemetry]` in the existing private router config. The complete defaults are in
+`../../../config.example.toml` (relative to this reference). For a VM single-node endpoint:
+
+```toml
+[telemetry]
+backend = "victoriametrics"
+write_url = "http://vm.example:8428/api/v1/import/prometheus"
+query_url = "http://vm.example:8428"
+instance = "workstation-router"
+user = "" # OS login by default; optional shared alias
+token_file = ""
+flush_interval_seconds = 5
+timeout_seconds = 3
+max_queue_events = 1000
+```
+
+Use a different stable `instance` per installation writing counters. Claude and Codex on the same account
+share one installation/state and are distinguished by `agent`. Every routing metric also has `project` and
+`user`: project defaults to the nearest Git root directory name (cwd basename outside Git), user to the OS
+login. No Git remote/config or full local path is sent. Directory-name collisions or differently named
+checkouts can be aligned through `[telemetry.projects]` absolute-root-to-label mappings; the longest matching
+path-component prefix wins. `telemetry.user` overrides the OS name with a stable alias. Avoid secrets in aliases.
+These labels work the same for terminal and VS Code extensions; extensions use the account's plugin/config.
+Do not use a session ID, task name or path
+as the instance. Cluster write URL: `/insert/<tenant>/prometheus/api/v1/import/prometheus`; query base:
+`/select/<tenant>/prometheus`. Copy actual authorized routes, do not infer the tenant.
+
+HTTP and HTTPS endpoints are supported; HTTPS verifies certificates normally.
+Optional `token_file` is a separate owner-only VM Bearer token file. Never put credentials in URLs or
+show the token. Redirects are refused. No token is needed when the private endpoint uses only network ACLs.
+
+`backend = "local"` preserves the original JSONL journal. `victoriametrics` stops appending that journal;
+existing history is left untouched and is not uploaded automatically. `off` disables new statistics.
+An invalid telemetry section disables collection and is reported by `check`/`stats`; routing still works.
+
+## Delivery
+
+The hook records aggregate counters/histograms in a private SQLite state store, then starts a detached
+worker. It never waits for a VM HTTP request. A lock allows one sending worker per store; retries use the
+same timestamped snapshot so an ambiguous response does not become a fresh counter increment.
+
+Only bounded aggregate state and the pending delivery snapshot remain locally, not individual decision
+records. A long outage coalesces updates: counts survive but event-time resolution does not. Extreme series
+cardinality is capped; delivery diagnostics report drops. Hook storage contention/failure can lose telemetry
+without blocking a subagent. This is operational monitoring, not an exactly-once billing ledger.
+
+The worker is bounded to five minutes and restarted by later calls. It emits heartbeats while running;
+after it exits, idle series may become stale. A final failed delivery remains pending until a later call
+or an explicit `telemetry-worker` invocation. Disabling telemetry stops a worker on config reload.
+No system service or client restart is needed for this delivery process.
+
+## Statistics and dashboards
+
+```bash
+<plugin-root>/bin/subagent-model-router telemetry-status
+<plugin-root>/bin/subagent-model-router stats --days 7
+<plugin-root>/bin/subagent-model-router stats --days 7 --json
+<plugin-root>/bin/subagent-model-router stats --days 7 --project my-project --user kk573 --json
+<plugin-root>/bin/subagent-model-router stats --days 7 --html /path/to/router-dashboard.html
+<plugin-root>/bin/subagent-model-router stats --source local --days 7
+```
+
+`telemetry-status` inspects only local delivery health. `stats` chooses the configured backend; a VM
+query failure stays an error, never an old journal presented as current data. VM queries are bounded to
+1–90 days, limited series/points and bounded HTTP requests. JSON is a compact summary for agent use;
+HTML is a self-contained dark dashboard with SVG charts, no CDN or embedded credentials. Query errors,
+empty data and idle gaps remain distinct from zero.
+
+For Grafana, import `../../../grafana/subagent-model-router.json`, choose a Prometheus-compatible VM
+data source and use the instance/project/user/agent filters. Data-source credentials belong in Grafana, not the JSON.
+The HTML report is a snapshot; the Grafana dashboard queries current data.
+
+Metrics describe call outcomes, selected models/tiers/effort, active/shadow application, Jev request errors,
+Jev and hook latency histograms, and Jev decision probabilities. Jev timing includes its internal retry;
+one logical routing request can involve two HTTP attempts. No task text, descriptions, cwd, session IDs,
+request IDs, task hashes or credentials are exported. Project basenames and OS login names (or configured
+aliases) are exported as cohort labels. Model selection is not proof of final execution:
+a configured role may override it, or launching the subagent may fail.
+Hook latency measures input parsing and routing through the point before telemetry enqueue/output; it does
+not include the telemetry write itself or host-side tool execution. Storage lock waiting is capped at 100 ms.
+
+Counter window totals and histogram quantiles are monitoring estimates. They do not establish task quality,
+actual token/currency savings or the cost of the Jev request. Those require separately authorized usage and
+outcome data. Never label selection share as monetary savings.
+
+New counter series include a synthetic initial zero one flush interval before their first snapshot. This
+allows first-batch counts to be seen, but timing within that interval is approximate. VM-side downsampling
+or deduplication can merge samples and further affect small-window estimates. Coalesced/dropped delivery
+health values are cumulative totals from the last received snapshot, not per-window increments.
