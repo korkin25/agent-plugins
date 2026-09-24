@@ -6,6 +6,7 @@ python3 -B tests/run_parallel.py [-j N] [Class ...] — exits 1 if any class fai
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -76,6 +77,10 @@ def main():
             if not ok:
                 failed.append(name)
                 print(output, flush=True)
+                if os.environ.get("GITHUB_ACTIONS") == "true":
+                    # Public check annotations keep test failures inspectable without downloading logs.
+                    detail = output[-12000:].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                    print(f"::error title={name}::{detail}", flush=True)
     print(f"Ran {total} tests in {time.monotonic() - started:.1f} s: "
           + ("OK" if not failed else f"FAILED ({', '.join(failed)})"))
     return 1 if failed else 0

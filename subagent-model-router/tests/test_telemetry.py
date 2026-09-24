@@ -5,6 +5,8 @@ import importlib.util
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -217,6 +219,56 @@ class TelemetryTests(unittest.TestCase):
         finally:
             db.rollback()
             db.close()
+
+    def test_second_connection_preserves_first_connections_process_locks(self):
+        self.enqueue()
+        first = self.connection()
+        second = None
+        path, _ = telemetry._paths(self.cfg, self.root)
+        script = """
+import sqlite3, sys
+connection = sqlite3.connect(sys.argv[1], timeout=.05, isolation_level=None)
+try:
+    connection.execute('BEGIN IMMEDIATE')
+except sqlite3.OperationalError as exc:
+    print('blocked' if 'locked' in str(exc) else 'error')
+else:
+    print('acquired')
+    connection.rollback()
+finally:
+    connection.close()
+"""
+
+        def probe():
+            result = subprocess.run([sys.executable, "-B", "-c", script, str(path)],
+                                    capture_output=True, text=True, timeout=5, check=True)
+            return result.stdout.strip()
+
+        try:
+            first.execute("BEGIN IMMEDIATE")
+            self.assertEqual(probe(), "blocked")
+            second = self.connection()
+            self.assertEqual(probe(), "blocked")
+            second.close()
+            second = None
+            self.assertEqual(probe(), "blocked")
+            first.rollback()
+            self.assertEqual(probe(), "acquired")
+        finally:
+            if second is not None:
+                second.close()
+            first.close()
+
+    def test_database_symlink_is_rejected_without_touching_target(self):
+        path, _ = telemetry._paths(self.cfg, self.root)
+        target = self.root / "unrelated"
+        target.write_text("keep")
+        target.chmod(0o640)
+        path.symlink_to(target)
+        with self.assertRaisesRegex(telemetry.TelemetryError, "^state_permissions$"):
+            self.connection()
+        self.assertEqual(target.read_text(), "keep")
+        self.assertEqual(target.stat().st_mode & 0o777, 0o640)
 
     def test_detached_spawn_and_existing_worker_suppresses_spawn(self):
         command = ["python3", "/example/router", "telemetry-worker"]
