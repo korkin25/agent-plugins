@@ -867,7 +867,7 @@ def base_record(event, agent):
     else:
         subagent_type = _text(tool_input.get("subagent_type"))
         description = _text(tool_input.get("description"))
-        session_model = None
+        session_model = _text(event.get("model"))
     return {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "agent": agent,
@@ -927,7 +927,8 @@ def decision_notice(record):
     if model not in (None, "inherit"):
         choice = "model=" + safe(model)
     else:
-        choice = "model=session (unchanged)"
+        inherited = safe(record.get("session_model")) or "unknown"
+        choice = f"model={inherited} (unchanged)"
     if record["agent"] == "codex":
         choice += ", effort=" + (safe(effort) if effort not in (None, "inherit") else "unchanged")
     action = "shadow recommendation" if record["mode"] == "shadow" else "selected for launch"
