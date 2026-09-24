@@ -1,6 +1,6 @@
 ---
 name: subagent-model-router
-description: Jev (TypeSafe AI) picks the model for every subagent from the text of its task, in Claude Code and in Codex, while the main session keeps the model chosen by hand. Use when the user asks which models subagents were given, why a task got a particular model, to turn model routing on or off, to switch it to observe-only (shadow) mode, to set up or check the TypeSafe or OpenRouter key, to exclude directories, or to trust the hook in Codex. Also triggers on «какие модели выбирались субагентам», «почему субагенту такая модель», «включи выбор модели», «выключи выбор модели», «режим наблюдения», «настрой ключ», «доверь хук в Codex».
+description: Jev (TypeSafe AI) picks the model for every subagent from the text of its task, in Claude Code and in Codex, while the main session keeps the model chosen by hand. Use when the user asks which models subagents were given, why a task got a particular model, to turn model routing on or off, to switch it to observe-only (shadow) mode, to set up or check the TypeSafe or OpenRouter key, to exclude directories, to trust the hook in Codex, or to configure VictoriaMetrics monitoring and show router statistics/dashboards. Also triggers on «какие модели выбирались субагентам», «почему субагенту такая модель», «включи выбор модели», «выключи выбор модели», «режим наблюдения», «настрой ключ», «доверь хук в Codex».
 ---
 
 # Subagent Model Router
@@ -43,6 +43,18 @@ Codex:
 Both: any failure — no config or key, network, timeout, an odd answer — means exit 0 without output. The
 subagent starts as usual and the reason goes to the journal.
 
+## Prelaunch notice
+
+After each successful Jev decision, the hook emits a top-level `systemMessage` for the user in both Claude
+Code and Codex: the subagent label, selected model, Codex reasoning effort and decision reason. This is emitted
+by synchronous `PreToolUse`, before the launch tool runs. `additionalContext` is not a user-facing notice.
+Inherited model/effort are reported as unchanged; catalog-rejected choices are not shown as selected. Shadow
+mode explicitly labels its recommendation and says launch arguments are unchanged. No extra request is made.
+Skipped calls and failed Jev requests remain silent. Labels are redacted, stripped of control characters and
+bounded; task text is never included. The notice is a selection, not proof of a successful launch or a
+role's final model. Client rendering varies: Codex uses a UI/event-stream warning; do not promise a separate
+chat message or identical presentation in every client. Tests verify hook output, not client rendering.
+
 ## What leaves the machine
 
 One request per subagent start, to TypeSafe (`provider = "typesafe"`) or OpenRouter (`"openrouter"`):
@@ -53,7 +65,9 @@ GitLab (`glpat-…`), GitHub (`ghp_…`, `gho_…`, `github_pat_…`), `sk-…`,
 and Google (`AIza…`) keys, JWTs, `PRIVATE KEY` blocks, `Bearer` and `Authorization: Basic` credentials,
 `user:password@` in URLs, `--password <value>`, and values after `password`, `passwd`, `token`, `secret`,
 `api_key`/`api-key` (so `X-Api-Key:` too) with `:` or `=`.
-Do not rely on it for anything else: a secret in any other form is sent as written. Nothing else is sent.
+Do not rely on it for anything else: a secret in any other form is sent as written. Nothing else is sent to Jev.
+With the optional VictoriaMetrics backend, aggregate metrics also go to the user-configured VM endpoint;
+task text and identifying journal fields are never included. See Monitoring below.
 
 ## Setup
 
@@ -83,7 +97,9 @@ Do not rely on it for anything else: a secret in any other form is sent as writt
 - `explain [TEXT]` (or the text on stdin, `-d DESCRIPTION`) — ask Jev about a task and show the answers, the
   threshold bands and the result for Claude Code and for Codex. It is a real request: warn the user that the
   text goes to TypeSafe or OpenRouter. It does not write the journal.
-- `stats [--days N]` — from the journal: decisions per model, reasons, failure share, average latency.
+- `stats [--days N] [--project NAME] [--user NAME] [--json] [--html PATH]` — queries the configured storage. VM mode returns bounded
+  summary/graphs; local mode retains the journal summary. `--source local` explicitly reads old history.
+- `telemetry-status` — local delivery health without a network call.
 - `codex-trust [--codex PATH] [--dry-run]` — mark this plugin's hooks trusted in Codex through `codex
   app-server`, the same way `/hooks` does. Only hooks Codex lists for the plugin `subagent-model-router` whose
   command is exactly `…/bin/subagent-model-router hook` count; all other hooks are never touched.
@@ -99,7 +115,17 @@ Rules: `risky ≥ risky_max` or `review ≥ review_max` → heavy; otherwise `P(
 otherwise `P(light) + P(standard) ≥ standard_min` and `P(heavy) < heavy_max` → standard; otherwise heavy.
 `timeout_seconds` (3 s, at most 8 s) is the budget for the whole request including one retry on 429/5xx.
 
-## Journal
+## Monitoring
+
+For VictoriaMetrics setup, delivery guarantees, Grafana import and report commands, read
+[references/monitoring.md](references/monitoring.md). Collection and rendering are Python code shared by both
+hosts: never schedule an agent, poll with an LLM, read raw history or call Jev to collect monitoring data.
+When asked for statistics, run `stats --days N --json` (default VM window: 7 days); for a visual report add
+`--html PATH` and return the file link with a short factual interpretation. Use the bundled report/dashboard
+instead of recreating charts in the model. Distinguish unavailable/empty data from zero and selection share
+from demonstrated token, money or quality savings. Report the queried time window and source.
+
+## Journal (local backend)
 
 `~/.local/state/subagent-model-router/decisions.jsonl` (`SUBAGENT_MODEL_ROUTER_LOG` overrides): one JSON line
 per subagent call with `ts`, `agent` (`claude`/`codex`), `session_id`, `cwd`, `subagent_type`, `description`,
@@ -113,7 +139,8 @@ binary found), `no_catalog` (followed by `;refreshing` while a background refres
 
 ## How to answer requests
 
-- "Which models did subagents get" — `stats` (`--days N` if asked); details from the last journal lines.
+- "Which models did subagents get" — `stats` (`--days N` if asked), using the configured backend.
+  Read individual journal entries only in local mode when details are needed; VM stores aggregates.
 - "Why this model" / "what would it pick" — `explain` with the task text, after warning where the text goes.
 - "Turn it off" / "turn it on" — `enabled = false` / `true` in the config. Removing the plugin (`/plugin` in
   Claude Code, `codex plugin remove`) only on a direct request.
