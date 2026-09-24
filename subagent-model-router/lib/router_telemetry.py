@@ -31,6 +31,7 @@ MAX_SERIES = 4096
 MAX_BODY_BYTES = 2 * 1024 * 1024
 LATENCY_BUCKETS = (.01, .025, .05, .1, .25, .5, 1, 2, 4, 8, 16, 30)
 PROBABILITY_BUCKETS = (.1, .25, .5, .7, .75, .9, .95, 1)
+_DB_OPEN_LOCK = threading.Lock()
 
 
 class TelemetryError(Exception):
@@ -199,10 +200,24 @@ def _paths(cfg, state_dir):
 
 def _db(cfg, state_dir=None):
     path, _ = _paths(cfg, state_dir)
-    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
-    os.fchmod(fd, 0o600)
-    os.close(fd)
-    conn = sqlite3.connect(path, timeout=.1, isolation_level=None)
+    # Closing any non-SQLite descriptor to an existing DB inode releases this
+    # process's POSIX record locks, including locks held by another connection.
+    # Only a newly created inode may be opened/closed here. Serialize creation
+    # with connect so another local thread cannot connect before that close.
+    with _DB_OPEN_LOCK:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(fd)
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise TelemetryError("state_permissions")
+        # The enclosing directory is private. chmod does not open/close the
+        # inode, and SQLite manages the lifetime of every existing descriptor.
+        path.chmod(0o600)
+        conn = sqlite3.connect(path, timeout=.1, isolation_level=None)
     try:
         conn.execute("PRAGMA secure_delete=ON")
         if conn.execute("PRAGMA user_version").fetchone()[0] != 1:
