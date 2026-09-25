@@ -8,9 +8,10 @@ import os
 from pathlib import Path
 import re
 import secrets
-import selectors
+import queue
 import shutil
 import signal
+import socketserver
 import subprocess
 import sys
 import threading
@@ -89,37 +90,40 @@ def start_report(html, *, open_default=False, ttl_seconds=MAX_TTL_SECONDS, start
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         start_new_session=True, close_fds=True,
     )
-    deadline = time.monotonic() + timeout
-    received, sent = b"", 0
+    result = queue.Queue(maxsize=1)
+
+    def transfer():
+        try:
+            process.stdin.write(payload)
+            process.stdin.close()
+            received = process.stdout.readline(4097)
+            if not received.endswith(b"\n") or len(received) > 4096:
+                raise RuntimeError("report server did not become ready")
+            result.put((True, received))
+        except Exception:
+            result.put((False, b""))
+
+    # Blocking pipes in a bounded worker avoid platform-specific kqueue/epoll
+    # readiness behavior for anonymous pipes, while keeping the caller bounded.
+    thread = threading.Thread(target=transfer, daemon=True)
+    thread.start()
     try:
-        with selectors.DefaultSelector() as selector:
-            os.set_blocking(process.stdin.fileno(), False)
-            os.set_blocking(process.stdout.fileno(), False)
-            selector.register(process.stdin, selectors.EVENT_WRITE)
-            selector.register(process.stdout, selectors.EVENT_READ)
-            while b"\n" not in received:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise RuntimeError("report server startup timed out")
-                for key, _ in selector.select(remaining):
-                    if key.fileobj is process.stdin:
-                        sent += os.write(process.stdin.fileno(), payload[sent:sent + 65536])
-                        if sent == len(payload):
-                            selector.unregister(process.stdin)
-                            process.stdin.close()
-                    else:
-                        chunk = os.read(process.stdout.fileno(), 4096)
-                        if not chunk or len(received) + len(chunk) > 4096:
-                            raise RuntimeError("report server did not become ready")
-                        received += chunk
+        try:
+            ok, received = result.get(timeout=timeout)
+        except queue.Empty:
+            raise RuntimeError("report server startup timed out") from None
+        if not ok:
+            raise RuntimeError("report server did not become ready")
         ready = json.loads(received)
         if not re.fullmatch(r"http://127\.0\.0\.1:[0-9]+/[A-Za-z0-9_-]{32}", ready["url"]):
             raise ValueError("invalid report server address")
         report = BrowserReport(ready["url"], float(ready["expires_at"]))
     except Exception as exc:
         _stop(process)
+        thread.join(timeout=1)
         raise RuntimeError("could not start temporary report server") from exc
     finally:
+        thread.join(timeout=1)
         process.stdin.close()
         process.stdout.close()
     # Reap the child if this caller remains alive; the worker also has its own TTL.
@@ -162,7 +166,15 @@ def _serve(ttl):
         def log_message(self, *_):
             pass
 
-    with http.server.HTTPServer(("127.0.0.1", 0), Handler) as server:
+    class LoopbackServer(http.server.HTTPServer):
+        def server_bind(self):
+            # HTTPServer normally performs getfqdn(), which can stall on macOS
+            # runner/desktop DNS. This server needs no hostname resolution.
+            socketserver.TCPServer.server_bind(self)
+            self.server_name = "localhost"
+            self.server_port = self.server_address[1]
+
+    with LoopbackServer(("127.0.0.1", 0), Handler) as server:
         print(json.dumps({"url": f"http://127.0.0.1:{server.server_port}{route}", "expires_at": expires_at}), flush=True)
         sys.stdout.close()
         server.serve_forever(poll_interval=0.1)
