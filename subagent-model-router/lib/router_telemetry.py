@@ -436,7 +436,7 @@ def _points(cfg, record, duration):
                 mode=_enum(record.get("mode"), {"active", "shadow"}),
                 tier=_enum(record.get("tier"), {"light", "standard", "heavy"}, "none"),
                 effort=_enum(effort, efforts),
-                effort_source=effort_source if effort in efforts and effort_source in ("specified", "session") else "unknown",
+                effort_source=effort_source if effort in efforts and effort_source in ("specified", "session", "turn_context") else "unknown",
                 applied="true" if record.get("applied") is True else "false")
     points = {_metric("calls_total", call): 1.0}
 

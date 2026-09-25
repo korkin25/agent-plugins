@@ -904,9 +904,26 @@ def _claude_decision(cfg, tool_input, tier, rule, record):
 
 
 def _codex_decision(cfg, event, tool_input, tier, rule, record):
+    if (cfg["mode"] == "active" and cfg["codex"]["models"][tier] == "inherit"
+            and cfg["codex"]["effort"][tier] == "inherit"
+            and tool_input.get("agent_type") in (None, "", "default", "worker")):
+        from router_runtime import resolve_codex_turn
+        observed = resolve_codex_turn(event)
+        if observed:
+            record["session_effort"] = observed["effort"]
+            record["session_effort_source"] = "turn_context"
     model, effort, notes = verify_codex(cfg["codex"]["models"][tier], cfg["codex"]["effort"][tier],
                                         _text(event.get("model")), lambda: codex_catalog(cfg))
     record.update(model=model, effort=effort, reason=";".join(["rule:" + rule] + notes))
+    # Pin the measured invoking-turn effort for a same-model active launch.
+    # This makes the selected child's effort explicit despite agent-default overrides.
+    if (cfg["mode"] == "active" and model == "inherit" and effort == "inherit"
+            and record.get("session_effort_source") == "turn_context"):
+        _, verified, _ = verify_codex("inherit", record["session_effort"], record.get("session_model"),
+                                     lambda: codex_catalog(cfg))
+        if verified not in (None, "inherit"):
+            effort = verified
+            record.update(effort=effort, applied_effort_source="turn_context")
     updated = dict(tool_input)
     if model not in (None, "inherit"):
         updated["model"] = model
@@ -939,7 +956,7 @@ def decision_notice(record):
         choice = f"model={inherited} (unchanged)"
     if record["agent"] == "codex":
         choice += ", effort=" + (safe(effort) if effort not in (None, "inherit") else
-                                  (safe(record.get("session_effort")) or "unknown") + " (unchanged)")
+                                  "unknown (unchanged)")
     elif record.get("session_effort"):
         choice += ", effort=" + safe(record["session_effort"]) + " (unchanged)"
     action = "shadow recommendation" if record["mode"] == "shadow" else "selected for launch"
@@ -1067,6 +1084,8 @@ def hook_main():
             if isinstance(explicit_effort, dict):
                 explicit_effort = explicit_effort.get("level")
             actual_effort = explicit_effort if explicit_effort not in (None, "inherit") else record.get("session_effort")
+            if record["agent"] == "codex" and explicit_effort in (None, "inherit"):
+                actual_effort = None  # parent evidence alone cannot rule out a child-specific override
             if record["agent"] == "claude" and explicit_model not in (None, "inherit") and explicit_effort is None:
                 actual_effort = None  # effort.level describes parent turn, not a different child model
             # A skipped custom role may configure a different model in its own file.
@@ -1080,7 +1099,7 @@ def hook_main():
             enqueue(telemetry, dict(record, applied=applied, project=project, user=resolve_user(telemetry),
                                    actual_model=actual_model,
                                    actual_effort=actual_effort,
-                                   effort_source="specified" if explicit_effort not in (None, "inherit") else "session",
+                                   effort_source=record.get("applied_effort_source") or ("specified" if explicit_effort not in (None, "inherit") else "session"),
                                    model_source="specified" if explicit_model not in (None, "inherit") else "session"),
                     time.monotonic() - started,
                     worker_command=[sys.executable, os.path.abspath(__file__), "telemetry-worker"])

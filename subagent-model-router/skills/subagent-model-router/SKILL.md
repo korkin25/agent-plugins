@@ -59,7 +59,12 @@ After each successful Jev decision, the hook emits a top-level `systemMessage` f
 Code and Codex: the subagent label, selected model, Codex reasoning effort and decision reason. This is emitted
 by synchronous `PreToolUse`, before the launch tool runs. `additionalContext` is not a user-facing notice.
 Inherited models show the session model supplied by the host plus `(unchanged)`; if omitted, `unknown
-(unchanged)` is used. No transcript or private client config is read to guess it. Effort uses effective launch arguments or the host-provided level (Claude effort.level); absent evidence
+(unchanged)` is used. Config defaults are never treated as runtime evidence. For Codex same-model active
+inheritance, the hook may read the matching session's bounded rollout tail, selecting only `turn_context`
+metadata for the exact `session_id`, `turn_id` and model. Supported runtime effort is explicitly passed to
+the child, preventing a child-default override; source is `turn_context`. No transcript content enters Jev,
+metrics or log output. Skips, custom roles, forks, shadow and changed-model calls do not use this lookup.
+Effort uses effective launch arguments or the host-provided level (Claude effort.level); absent evidence
 is shown as unknown (unchanged), never guessed from defaults; catalog-rejected choices are not shown as selected. Shadow
 mode explicitly labels its recommendation and says launch arguments are unchanged. No extra request is made.
 Skipped calls and failed Jev requests remain silent. Labels are redacted, stripped of control characters and
