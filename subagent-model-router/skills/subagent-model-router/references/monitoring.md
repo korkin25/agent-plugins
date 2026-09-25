@@ -55,6 +55,10 @@ records. A long outage coalesces updates: counts survive but event-time resoluti
 cardinality is capped; delivery diagnostics report drops. Hook storage contention/failure can lose telemetry
 without blocking a subagent. This is operational monitoring, not an exactly-once billing ledger.
 
+`SessionStart` and `UserPromptSubmit` hooks run `telemetry-kick`: it only starts the worker when none holds the
+lock — no state write, no network call, empty output. So delivery resumes after a client restart and keeps going
+while the user works, without waiting for the next subagent.
+
 The worker is bounded to five minutes and restarted by later calls. It emits heartbeats while running;
 after it exits, idle series may become stale. A final failed delivery remains pending until a later call
 or an explicit `telemetry-worker` invocation. Disabling telemetry stops a worker on config reload.
@@ -135,7 +139,7 @@ Key limit remaining and account credit balance are different. Account totals can
 using that account. Copies from several installations are selected by freshest successful snapshot, never summed. Inspect successful
 probe flags and age before describing a snapshot as current; stale/forbidden balance is not zero. Unlimited
 key limits are represented as unavailable amount plus explicit availability markers. After the five-minute
-worker exits, polling resumes only on a later hook/worker start; this is not a permanently running account
+worker exits, polling resumes on the next session start, user prompt or subagent; this is not a permanently running account
 monitor. The agent can use `stats --account ALIAS --terminal` to show the snapshot in the answer.
 
 

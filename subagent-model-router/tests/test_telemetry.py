@@ -323,6 +323,23 @@ finally:
             finally:
                 os.close(fd)
 
+    def test_kick_spawns_without_writing_and_respects_running_worker(self):
+        command = ["python3", "/example/router", "telemetry-worker"]
+        with mock.patch.object(telemetry.subprocess, "Popen") as spawn:
+            self.assertFalse(telemetry.kick(dict(self.cfg, backend="off"), command, state_dir=self.root))
+            spawn.assert_not_called()
+            self.assertTrue(telemetry.kick(self.cfg, command, state_dir=self.root))
+            self.assertEqual(spawn.call_args.args[0], command)
+            self.assertTrue(spawn.call_args.kwargs["start_new_session"])
+            self.assertEqual(telemetry.snapshot(self.cfg, state_dir=self.root)["revision"], 0)
+            spawn.reset_mock()
+            fd = telemetry._lock(self.cfg, self.root)
+            try:
+                self.assertTrue(telemetry.kick(self.cfg, command, state_dir=self.root))
+                spawn.assert_not_called()
+            finally:
+                os.close(fd)
+
     def test_dns_timeout_is_wall_clock_bounded(self):
         with mock.patch.object(telemetry.urllib.request.OpenerDirector, "open", side_effect=lambda *args, **kwargs: time.sleep(.4)):
             started = time.monotonic()
