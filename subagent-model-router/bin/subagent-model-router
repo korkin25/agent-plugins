@@ -338,12 +338,9 @@ def redact(text):
 
 
 def build_state(description, text):
-    """state для Jev: описание и строки TASK:/ROLE: (иначе первые 1500 символов задания), без секретов."""
-    text = text if isinstance(text, str) else ""
-    description = description if isinstance(description, str) else ""
-    lines = [line.strip() for line in text.splitlines() if line.lstrip().startswith(("TASK:", "ROLE:"))]
-    task = redact("\n".join(lines)) if lines else redact(text)[:TASK_FALLBACK_CHARS]
-    return {"description": redact(description), "task": task}
+    """Full secret-filtered task text; never open paths referenced by a task."""
+    from router_context import build_context
+    return build_context(description, text, redact)
 
 
 def state_digest(state):
@@ -410,11 +407,16 @@ def parse_response(raw, header_request_id=None):
             raise JevError("sum")
         probs[qid] = {k: float(v) for k, v in table.items()}
     request_id = header_request_id or data.get("id")
-    return {
+    result = {
         "probs": probs,
         "jev_model": data.get("model") if isinstance(data.get("model"), str) else None,
         "request_id": request_id[:200] if isinstance(request_id, str) and request_id else None,
     }
+    usage = data.get("usage")
+    if isinstance(usage, dict):
+        result["usage"] = {k: v for k, v in usage.items()
+                           if k in ("input_tokens", "output_tokens", "cost") and _is_number(v) and v >= 0}
+    return result
 
 
 def _retry_delay(headers):
@@ -983,6 +985,8 @@ def handle_event(event, agent):
     if key is None:
         return None, dict(record, reason="no_key")
     state = build_state(description, text)
+    if state["input_quality"]["oversized"]:
+        return None, dict(record, reason="error:input_size")
     record["state_sha256"] = state_digest(state)
     try:
         result = ask_jev(cfg, key, state)
@@ -991,6 +995,8 @@ def handle_event(event, agent):
     tier, rule = choose_tier(result["probs"], cfg["thresholds"])
     record.update(jev_model=result["jev_model"], request_id=result["request_id"],
                   latency_ms=result["latency_ms"], answers=rounded_answers(result["probs"]), tier=tier)
+    if result.get("usage"):
+        record["usage"] = result["usage"]
     if agent == "claude":
         output, record = _claude_decision(cfg, tool_input, tier, rule, record)
     else:
@@ -1095,11 +1101,13 @@ def cmd_explain(text, description):
         print(f"Key {os.path.expanduser(cfg['key_file'])}: {problem}.", file=sys.stderr)
         return 1
     state = build_state(description, text)
-    source = "TASK:/ROLE: lines" if any(
-        line.lstrip().startswith(("TASK:", "ROLE:")) for line in text.splitlines()) else "first 1500 characters"
+    if state["input_quality"]["oversized"]:
+        print("Task exceeds the input limit; nothing sent to Jev.", file=sys.stderr)
+        return 1
+    source = state["input_quality"]["source"]
     print(f"Provider: {cfg['provider']}, {cfg['endpoint']}, Jev model {cfg['model']}")
-    print(f"Sent: description {len(state['description'])} chars, task ({source}) "
-          f"{len(state['task'])} chars, after hiding secrets")
+    print(f"Sent: {len(json.dumps(state, ensure_ascii=False))} characters of full task context ({source}); "
+          "known secret formats masked")
     try:
         result = ask_jev(cfg, key, state)
     except JevError as exc:
@@ -1223,7 +1231,7 @@ def cmd_local_stats(days):
 
 
 def cmd_stats(days, source="auto", html_path=None, as_json=False, project=None, user=None,
-              terminal=False, browser=False, open_browser=False, agent=None):
+              terminal=False, browser=False, open_browser=False, agent=None, account=None):
     try:
         cfg = load_config()
     except ConfigError:
@@ -1258,6 +1266,8 @@ def cmd_stats(days, source="auto", html_path=None, as_json=False, project=None, 
                 pass
             data = local_data(rows, days=days or 7, **filters)
         else:
+            if account is not None:
+                filters["account"] = account
             data = query_stats(cfg["telemetry"], days=days or 7, **filters)
         if html_path:
             render_html(data, html_path)
@@ -1309,7 +1319,12 @@ def cmd_telemetry(worker_mode=False):
                 return (load_config() or DEFAULT_RULES)["telemetry"]
             except ConfigError:
                 return {"backend": "off"}
-        return worker(telemetry, reload_config=current_config)
+        def openrouter_key():
+            latest = load_config()
+            if latest is None or latest["provider"] != "openrouter":
+                return None
+            return read_key(latest["key_file"])[0]
+        return worker(telemetry, reload_config=current_config, read_openrouter_key=openrouter_key)
     print(json.dumps(snapshot(telemetry), indent=2))
     return 0
 
@@ -1709,6 +1724,9 @@ def main(argv=None):
     explain = sub.add_parser("explain", help="ask Jev about a task text and show the decision")
     explain.add_argument("text", nargs="?", help="task text (stdin when omitted)")
     explain.add_argument("-d", "--description", default="", help="short subagent description")
+    preview = sub.add_parser("preview", help="show filtered Jev state locally; no network request")
+    preview.add_argument("text", nargs="?", help="task text (stdin when omitted)")
+    preview.add_argument("-d", "--description", default="")
     stats = sub.add_parser("stats", help="statistics from configured storage (VM or local journal)")
     stats.add_argument("--days", type=int, help="only the last N days")
     stats.add_argument("--source", choices=("auto", "local", "victoriametrics"), default="auto")
@@ -1717,6 +1735,7 @@ def main(argv=None):
     stats.add_argument("--project", help="only this project cohort (VM)")
     stats.add_argument("--user", help="only this user cohort (VM)")
     stats.add_argument("--agent", choices=("codex", "claude"), help="only this client (VM)")
+    stats.add_argument("--account", help="OpenRouter credential/account alias for balance snapshots")
     stats.add_argument("--terminal", action="store_true", help="ready-to-display agent dashboard")
     stats.add_argument("--browser", action="store_true", help="serve HTML in memory for the agent's browser")
     stats.add_argument("--open", action="store_true", help="serve report and ask the default browser to open it")
@@ -1736,6 +1755,11 @@ def main(argv=None):
     if args.cmd == "explain":
         text = args.text if args.text is not None else sys.stdin.read()
         return cmd_explain(text, args.description)
+    if args.cmd == "preview":
+        value = args.text if args.text is not None else sys.stdin.read()
+        state = build_state(args.description, value)
+        print(json.dumps(state, ensure_ascii=False, indent=2))
+        return 1 if state["input_quality"]["oversized"] else 0
     if args.cmd == "stats":
         if args.days is not None and not 1 <= args.days <= 90:
             parser.error("--days must be between 1 and 90")
@@ -1744,7 +1768,7 @@ def main(argv=None):
         if args.html and (args.browser or args.open):
             parser.error("choose an explicit export or an in-memory browser report")
         return cmd_stats(args.days, args.source, args.html, args.json, args.project, args.user,
-                         args.terminal, args.browser, args.open, args.agent)
+                         args.terminal, args.browser, args.open, args.agent, args.account)
     if args.cmd == "telemetry-status":
         return cmd_telemetry()
     if args.cmd == "check":

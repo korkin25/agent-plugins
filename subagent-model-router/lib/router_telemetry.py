@@ -26,7 +26,9 @@ import urllib.request
 
 TELEMETRY_DEFAULTS = dict(backend="local", write_url="", query_url="", instance="default",
                           token_file="", flush_interval_seconds=5, timeout_seconds=3,
-                          max_queue_events=1000, projects={}, user="")
+                          max_queue_events=1000, projects={}, user="",
+                          openrouter_balance=False, account="")
+OPENROUTER_POLL_SECONDS = 300
 MAX_SERIES = 4096
 MAX_BODY_BYTES = 2 * 1024 * 1024
 LATENCY_BUCKETS = (.01, .025, .05, .1, .25, .5, 1, 2, 4, 8, 16, 30)
@@ -63,6 +65,11 @@ def validate_config(section):
         raise ValueError("telemetry instance invalid")
     if not isinstance(cfg["user"], str) or (cfg["user"] and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", cfg["user"])):
         raise ValueError("telemetry user invalid")
+    if (not isinstance(cfg["openrouter_balance"], bool)
+            or not isinstance(cfg["account"], str)
+            or (cfg["account"] and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", cfg["account"]))
+            or (cfg["openrouter_balance"] and not cfg["account"])):
+        raise ValueError("telemetry OpenRouter account invalid")
     for key, low, high in (("flush_interval_seconds", .1, 60), ("timeout_seconds", .1, 10),
                            ("max_queue_events", 1, 100000)):
         value = cfg[key]
@@ -189,6 +196,126 @@ parameters may be present here (the configuration itself cannot contain them).
     return value
 
 
+def openrouter_request(path, key, timeout):
+    """Fixed-origin credential boundary, independent of the VM bearer token."""
+    if path not in ("/api/v1/key", "/api/v1/credits"):
+        raise TelemetryError("openrouter_path")
+    if not isinstance(key, str) or not re.fullmatch(r"[\x21-\x7e]{1,4096}", key):
+        raise TelemetryError("openrouter_key")
+    results = queue.Queue(maxsize=1)
+
+    def exchange():
+        try:
+            req = urllib.request.Request("https://openrouter.ai" + path,
+                                         headers={"Authorization": "Bearer " + key, "Accept": "application/json"})
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+            with opener.open(req, timeout=timeout) as response:
+                raw = response.read(MAX_BODY_BYTES + 1)
+            if len(raw) > MAX_BODY_BYTES:
+                raise TelemetryError("openrouter_response_size")
+            data = json.loads(raw).get("data")
+            if not isinstance(data, dict):
+                raise TelemetryError("openrouter_response")
+            results.put((True, data))
+        except urllib.error.HTTPError as exc:
+            exc.close()
+            results.put((False, "openrouter_http"))
+        except Exception:
+            results.put((False, "openrouter_response"))
+
+    threading.Thread(target=exchange, daemon=True).start()
+    try:
+        ok, value = results.get(timeout=timeout)
+    except queue.Empty:
+        raise TelemetryError("openrouter_timeout") from None
+    if not ok:
+        raise TelemetryError(value)
+    return value
+
+
+def probe_openrouter_balance(cfg, read_openrouter_key, *, state_dir=None):
+    """Worker-only aggregate probes, throttled durably across worker restarts.
+
+The alias groups the same account/key cohort across installations. Consumers
+must deduplicate by alias (never sum copies). A failed probe retains its last
+numeric values with success=0 and an unchanged last-success timestamp. No raw
+response, credential, credential fingerprint or exception is persisted.
+"""
+    if not cfg.get("openrouter_balance") or cfg.get("backend") != "victoriametrics":
+        return False
+    db = _db(cfg, state_dir)
+    try:
+        now = time.time()
+        db.execute("BEGIN IMMEDIATE")
+        if _get(db, "openrouter_account", "") != cfg["account"]:
+            db.execute("DELETE FROM gauges")
+            _set(db, "openrouter_account", cfg["account"])
+            _set(db, "openrouter_last_attempt", 0)
+        last = float(_get(db, "openrouter_last_attempt"))
+        if last and now - last < OPENROUTER_POLL_SECONDS:
+            db.commit()
+            return False
+        # Commit before network I/O: failed/crashed probes still respect cadence.
+        _set(db, "openrouter_last_attempt", now)
+        db.commit()
+        labels = dict(instance=cfg["instance"], account=cfg["account"])
+        updates = {}
+        refreshed = []
+        try:
+            key = read_openrouter_key() if read_openrouter_key else None
+        except Exception:
+            key = None
+        for scope, path in (("key", "/api/v1/key"), ("account", "/api/v1/credits")):
+            values = {}
+            success = False
+            try:
+                if not key:
+                    raise TelemetryError("openrouter_key")
+                data = openrouter_request(path, key, cfg["timeout_seconds"])
+                fields = ({"usage": "usage_usd", "limit": "limit_usd", "limit_remaining": "limit_remaining_usd",
+                           "usage_daily": "usage_daily_usd", "usage_weekly": "usage_weekly_usd", "usage_monthly": "usage_monthly_usd"}
+                          if scope == "key" else {"total_credits": "total_credits_usd", "total_usage": "total_usage_usd"})
+                required = ("usage",) if scope == "key" else ("total_credits", "total_usage")
+                if not all(_number(data.get(field)) for field in required):
+                    raise TelemetryError("openrouter_response")
+                for field, name in fields.items():
+                    if _number(data.get(field)):
+                        values[name] = data[field]
+                    elif data.get(field) is not None:
+                        raise TelemetryError("openrouter_response")
+                if scope == "account":
+                    values["balance_usd"] = values["total_credits_usd"] - values["total_usage_usd"]
+                else:
+                    # Explicit presence markers mask historical VM samples when
+                    # a formerly finite key limit becomes null/unlimited.
+                    values["limit_configured"] = int("limit_usd" in values)
+                    values["limit_remaining_available"] = int("limit_remaining_usd" in values)
+                    for period in ("daily", "weekly", "monthly"):
+                        values["usage_" + period + "_available"] = int("usage_" + period + "_usd" in values)
+                success = True
+                refreshed.extend("openrouter_" + scope + "_" + name for name in fields.values())
+                if scope == "account":
+                    refreshed.append("openrouter_account_balance_usd")
+                values["last_success_timestamp_seconds"] = now
+            except Exception:
+                # Includes callback, network, schema and permissions failures.
+                # Never export details that might contain a credential or URL.
+                values = {}
+            values["balance_probe_success"] = int(success)
+            values["last_attempt_timestamp_seconds"] = now
+            updates.update({_metric("openrouter_" + scope + "_" + name, labels): value
+                            for name, value in values.items()})
+        db.execute("BEGIN IMMEDIATE")
+        for name in refreshed:
+            db.execute("DELETE FROM gauges WHERE name=?", (_metric(name, labels),))
+        for name, value in updates.items():
+            db.execute("INSERT INTO gauges VALUES(?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value", (name, value))
+        db.commit()
+        return True
+    finally:
+        db.close()
+
+
 def _paths(cfg, state_dir):
     root = Path(state_dir) if state_dir is not None else Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "subagent-model-router" / "telemetry"
     # This identifies the configured destination, never a task/session/working directory.
@@ -220,14 +347,15 @@ def _db(cfg, state_dir=None):
         conn = sqlite3.connect(path, timeout=.1, isolation_level=None)
     try:
         conn.execute("PRAGMA secure_delete=ON")
-        if conn.execute("PRAGMA user_version").fetchone()[0] != 1:
+        if conn.execute("PRAGMA user_version").fetchone()[0] != 2:
             conn.executescript("""
         CREATE TABLE IF NOT EXISTS series (name TEXT PRIMARY KEY, value REAL NOT NULL,
             born INTEGER NOT NULL, baseline INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS pending (id INTEGER PRIMARY KEY CHECK(id=1),
             payload BLOB NOT NULL, stamp INTEGER NOT NULL, revision INTEGER NOT NULL);
-        PRAGMA user_version=1;
+        CREATE TABLE IF NOT EXISTS gauges (name TEXT PRIMARY KEY, value REAL NOT NULL);
+        PRAGMA user_version=2;
             """)
     except Exception:
         conn.close()
@@ -252,7 +380,7 @@ def _reason(value):
     base = str(value or "").split(";", 1)[0]
     allowed = {"explicit", "fork", "type", "excluded", "off", "no_key"}
     allowed.update("rule:" + rule for rule in ("light", "standard", "heavy", "risky", "review"))
-    allowed.update("error:" + kind for kind in ("input", "config", "timeout", "network", "size", "internal", "json", "answers", "type", "range", "options", "sum"))
+    allowed.update("error:" + kind for kind in ("input", "input_size", "config", "timeout", "network", "size", "internal", "json", "answers", "type", "range", "options", "sum"))
     if base in allowed:
         return base
     if re.fullmatch(r"error:http_[1-5][0-9]{2}", base):
@@ -306,6 +434,20 @@ def _points(cfg, record, duration):
         attempt = dict(labels, provider=provider, outcome=outcome)
         points[_metric("jev_requests_total", attempt)] = 1.0
         histogram("jev_request_duration_seconds", latency / 1000, attempt, LATENCY_BUCKETS)
+        financial = dict(labels, provider=provider)
+        usage = record.get("usage")
+        usage = usage if isinstance(usage, dict) else {}
+        cost = usage.get("cost")
+        if _number(cost):
+            points[_metric("jev_cost_usd_total", financial)] = float(cost)
+            points[_metric("jev_known_cost_requests_total", financial)] = 1.0
+        else:
+            # An absent price, including a timeout, is unknown rather than free.
+            points[_metric("jev_unpriced_requests_total", financial)] = 1.0
+        for direction in ("input", "output"):
+            tokens = usage.get(direction + "_tokens")
+            if _number(tokens) and float(tokens).is_integer():
+                points[_metric("jev_" + direction + "_tokens_total", financial)] = float(tokens)
     answers = record.get("answers")
     probs = answers.get("tier", {}) if isinstance(answers, dict) else {}
     if isinstance(probs, dict) and reason.startswith("rule:"):
@@ -387,7 +529,8 @@ def _prepare(db, cfg):
         db.commit()
         return pending
     rows = db.execute("SELECT name,value,baseline FROM series ORDER BY name").fetchall()
-    if not rows:
+    gauges = db.execute("SELECT name,value FROM gauges ORDER BY name").fetchall() if cfg.get("openrouter_balance") else []
+    if not rows and not gauges:
         db.commit()
         return None
     stamp = max(int(time.time() * 1000), int(_get(db, "last_sample_ms")) + 2)
@@ -400,6 +543,8 @@ def _prepare(db, cfg):
             # rate() and be swallowed by common VM deduplication intervals.
             zero_stamp = stamp - int(max(1, cfg["flush_interval_seconds"]) * 1000)
             lines.append(f"{name} 0 {zero_stamp}\n")
+        lines.append(f"{name} {value:.17g} {stamp}\n")
+    for name, value in gauges:
         lines.append(f"{name} {value:.17g} {stamp}\n")
     health = {"telemetry_pending_events": int(_get(db, "pending_events")),
               "telemetry_coalesced_events_total": int(_get(db, "coalesced_events")),
@@ -443,7 +588,7 @@ def flush_once(cfg, *, state_dir=None):
         db.close()
 
 
-def worker(cfg, *, state_dir=None, max_runtime_seconds=300, reload_config=None):
+def worker(cfg, *, state_dir=None, max_runtime_seconds=300, reload_config=None, read_openrouter_key=None):
     """Finite detached singleton: heartbeat/retry until its lease expires.
 
 After expiry snapshots remain durable and a later hook starts a new worker.
@@ -464,6 +609,10 @@ Idle series become stale in VM; this is deliberately not a resident service.
                         return 0
                 except Exception:
                     return 0
+            try:
+                probe_openrouter_balance(cfg, read_openrouter_key, state_dir=state_dir)
+            except Exception:
+                pass
             try:
                 ok = flush_once(cfg, state_dir=state_dir)
             except Exception:

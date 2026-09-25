@@ -51,6 +51,8 @@ query_url = ""              # API base, e.g. http://vm.example:8428
 # Cluster: write .../insert/0/prometheus/api/v1/import/prometheus; query .../select/0/prometheus
 instance = "default"        # set a unique stable name for EACH writer installation; not a session ID
 user = ""                   # defaults to OS login; set a stable alias to group the same person across hosts
+openrouter_balance = false  # background key limit/account credits polling; no extra Jev calls
+account = ""                # explicit shared alias when monitoring same OpenRouter credential on several hosts
 token_file = ""             # optional separate VM Bearer token file, owner-only; never put token in URL
 flush_interval_seconds = 5
 timeout_seconds = 3

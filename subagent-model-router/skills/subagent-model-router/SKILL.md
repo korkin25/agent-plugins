@@ -68,17 +68,26 @@ chat message or identical presentation in every client. Tests verify hook output
 
 ## What leaves the machine
 
-One request per subagent start, to TypeSafe (`provider = "typesafe"`) or OpenRouter (`"openrouter"`):
-`state = {"description": …, "task": …}`. In Claude Code the description is the call's `description`; in Codex
-it is `task_name` (or `agent_type`). `task` is the task lines that start with `TASK:` and `ROLE:`, or the first
-1500 characters of the task when there are none. Common credential formats are masked with `[redacted]` first:
-GitLab (`glpat-…`), GitHub (`ghp_…`, `gho_…`, `github_pat_…`), `sk-…`, Slack (`xox?-…`), AWS (`AKIA…`)
-and Google (`AIza…`) keys, JWTs, `PRIVATE KEY` blocks, `Bearer` and `Authorization: Basic` credentials,
-`user:password@` in URLs, `--password <value>`, and values after `password`, `passwd`, `token`, `secret`,
-`api_key`/`api-key` (so `X-Api-Key:` too) with `:` or `=`.
-Do not rely on it for anything else: a secret in any other form is sent as written. Nothing else is sent to Jev.
-With the optional VictoriaMetrics backend, aggregate metrics also go to the user-configured VM endpoint;
-task text and identifying journal fields are never included. See Monitoring below.
+For each routed launch, Jev receives the **entire subagent task and its description**, after masking known
+credential formats. No TASK/ROLE extraction, summary or 1500-character truncation is performed. Multiline
+instructions, permissions, checks, paths, repository names and other text in the task are included. The
+plugin does not open referenced files or add conversation history. For Codex text-item calls, only text
+items are included; attached images are not sent to Jev.
+
+The combined task/description processing limit is 131072 Unicode characters. Above it the request is
+rejected whole (`error:input_size`), with no Jev request and no model override; it is never silently shortened.
+`input_quality` identifies full-text format version2 and whether masking occurred. Matching API tokens,
+credentials, Authorization headers and private-key blocks are masked before transmission. Arbitrary secrets
+or private prose may remain: masking is not a guarantee. Use project exclusions for tasks that must not leave
+this machine. The `preview` tool shows exactly this filtered state locally, without a request or journal write;
+the agent should use it when the user asks what will be sent, not automatically on every call.
+
+OpenRouter/TypeSafe authentication goes only to the configured provider. Optional VM metrics contain
+aggregate observations, project/user labels and reported costs, never full task text. Optional OpenRouter
+balance polling uses the provider key only against the fixed OpenRouter key/credits API endpoints, in the
+background, at most once per five minutes per installation while its worker runs. Key limits and account
+credits are distinct; account usage may include other applications. The same account gauge reported by
+several installations must be selected by freshest successful snapshot per alias, not summed.
 
 ## Setup (agent performs these steps)
 
@@ -104,6 +113,7 @@ task text and identifying journal fields are never included. See Monitoring belo
   binary and model catalog (fetched now, up to 30 s, with the time it took; this fills the cache the hook
   reads), whether the key exists with the right permissions (never its content). `--live` makes one small
   request to Jev.
+- `preview [TEXT] [-d DESCRIPTION]` — exact filtered Jev state without network access; use only when asked.
 - `explain [TEXT]` (or the text on stdin, `-d DESCRIPTION`) — ask Jev about a task and show the answers, the
   threshold bands and the result for Claude Code and for Codex. It is a real request: warn the user that the
   text goes to TypeSafe or OpenRouter. It does not write the journal.
@@ -129,7 +139,8 @@ otherwise `P(light) + P(standard) ≥ standard_min` and `P(heavy) < heavy_max` �
 
 For VictoriaMetrics setup, delivery guarantees, Grafana import and report commands, read
 [references/monitoring.md](references/monitoring.md). Collection and rendering are Python code shared by both
-hosts: never schedule an agent, poll with an LLM, read raw history or call Jev to collect monitoring data.
+hosts: never schedule an agent, poll with an LLM, read raw history or call Jev to collect monitoring data. For money, separate reported router spend from
+whole-account/key usage; show cost coverage and balance age/probe status. Never turn missing cost into zero.
 When asked for statistics, run the resolved executable with `stats --days N --terminal` (default: 7 days).
 Use `--project`, `--user`, `--agent codex|claude` when requested. Local journal rows lacking a requested cohort do not match; do not infer it from paths.
 Copy the resulting dashboard into the **final response**, preserving the tables/bars/trend gaps. Tool output

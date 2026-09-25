@@ -114,3 +114,26 @@ New counter series include a synthetic initial zero one flush interval before th
 allows first-batch counts to be seen, but timing within that interval is approximate. VM-side downsampling
 or deduplication can merge samples and further affect small-window estimates. Coalesced/dropped delivery
 health values are cumulative totals from the last received snapshot, not per-window increments.
+
+## Money and OpenRouter balance
+
+Jev response `usage.cost` is exported as `smr_jev_cost_usd_total` alongside
+`smr_jev_known_cost_requests_total`, `smr_jev_unpriced_requests_total` and input/output token counters.
+These costs describe observed router requests only and retain project/user/client cohorts. A missing cost,
+failed request or timeout is unknown, not free. Retries with a lost response can incur unobserved cost;
+period totals are monitoring estimates, not an invoice reconciliation. Old data has no retroactive prices.
+
+For a user request to monitor their provider balance, set `openrouter_balance = true` and an explicit
+`account = "my-openrouter"` under `[telemetry]`. Use the same alias only for the same account/key cohort;
+use distinct aliases for different keys so per-key limits are not conflated. Reuse the configured OpenRouter
+key file. Do not copy the OpenRouter key into the VM token file. The worker polls the fixed OpenRouter
+`/api/v1/key` and `/api/v1/credits` endpoints, without calling Jev, every300 seconds per installation while
+running. It persists last-attempt time across worker restarts. No external account fields or raw response
+are retained, only allowlisted numerical gauges.
+
+Key limit remaining and account credit balance are different. Account totals can include every application
+using that account. Copies from several installations are selected by freshest successful snapshot, never summed. Inspect successful
+probe flags and age before describing a snapshot as current; stale/forbidden balance is not zero. Unlimited
+key limits are represented as unavailable amount plus explicit availability markers. After the five-minute
+worker exits, polling resumes only on a later hook/worker start; this is not a permanently running account
+monitor. The agent can use `stats --account ALIAS --terminal` to show the snapshot in the answer.

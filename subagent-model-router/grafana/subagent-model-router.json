@@ -1,7 +1,7 @@
 {
   "id": null,
   "uid": "subagent-model-router",
-  "title": "Subagent Model Router \u00b7 Operations",
+  "title": "Subagent Model Router · Operations",
   "description": "Received counter estimates for the selected window. Delayed telemetry may be absent; no data is not zero. Routing selection share does not establish cost savings or model quality.",
   "tags": [
     "subagent-model-router",
@@ -131,6 +131,30 @@
           "value": "$__all"
         },
         "options": []
+      },
+      {
+        "name": "account",
+        "label": "OpenRouter account / key alias",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(smr_openrouter_key_balance_probe_success, account)",
+        "query": {
+          "query": "label_values(smr_openrouter_key_balance_probe_success, account)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
       }
     ]
   },
@@ -142,7 +166,7 @@
     {
       "id": 1,
       "type": "text",
-      "title": "Routing operations \u00b7 evidence scope",
+      "title": "Routing operations · evidence scope",
       "gridPos": {
         "x": 0,
         "y": 0,
@@ -151,7 +175,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "Received counter estimates for the selected window. Delayed telemetry may be absent; no data is not zero. Routing selection share does not establish cost savings or model quality.\n\nLatency histograms include failed Jev attempts. Sparse/idle worker samples can leave gaps. Use **Query inspector** to distinguish datasource failures from no data.\n\nDelivery health is the last received snapshot. Workers exit after five minutes per run; later calls restart them; last-success trails by one flush. Health panels ignore the agent/project/user filters. Coalesced and dropped health counters show lifetime totals from the last received snapshot."
+        "content": "Received counter estimates for the selected window. Delayed telemetry may be absent; no data is not zero. Routing selection share does not establish cost savings or model quality.\n\nLatency histograms include failed Jev attempts. Sparse/idle worker samples can leave gaps. Use **Query inspector** to distinguish datasource failures from no data.\n\nDelivery health is the last received snapshot. Workers exit after five minutes per run; later calls restart them; last-success trails by one flush. Health panels ignore the agent/project/user filters. Coalesced and dropped health counters show lifetime totals from the last received snapshot.\n\nFinancial panels report known Jev charges only. OpenRouter balances are separate account-wide snapshots and may be stale; inspect age and probe status. Unpriced requests do not imply free calls or savings."
       }
     },
     {
@@ -492,7 +516,7 @@
     },
     {
       "id": 8,
-      "title": "Jev requests \u00b7 success and failure",
+      "title": "Jev requests · success and failure",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -545,7 +569,7 @@
     },
     {
       "id": 9,
-      "title": "Jev latency \u00b7 all outcomes",
+      "title": "Jev latency · all outcomes",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -861,7 +885,7 @@
         {
           "expr": "sum by(mode,applied) (rate(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__rate_interval]))",
           "refId": "A",
-          "legendFormat": "{{mode}} \u00b7 applied={{applied}}",
+          "legendFormat": "{{mode}} · applied={{applied}}",
           "range": true,
           "instant": false
         }
@@ -962,7 +986,7 @@
     },
     {
       "id": 16,
-      "title": "Jev probability \u00b7 tier p50",
+      "title": "Jev probability · tier p50",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -1016,7 +1040,7 @@
     },
     {
       "id": 17,
-      "title": "Pending events \u00b7 last received",
+      "title": "Pending events · last received",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1062,7 +1086,7 @@
     },
     {
       "id": 18,
-      "title": "Coalesced timing \u00b7 lifetime",
+      "title": "Coalesced timing · lifetime",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1108,7 +1132,7 @@
     },
     {
       "id": 19,
-      "title": "Dropped events \u00b7 lifetime",
+      "title": "Dropped events · lifetime",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1344,6 +1368,679 @@
           "mode": "multi"
         }
       }
+    },
+    {
+      "id": 24,
+      "title": "Jev reported spend · window",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 60,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(smr_jev_cost_usd_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data",
+          "decimals": 6
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Provider-reported routing cost only, selected routing cohorts. Missing prices are unknown, never free. Counter increases are window estimates; this is not a complete ledger or a savings claim."
+    },
+    {
+      "id": 25,
+      "title": "Jev known cost coverage",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 60,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "(sum(increase(smr_jev_known_cost_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) or (sum(increase(smr_jev_unpriced_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) * 0)) / ((sum(increase(smr_jev_known_cost_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) or (sum(increase(smr_jev_unpriced_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) * 0)) + (sum(increase(smr_jev_unpriced_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) or (sum(increase(smr_jev_known_cost_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) * 0)))",
+          "refId": "A",
+          "legendFormat": "",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Provider-reported routing cost only, selected routing cohorts. Missing prices are unknown, never free. Counter increases are window estimates; this is not a complete ledger or a savings claim."
+    },
+    {
+      "id": 26,
+      "title": "Jev unpriced requests",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 60,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(smr_jev_unpriced_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Provider-reported routing cost only, selected routing cohorts. Missing prices are unknown, never free. Counter increases are window estimates; this is not a complete ledger or a savings claim."
+    },
+    {
+      "id": 27,
+      "title": "Jev spend · average USD/hour",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 60,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(smr_jev_cost_usd_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) / ($__range_s / 3600)",
+          "refId": "A",
+          "legendFormat": "",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data",
+          "decimals": 6
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Provider-reported routing cost only, selected routing cohorts. Missing prices are unknown, never free. Counter increases are window estimates; this is not a complete ledger or a savings claim."
+    },
+    {
+      "id": 28,
+      "title": "Jev spend rate · USD/hour",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 65,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "3600 * sum(rate(smr_jev_cost_usd_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data",
+          "decimals": 6
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "description": "Provider-reported routing cost only, selected routing cohorts. Missing prices are unknown, never free. Counter increases are window estimates; this is not a complete ledger or a savings claim."
+    },
+    {
+      "id": 29,
+      "title": "OpenRouter credit balance · last snapshot",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 73,
+        "w": 8,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "min by (account) (last_over_time(smr_openrouter_account_balance_usd{account=~\"$account\"}[$__range]) and on (instance,account) (last_over_time(smr_openrouter_account_last_success_timestamp_seconds{account=~\"$account\"}[$__range]) == on (account) group_left max by (account) (last_over_time(smr_openrouter_account_last_success_timestamp_seconds{account=~\"$account\"}[$__range]))))",
+          "refId": "A",
+          "legendFormat": "{{account}}",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data",
+          "decimals": 6
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Latest successful snapshot per account alias and API scope across installations, independent of router project/user/agent/instance filters. Values are matched to their success timestamp; equal-timestamp amounts use the conservative minimum. Latest probe status follows the latest attempt separately, including failures; stopped workers do not refresh. Account totals include other tools. Key limit is not wallet credit; no key limit data can mean unlimited or unavailable."
+    },
+    {
+      "id": 30,
+      "title": "Key limit remaining · last snapshot",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 73,
+        "w": 8,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "min by (account) ((last_over_time(smr_openrouter_key_limit_remaining_usd{account=~\"$account\"}[$__range]) and on (instance,account) (last_over_time(smr_openrouter_key_limit_remaining_available{account=~\"$account\"}[$__range]) == 1)) and on (instance,account) (last_over_time(smr_openrouter_key_last_success_timestamp_seconds{account=~\"$account\"}[$__range]) == on (account) group_left max by (account) (last_over_time(smr_openrouter_key_last_success_timestamp_seconds{account=~\"$account\"}[$__range]))))",
+          "refId": "A",
+          "legendFormat": "{{account}}",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data",
+          "decimals": 6
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Latest successful snapshot per account alias and API scope across installations, independent of router project/user/agent/instance filters. Values are matched to their success timestamp; equal-timestamp amounts use the conservative minimum. Latest probe status follows the latest attempt separately, including failures; stopped workers do not refresh. Account totals include other tools. Key limit is not wallet credit; no key limit data can mean unlimited or unavailable."
+    },
+    {
+      "id": 31,
+      "title": "Key billed this month · last snapshot",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 73,
+        "w": 8,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "min by (account) ((last_over_time(smr_openrouter_key_usage_monthly_usd{account=~\"$account\"}[$__range]) and on (instance,account) (last_over_time(smr_openrouter_key_usage_monthly_available{account=~\"$account\"}[$__range]) == 1)) and on (instance,account) (last_over_time(smr_openrouter_key_last_success_timestamp_seconds{account=~\"$account\"}[$__range]) == on (account) group_left max by (account) (last_over_time(smr_openrouter_key_last_success_timestamp_seconds{account=~\"$account\"}[$__range]))))",
+          "refId": "A",
+          "legendFormat": "{{account}}",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data",
+          "decimals": 6
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Latest successful snapshot per account alias and API scope across installations, independent of router project/user/agent/instance filters. Values are matched to their success timestamp; equal-timestamp amounts use the conservative minimum. Latest probe status follows the latest attempt separately, including failures; stopped workers do not refresh. Account totals include other tools. Key limit is not wallet credit; no key limit data can mean unlimited or unavailable."
+    },
+    {
+      "id": 32,
+      "title": "Key latest probe success",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 78,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "min by (account) (last_over_time(smr_openrouter_key_balance_probe_success{account=~\"$account\"}[$__range]) and on (instance,account) (last_over_time(smr_openrouter_key_last_attempt_timestamp_seconds{account=~\"$account\"}[$__range]) == on (account) group_left max by (account) (last_over_time(smr_openrouter_key_last_attempt_timestamp_seconds{account=~\"$account\"}[$__range]))))",
+          "refId": "A",
+          "legendFormat": "{{account}}",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Latest successful snapshot per account alias and API scope across installations, independent of router project/user/agent/instance filters. Values are matched to their success timestamp; equal-timestamp amounts use the conservative minimum. Latest probe status follows the latest attempt separately, including failures; stopped workers do not refresh. Account totals include other tools. Key limit is not wallet credit; no key limit data can mean unlimited or unavailable."
+    },
+    {
+      "id": 33,
+      "title": "Key snapshot age · freshest success",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 78,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "time() - max by (account) (last_over_time(smr_openrouter_key_last_success_timestamp_seconds{account=~\"$account\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "{{account}}",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Latest successful snapshot per account alias and API scope across installations, independent of router project/user/agent/instance filters. Values are matched to their success timestamp; equal-timestamp amounts use the conservative minimum. Latest probe status follows the latest attempt separately, including failures; stopped workers do not refresh. Account totals include other tools. Key limit is not wallet credit; no key limit data can mean unlimited or unavailable."
+    },
+    {
+      "id": 34,
+      "title": "Account latest probe success",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 78,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "min by (account) (last_over_time(smr_openrouter_account_balance_probe_success{account=~\"$account\"}[$__range]) and on (instance,account) (last_over_time(smr_openrouter_account_last_attempt_timestamp_seconds{account=~\"$account\"}[$__range]) == on (account) group_left max by (account) (last_over_time(smr_openrouter_account_last_attempt_timestamp_seconds{account=~\"$account\"}[$__range]))))",
+          "refId": "A",
+          "legendFormat": "{{account}}",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Latest successful snapshot per account alias and API scope across installations, independent of router project/user/agent/instance filters. Values are matched to their success timestamp; equal-timestamp amounts use the conservative minimum. Latest probe status follows the latest attempt separately, including failures; stopped workers do not refresh. Account totals include other tools. Key limit is not wallet credit; no key limit data can mean unlimited or unavailable."
+    },
+    {
+      "id": 35,
+      "title": "Account snapshot age · freshest success",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 78,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "time() - max by (account) (last_over_time(smr_openrouter_account_last_success_timestamp_seconds{account=~\"$account\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "{{account}}",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Latest successful snapshot per account alias and API scope across installations, independent of router project/user/agent/instance filters. Values are matched to their success timestamp; equal-timestamp amounts use the conservative minimum. Latest probe status follows the latest attempt separately, including failures; stopped workers do not refresh. Account totals include other tools. Key limit is not wallet credit; no key limit data can mean unlimited or unavailable."
     }
   ]
 }

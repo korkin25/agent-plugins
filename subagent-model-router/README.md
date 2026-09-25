@@ -71,27 +71,28 @@ The prompt cache belongs to a model. Switching the main session's model on every
 cache of the whole conversation and cost more than it saves. A subagent starts from a clean context, so
 choosing its model at start-up loses nothing.
 
-## What this sends where
+## What leaves the machine
 
-- **One request per subagent start** to TypeSafe (`https://api.typesafe.ai/v1/systemone`, the default) or to
-  OpenRouter (`https://openrouter.ai/api/alpha/decisions`, with `provider = "openrouter"`). The request holds
-  the subagent's short description (Claude Code `description`, Codex `task_name` or role) and the task lines
-  that start with `TASK:` and `ROLE:` — or the first 1500 characters of the task when it has no such lines.
-  Common credential formats are masked with `[redacted]` before sending: GitLab (`glpat-…`), GitHub
-  (`ghp_…`, `gho_…`, `github_pat_…`), `sk-…`, Slack (`xox?-…`), AWS (`AKIA…`) and Google (`AIza…`) keys,
-  JWTs, `PRIVATE KEY` blocks, `Bearer` and `Authorization: Basic` credentials, `user:password@` in URLs,
-  `--password <value>`, and values after `password`, `passwd`, `token`, `secret`, `api_key`/`api-key` (so
-  `X-Api-Key:` too) with `:` or `=`. Do not rely on it for anything else: a secret in any other form is sent
-  as written. Nothing else of the task, no files and no history leave the machine.
-- **The key** stays in a file on your machine and goes only into the `Authorization` header of that request —
-  over https, and never along a redirect.
-- **Statistics** use a local decision journal by default. Optional VictoriaMetrics mode sends only aggregate
-  metrics and stops appending the journal; see Monitoring below.
-- **In Codex**, a background process runs `codex debug models` of the codex binary that runs the session when
-  the cached catalog is missing or older than 24 hours — one at a time, for at most 30 seconds — and caches
-  the catalog in `~/.cache/subagent-model-router/codex-models.json`, keyed by the binary's real path and
-  modification time. `codex-trust` talks to your local `codex app-server` and
-  writes only the trust entries of this plugin's hooks into your Codex configuration.
+For each routed launch, Jev receives the **entire subagent task and its description**, after masking known
+credential formats. No TASK/ROLE extraction, summary or 1500-character truncation is performed. Multiline
+instructions, permissions, checks, paths, repository names and other text in the task are included. The
+plugin does not open referenced files or add conversation history. For Codex text-item calls, only text
+items are included; attached images are not sent to Jev.
+
+The combined task/description processing limit is 131072 Unicode characters. Above it the request is
+rejected whole (`error:input_size`), with no Jev request and no model override; it is never silently shortened.
+`input_quality` identifies full-text format version2 and whether masking occurred. Matching API tokens,
+credentials, Authorization headers and private-key blocks are masked before transmission. Arbitrary secrets
+or private prose may remain: masking is not a guarantee. Use project exclusions for tasks that must not leave
+this machine. The `preview` tool shows exactly this filtered state locally, without a request or journal write;
+the agent should use it when the user asks what will be sent, not automatically on every call.
+
+OpenRouter/TypeSafe authentication goes only to the configured provider. Optional VM metrics contain
+aggregate observations, project/user labels and reported costs, never full task text. Optional OpenRouter
+balance polling uses the provider key only against the fixed OpenRouter key/credits API endpoints, in the
+background, at most once per five minutes per installation while its worker runs. Key limits and account
+credits are distinct; account usage may include other applications. The same account gauge reported by
+several installations must be selected by freshest successful snapshot per alias, not summed.
 
 ## Monitoring
 
@@ -174,11 +175,24 @@ subagent-model-router codex-trust [--codex PATH] [--dry-run]
 
 `explain` makes a real request, so the text goes to TypeSafe or OpenRouter just as the hook would send it.
 
+## Money
+
+Router requests export provider-reported cost, known-cost coverage and token counts by cohort. Optional
+background OpenRouter polling shows remaining key limit and account credit balance separately, with age and
+probe status. Ask the agent to enable balance monitoring; the existing provider key stays private. Several
+installations using one key do not multiply its account balance. Unpriced/failed requests remain unknown.
+
+## Evaluation
+
+A frozen 28-case synthetic old-versus-full-text comparison (112 requests) is in
+[the evaluation report](eval/results-20260925.md). Full text preserved more input but did not improve final
+routing accuracy on this set; API-reported cost increased 9.4%. This does not measure downstream quality or savings.
+
 ## Limitations
 
 - English is Jev's main language; the questions are asked in English, and accuracy on tasks written in other
   languages has not been measured.
-- Jev reads literally: it judges what the description and the `TASK:`/`ROLE:` lines say, not what was meant.
+- Jev reads literally: it judges what the filtered description and full task say, not what was meant.
   A short or vague task gives an unsure answer, which means the session model.
 - In Codex only the roles in `route_agent_types` are routed; if such a role's file sets its own model, that
   model wins over the choice.

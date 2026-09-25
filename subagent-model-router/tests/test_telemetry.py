@@ -2,6 +2,7 @@
 import concurrent.futures
 import contextlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -387,6 +388,183 @@ finally:
         self.assertEqual(telemetry.snapshot(self.cfg, state_dir=self.root)["dropped_events"], 1)
         changed = dict(self.cfg, instance="other")
         self.assertEqual(telemetry.snapshot(changed, state_dir=self.root)["revision"], 0)
+
+    def test_cost_and_tokens_only_from_known_numeric_usage(self):
+        for cost in (0, .0123):
+            self.record["usage"] = dict(cost=cost, input_tokens=100, output_tokens=0)
+            points = telemetry._points(self.cfg, self.record, .2)
+            self.assertEqual(next(v for k, v in points.items() if k.startswith("smr_jev_cost_usd_total")), cost)
+            self.assertTrue(any(k.startswith("smr_jev_known_cost_requests_total") for k in points))
+            self.assertFalse(any(k.startswith("smr_jev_unpriced_requests_total") for k in points))
+            self.assertEqual(next(v for k, v in points.items() if k.startswith("smr_jev_input_tokens_total")), 100)
+            self.assertEqual(next(v for k, v in points.items() if k.startswith("smr_jev_output_tokens_total")), 0)
+        for usage in (None, {}, {"cost": None}, {"cost": -1}, {"cost": True}, {"cost": float("nan")},
+                      {"cost": ".1", "input_tokens": -1, "output_tokens": .5}):
+            self.record.update(usage=usage, reason="error:timeout")
+            points = telemetry._points(self.cfg, self.record, .2)
+            self.assertTrue(any(k.startswith("smr_jev_unpriced_requests_total") for k in points))
+            self.assertFalse(any(k.startswith(("smr_jev_cost_usd_total", "smr_jev_input_tokens_total", "smr_jev_output_tokens_total")) for k in points))
+        self.record.update(latency_ms=None, usage={"cost": 10}, reason="excluded")
+        self.assertFalse(any(k.startswith("smr_jev_") for k in telemetry._points(self.cfg, self.record, .2)))
+
+    def balance_config(self):
+        return telemetry.validate_config(dict(self.cfg, openrouter_balance=True, account="test-account"))
+
+    def balance_rows(self):
+        db = self.connection()
+        try:
+            return dict(db.execute("SELECT name,value FROM gauges"))
+        finally:
+            db.close()
+
+    def test_balance_requires_explicit_alias_and_defaults_off(self):
+        self.assertFalse(self.cfg["openrouter_balance"])
+        for extra in ({"openrouter_balance": True}, {"openrouter_balance": "yes"}, {"account": "private/path"}):
+            with self.assertRaises(ValueError):
+                telemetry.validate_config(dict(self.cfg, **extra))
+        with mock.patch.object(telemetry, "openrouter_request") as request:
+            self.assertFalse(telemetry.probe_openrouter_balance(self.cfg, lambda: "unused", state_dir=self.root))
+            request.assert_not_called()
+
+    def test_balance_separate_account_and_key_values_throttled_durably(self):
+        cfg = self.balance_config()
+        def exchange(path, key, timeout):
+            self.assertEqual(key, "PRIVATE-PROVIDER-KEY")
+            return ({"usage": 2, "limit": 50, "limit_remaining": 48, "usage_daily": .1,
+                     "usage_weekly": .4, "usage_monthly": 2, "label": "PRIVATE-ACCOUNT"}
+                    if path.endswith("key") else {"total_credits": 100, "total_usage": 93})
+        with mock.patch.object(telemetry, "openrouter_request", side_effect=exchange) as request, mock.patch.object(telemetry.time, "time", return_value=1000):
+            self.assertTrue(telemetry.probe_openrouter_balance(cfg, lambda: "PRIVATE-PROVIDER-KEY", state_dir=self.root))
+            self.assertFalse(telemetry.probe_openrouter_balance(cfg, lambda: "PRIVATE-PROVIDER-KEY", state_dir=self.root))
+            self.assertEqual(request.call_count, 2)
+        rows = self.balance_rows()
+        for suffix, expected in (("key_limit_remaining_usd", 48), ("account_balance_usd", 7),
+                                 ("key_usage_daily_usd", .1), ("key_balance_probe_success", 1),
+                                 ("account_balance_probe_success", 1), ("account_last_success_timestamp_seconds", 1000)):
+            self.assertEqual(rows[telemetry._metric("openrouter_" + suffix, dict(instance="test", account="test-account"))], expected)
+        db = self.connection()
+        try:
+            payload, _, _ = telemetry._prepare(db, cfg)
+        finally:
+            db.close()
+        balance_lines = [line for line in payload.splitlines() if line.startswith(b"smr_openrouter_")]
+        self.assertEqual(len(balance_lines), len(rows))  # gauges have no synthetic zero
+        for path in self.root.iterdir():
+            self.assertNotIn(b"PRIVATE-", path.read_bytes())
+        self.assertNotIn(b"PRIVATE-", payload)
+
+    def test_balance_failure_retains_stale_value_and_null_limit_removes_old_gauge(self):
+        cfg = self.balance_config()
+        key = lambda: "fake-key"
+        with mock.patch.object(telemetry, "openrouter_request", side_effect=[{"usage": 2, "limit": 5, "limit_remaining": 3}, {"total_credits": 100, "total_usage": 93}]), mock.patch.object(telemetry.time, "time", return_value=1000):
+            telemetry.probe_openrouter_balance(cfg, key, state_dir=self.root)
+        with mock.patch.object(telemetry, "openrouter_request", side_effect=[{"usage": 3, "limit": None, "limit_remaining": None}, telemetry.TelemetryError("PRIVATE-secret-error")]), mock.patch.object(telemetry.time, "time", return_value=1300):
+            telemetry.probe_openrouter_balance(cfg, key, state_dir=self.root)
+        rows = self.balance_rows()
+        def value(name):
+            return rows.get(telemetry._metric("openrouter_" + name, dict(instance="test", account="test-account")))
+        self.assertIsNone(value("key_limit_usd"))
+        self.assertIsNone(value("key_limit_remaining_usd"))
+        self.assertEqual(value("key_limit_configured"), 0)
+        self.assertEqual(value("key_limit_remaining_available"), 0)
+        self.assertEqual(value("key_usage_usd"), 3)
+        self.assertEqual(value("account_balance_usd"), 7)
+        self.assertEqual(value("account_balance_probe_success"), 0)
+        self.assertEqual(value("account_last_success_timestamp_seconds"), 1000)
+        self.assertEqual(value("account_last_attempt_timestamp_seconds"), 1300)
+
+    def test_balance_credentials_failure_is_redacted_and_restart_throttled(self):
+        cfg = self.balance_config()
+        with mock.patch.object(telemetry, "openrouter_request") as request, mock.patch.object(telemetry.time, "time", return_value=1000):
+            telemetry.probe_openrouter_balance(cfg, mock.Mock(side_effect=ValueError("PRIVATE-secret")), state_dir=self.root)
+            request.assert_not_called()
+        with mock.patch.object(telemetry, "openrouter_request") as request, mock.patch.object(telemetry.time, "time", return_value=1299):
+            telemetry.worker(cfg, state_dir=self.root, max_runtime_seconds=0, read_openrouter_key=lambda: "fake-key")
+            request.assert_not_called()
+        self.assertFalse(any("PRIVATE" in name for name in self.balance_rows()))
+        self.assertFalse(any("balance_usd" in name for name in self.balance_rows()))
+
+    def test_optional_period_usage_availability_clears_missing_and_null_values(self):
+        cfg = self.balance_config()
+        labels = dict(instance="test", account="test-account")
+        initial = {"usage": 2, "usage_daily": .1, "usage_weekly": .4, "usage_monthly": 2}
+        credits = {"total_credits": 100, "total_usage": 93}
+        with mock.patch.object(telemetry, "openrouter_request", side_effect=[initial, credits]), mock.patch.object(telemetry.time, "time", return_value=1000):
+            telemetry.probe_openrouter_balance(cfg, lambda: "key", state_dir=self.root)
+        rows = self.balance_rows()
+        for period in ("daily", "weekly", "monthly"):
+            self.assertEqual(rows[telemetry._metric("openrouter_key_usage_" + period + "_available", labels)], 1)
+        # Missing, explicit null, and a known zero must remain distinct.
+        later = {"usage": 3, "usage_weekly": None, "usage_monthly": 0}
+        with mock.patch.object(telemetry, "openrouter_request", side_effect=[later, credits]), mock.patch.object(telemetry.time, "time", return_value=1300):
+            telemetry.probe_openrouter_balance(cfg, lambda: "key", state_dir=self.root)
+        rows = self.balance_rows()
+        for period in ("daily", "weekly"):
+            self.assertEqual(rows[telemetry._metric("openrouter_key_usage_" + period + "_available", labels)], 0)
+            self.assertNotIn(telemetry._metric("openrouter_key_usage_" + period + "_usd", labels), rows)
+        self.assertEqual(rows[telemetry._metric("openrouter_key_usage_monthly_available", labels)], 1)
+        self.assertEqual(rows[telemetry._metric("openrouter_key_usage_monthly_usd", labels)], 0)
+        self.assertEqual(rows[telemetry._metric("openrouter_key_balance_probe_success", labels)], 1)
+        with mock.patch.object(telemetry, "openrouter_request", side_effect=telemetry.TelemetryError("failed")), mock.patch.object(telemetry.time, "time", return_value=1600):
+            telemetry.probe_openrouter_balance(cfg, lambda: "key", state_dir=self.root)
+        failed_rows = self.balance_rows()
+        for period in ("daily", "weekly", "monthly"):
+            name = telemetry._metric("openrouter_key_usage_" + period + "_available", labels)
+            self.assertEqual(failed_rows[name], rows[name])
+        self.assertEqual(failed_rows[telemetry._metric("openrouter_key_last_success_timestamp_seconds", labels)], 1300)
+
+    def test_openrouter_transport_fixed_origin_auth_no_redirect_and_deadline(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps({"data": {"usage": 2}}).encode()
+        with mock.patch.object(telemetry.urllib.request.OpenerDirector, "open", return_value=response) as send:
+            self.assertEqual(telemetry.openrouter_request("/api/v1/key", "PROVIDER-ONLY", .1), {"usage": 2})
+            req = send.call_args.args[0]
+            self.assertEqual(req.full_url, "https://openrouter.ai/api/v1/key")
+            self.assertEqual(req.get_header("Authorization"), "Bearer PROVIDER-ONLY")
+            self.assertEqual(req.get_method(), "GET")
+        with self.assertRaisesRegex(telemetry.TelemetryError, "^openrouter_path$"):
+            telemetry.openrouter_request("https://other.example/api/v1/key", "PROVIDER-ONLY", .1)
+        with mock.patch.object(telemetry.urllib.request.OpenerDirector, "open", side_effect=lambda *args, **kwargs: time.sleep(.3)):
+            started = time.monotonic()
+            with self.assertRaisesRegex(telemetry.TelemetryError, "^openrouter_timeout$"):
+                telemetry.openrouter_request("/api/v1/key", "PROVIDER-ONLY", .1)
+            self.assertLess(time.monotonic() - started, .25)
+        self.assertIsNone(telemetry._NoRedirect().redirect_request(None, None, 307, "", {}, "https://other.example"))
+
+    def test_balance_worker_probes_then_flushes_without_hook_network(self):
+        cfg = self.balance_config()
+        with mock.patch.object(telemetry, "probe_openrouter_balance") as probe, mock.patch.object(telemetry, "flush_once", return_value=True) as flush:
+            read = lambda: "test-key"
+            telemetry.worker(cfg, state_dir=self.root, max_runtime_seconds=0, read_openrouter_key=read)
+            probe.assert_called_once_with(cfg, read, state_dir=self.root)
+            flush.assert_called_once_with(cfg, state_dir=self.root)
+
+    def test_balance_success_remains_independent_when_key_endpoint_fails(self):
+        cfg = self.balance_config()
+        with mock.patch.object(telemetry, "openrouter_request", side_effect=[telemetry.TelemetryError("failure"), {"total_credits": 8, "total_usage": 9}]), mock.patch.object(telemetry.time, "time", return_value=1000):
+            telemetry.probe_openrouter_balance(cfg, lambda: "key", state_dir=self.root)
+        rows = self.balance_rows()
+        labels = dict(instance="test", account="test-account")
+        self.assertEqual(rows[telemetry._metric("openrouter_key_balance_probe_success", labels)], 0)
+        self.assertEqual(rows[telemetry._metric("openrouter_account_balance_probe_success", labels)], 1)
+        self.assertEqual(rows[telemetry._metric("openrouter_account_balance_usd", labels)], -1)
+
+    def test_v1_migration_preserves_counters_and_pending_snapshot(self):
+        self.enqueue()
+        db = self.connection()
+        try:
+            pending = telemetry._prepare(db, self.cfg)
+            db.execute("DROP TABLE gauges")
+            db.execute("PRAGMA user_version=1")
+        finally:
+            db.close()
+        db = self.connection()
+        try:
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(telemetry._prepare(db, self.cfg), pending)
+            self.assertEqual(db.execute("SELECT value FROM series WHERE name LIKE 'smr_calls_total%'").fetchone()[0], 1)
+        finally:
+            db.close()
 
 
 if __name__ == "__main__":
