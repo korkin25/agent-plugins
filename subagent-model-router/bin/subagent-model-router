@@ -870,7 +870,7 @@ def base_record(event, agent):
         subagent_type = _text(tool_input.get("subagent_type"))
         description = _text(tool_input.get("description"))
         session_model = _text(event.get("model"))
-    return {
+    record = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "agent": agent,
         "session_id": _text(event.get("session_id")),
@@ -881,6 +881,12 @@ def base_record(event, agent):
         "latency_ms": None, "answers": None, "tier": None, "model": None, "effort": None,
         "session_model": session_model, "reason": None, "mode": None,
     }
+    session_effort = event.get("reasoning_effort", event.get("effort"))
+    if isinstance(session_effort, dict):
+        session_effort = session_effort.get("level")
+    if isinstance(session_effort, str) and session_effort in ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"):
+        record["session_effort"] = session_effort
+    return record
 
 
 def _claude_decision(cfg, tool_input, tier, rule, record):
@@ -932,7 +938,10 @@ def decision_notice(record):
         inherited = safe(record.get("session_model")) or "unknown"
         choice = f"model={inherited} (unchanged)"
     if record["agent"] == "codex":
-        choice += ", effort=" + (safe(effort) if effort not in (None, "inherit") else "unchanged")
+        choice += ", effort=" + (safe(effort) if effort not in (None, "inherit") else
+                                  (safe(record.get("session_effort")) or "unknown") + " (unchanged)")
+    elif record.get("session_effort"):
+        choice += ", effort=" + safe(record["session_effort"]) + " (unchanged)"
     action = "shadow recommendation" if record["mode"] == "shadow" else "selected for launch"
     message = f'{NAME}: "{label}" — {action}: {choice}; {record["reason"]}'
     if record["mode"] == "shadow":
@@ -1054,14 +1063,24 @@ def hook_main():
             effective = (output or {}).get("hookSpecificOutput", {}).get("updatedInput") or event.get("tool_input") or {}
             explicit_model = effective.get("model") if isinstance(effective, dict) else None
             actual_model = explicit_model if explicit_model not in (None, "inherit") else record.get("session_model")
+            explicit_effort = effective.get("reasoning_effort", effective.get("effort")) if isinstance(effective, dict) else None
+            if isinstance(explicit_effort, dict):
+                explicit_effort = explicit_effort.get("level")
+            actual_effort = explicit_effort if explicit_effort not in (None, "inherit") else record.get("session_effort")
+            if record["agent"] == "claude" and explicit_model not in (None, "inherit") and explicit_effort is None:
+                actual_effort = None  # effort.level describes parent turn, not a different child model
             # A skipped custom role may configure a different model in its own file.
             if record.get("reason") == "type":
                 actual_model = None
+                actual_effort = None
             if record["agent"] == "codex" and effective.get("agent_type") not in (None, "", "default", "worker"):
                 actual_model = None
+                actual_effort = None
             project = resolve_project(_text(event.get("cwd")) or os.getcwd(), telemetry)
             enqueue(telemetry, dict(record, applied=applied, project=project, user=resolve_user(telemetry),
                                    actual_model=actual_model,
+                                   actual_effort=actual_effort,
+                                   effort_source="specified" if explicit_effort not in (None, "inherit") else "session",
                                    model_source="specified" if explicit_model not in (None, "inherit") else "session"),
                     time.monotonic() - started,
                     worker_command=[sys.executable, os.path.abspath(__file__), "telemetry-worker"])

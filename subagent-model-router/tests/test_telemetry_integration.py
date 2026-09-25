@@ -51,7 +51,7 @@ class TelemetryIntegrationTests(Sandbox):
             journal.assert_not_called()
             self.assertEqual(enqueue.call_args.args[0], cfg["telemetry"])
             exported = enqueue.call_args.args[1]
-            self.assertEqual({k: v for k, v in exported.items() if k not in ("project", "user", "actual_model", "model_source")},
+            self.assertEqual({k: v for k, v in exported.items() if k not in ("project", "user", "actual_model", "model_source", "actual_effort", "effort_source")},
                              dict(record, applied=False))
             self.assertTrue(exported["project"])
             self.assertTrue(exported["user"])
