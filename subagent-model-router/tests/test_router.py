@@ -509,6 +509,15 @@ class DecisionTests(Sandbox):
         self.assertEqual(set(json.loads(out)), {"systemMessage"})
         self.assertIn("model=claude-opus-4-6 (unchanged)", json.loads(out)["systemMessage"])
 
+    def test_claude_hook_effort_level_object_is_reported(self):
+        self.serve(Reply(body=SCENARIOS["heavy"]))
+        self.write_config()
+        event = {"tool_name": "Agent", "tool_input": agent_input(), "effort": {"level": "high"}}
+        rc, out, err, _ = self.run_event(event)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn("effort=high (unchanged)", json.loads(out)["systemMessage"])
+        self.assertEqual(self.last_row()['session_effort'], 'high')
+
     def test_uncertain_answer_goes_heavy(self):
         self.assert_notice_only(self.decide("uncertain"), "heavy", "inherit", "rule:heavy")
 
@@ -700,7 +709,7 @@ class CodexTests(Sandbox):
             with self.subTest(scenario=scenario):
                 output = self.output(self.decide(scenario))
                 self.assertEqual(set(output), {"systemMessage"})
-                self.assertIn("model=gpt-5.5 (unchanged), effort=unchanged", output["systemMessage"])
+                self.assertIn("model=gpt-5.5 (unchanged), effort=unknown (unchanged)", output["systemMessage"])
                 row = self.last_row()
                 self.assertEqual((row["tier"], row["model"], row["effort"]), ("heavy", "inherit", "inherit"))
         self.assertEqual(self.codex_calls(), [])
@@ -937,7 +946,7 @@ class CatalogTests(Sandbox):
         result = self.decide()
         updated = self.updated(result)
         notice = json.loads(result[1])["systemMessage"]
-        self.assertIn("model=gpt-5.6-luna, effort=unchanged", notice)
+        self.assertIn("model=gpt-5.6-luna, effort=unknown (unchanged)", notice)
         self.assertIn("effort_not_supported", notice)
         self.assertEqual(updated["model"], "gpt-5.6-luna")
         self.assertNotIn("reasoning_effort", updated)
@@ -965,7 +974,7 @@ class CatalogTests(Sandbox):
         self.assertIsNone(self.updated(result))
         output = json.loads(result[1])
         self.assertEqual(set(output), {"systemMessage"})
-        self.assertIn("model=gpt-5.5 (unchanged), effort=unchanged", output["systemMessage"])
+        self.assertIn("model=gpt-5.5 (unchanged), effort=unknown (unchanged)", output["systemMessage"])
         self.assertIn("no_catalog;refreshing", output["systemMessage"])
         self.assertLess(time.monotonic() - started, 2)  # каталог отвечает 4 с, хук его не ждёт
         row = self.last_row()

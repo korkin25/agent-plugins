@@ -151,3 +151,12 @@ by the host remain aliases; the plugin does not invent a concrete model revision
 Old SQLite call counters without model_source are retired from new exports, including pending payloads;
 other metrics/retries are retained. Existing VM history is not deleted or retrospectively relabelled.
 Old `inherit` values can remain visible when the selected Grafana window includes older samples.
+
+
+Since0.4.3 model-share groups by `(model, effort)`. `effort_source` distinguishes specified, session and
+unknown values. Codex launch reasoning_effort is observed from effective tool arguments; inherited effort
+uses host event data only when supplied. Claude2.1.280 supplies parent-turn `effort.level` but omits the model
+from PreToolUse. For inherited general-purpose launches, the effort can be retained; for a changed child
+model it is not evidence of child effort. Custom roles and absent evidence remain unknown. Config defaults
+or ANTHROPIC_MODEL/CLAUDE_CODE_EFFORT_LEVEL are not substituted for current runtime observations. Old samples
+are not retroactively repaired and retired call-series are no longer replayed by upgraded workers.

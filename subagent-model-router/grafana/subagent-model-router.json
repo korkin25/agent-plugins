@@ -647,9 +647,9 @@
       },
       "targets": [
         {
-          "expr": "sum by(model) (increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",reason=~\"rule:.*\"}[$__range])) / scalar(sum(increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",reason=~\"rule:.*\"}[$__range])))",
+          "expr": "sum by(model,effort) (increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",reason=~\"rule:.*\"}[$__range])) / scalar(sum(increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",reason=~\"rule:.*\"}[$__range])))",
           "refId": "A",
-          "legendFormat": "{{model}}",
+          "legendFormat": "{{model}} / {{effort}}",
           "range": false,
           "instant": true
         }
@@ -662,7 +662,7 @@
           },
           "min": 0,
           "max": 1,
-          "displayName": "${__field.labels.model}"
+          "displayName": "${__field.labels.model} / ${__field.labels.effort}"
         },
         "overrides": []
       },
@@ -682,7 +682,8 @@
           "values": false
         },
         "sizing": "auto"
-      }
+      },
+      "description": "Launch model / reasoning effort. Unknown means the host did not expose a usable value. Historic inherit/unchanged entries cannot be reconstructed. Shadow recommendations are separate from the launch identity."
     },
     {
       "id": 11,

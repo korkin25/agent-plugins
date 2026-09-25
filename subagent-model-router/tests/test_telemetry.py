@@ -49,6 +49,16 @@ def server(status=204, delay=0, redirect=None):
 
 
 class TelemetryTests(unittest.TestCase):
+    def test_effective_effort_and_unknown_are_not_inheritance_sentinels(self):
+        for changes, expected in [({'effort': 'inherit', 'session_effort': 'high'}, 'high'),
+                                  ({'effort': 'low', 'mode': 'shadow', 'session_effort': 'max'}, 'max'),
+                                  ({'effort': 'low', 'actual_effort': None}, 'unknown'),
+                                  ({'effort': 'inherit'}, 'unknown')]:
+            call = next(k for k in telemetry._points(self.cfg, dict(self.record, **changes), .1)
+                        if k.startswith('smr_calls_total{'))
+            self.assertIn('effort="' + expected + '"', call)
+            self.assertNotIn('effort="inherit"', call)
+            self.assertNotIn('effort="unchanged"', call)
     def test_real_model_for_inherited_and_shadow_calls(self):
         for selected, mode, expected in [('inherit', 'active', 'gpt-6-astra'),
                                          ('gpt-5.6-luna', 'shadow', 'gpt-6-astra'),

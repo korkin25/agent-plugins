@@ -421,12 +421,22 @@ def _points(cfg, record, duration):
     if recommendation == "inherit":
         recommendation = record.get("session_model")
     source = record.get("model_source") or ("session" if record.get("mode") == "shadow" or record.get("model") in (None, "inherit") else "specified")
+    efforts = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+    if "actual_effort" in record:
+        effort = record["actual_effort"]
+    elif record.get("mode") == "shadow" or record.get("effort") in (None, "inherit"):
+        effort = record.get("session_effort")
+    else:
+        effort = record.get("effort")
+    effort_source = record.get("effort_source") or ("specified" if record.get("mode") != "shadow" and _enum(record.get("effort"), efforts) != "unknown" else "session")
+    effort = _enum(effort, efforts)
     call = dict(labels, provider=provider, reason=reason, model=model_name(actual),
                 model_source=source if model_name(actual) != "unknown" and source in ("specified", "session") else "unknown",
                 recommended_model=model_name(recommendation) if reason.startswith("rule:") else "unknown",
                 mode=_enum(record.get("mode"), {"active", "shadow"}),
                 tier=_enum(record.get("tier"), {"light", "standard", "heavy"}, "none"),
-                effort=_enum(record.get("effort"), {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "inherit"}, "unchanged"),
+                effort=_enum(effort, efforts),
+                effort_source=effort_source if effort in efforts and effort_source in ("specified", "session") else "unknown",
                 applied="true" if record.get("applied") is True else "false")
     points = {_metric("calls_total", call): 1.0}
 
@@ -539,7 +549,7 @@ def _prepare(db, cfg):
     # Old counters cannot be assigned to today's session model. Stop replaying
     # legacy call series (including shadow recommendations), retain VM history.
     def legacy_call(line):
-        return line.startswith("smr_calls_total{") and 'model_source="' not in line
+        return line.startswith("smr_calls_total{") and ('model_source="' not in line or 'effort_source="' not in line)
 
     for (name,) in db.execute("SELECT name FROM series").fetchall():
         if legacy_call(name):

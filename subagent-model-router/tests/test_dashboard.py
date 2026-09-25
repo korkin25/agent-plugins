@@ -31,7 +31,11 @@ class DashboardTests(unittest.TestCase):
                 self.assertFalse(panel.get('transformations'))
                 self.assertEqual(panel['options']['reduceOptions'],
                                  {'calcs': ['lastNotNull'], 'fields': '', 'values': False})
-                self.assertEqual(panel['fieldConfig']['defaults']['displayName'], '${__field.labels.' + label + '}')
+                expected_name = '${__field.labels.' + label + '}'
+                if label == 'model':
+                    expected_name += ' / ${__field.labels.effort}'
+                    self.assertIn('sum by(model,effort)', panel['targets'][0]['expr'])
+                self.assertEqual(panel['fieldConfig']['defaults']['displayName'], expected_name)
                 self.assertTrue(panel['targets'][0]['instant'])
                 self.assertFalse(panel['targets'][0]['range'])
                 if label != 'reason':
