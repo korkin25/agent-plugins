@@ -1,7 +1,7 @@
 {
   "id": null,
   "uid": "subagent-model-router",
-  "title": "Subagent Model Router · Operations",
+  "title": "Subagent Model Router \u00b7 Operations",
   "description": "Received counter estimates for the selected window. Delayed telemetry may be absent; no data is not zero. Routing selection share does not establish cost savings or model quality.",
   "tags": [
     "subagent-model-router",
@@ -166,7 +166,7 @@
     {
       "id": 1,
       "type": "text",
-      "title": "Routing operations · evidence scope",
+      "title": "Routing operations \u00b7 evidence scope",
       "gridPos": {
         "x": 0,
         "y": 0,
@@ -516,7 +516,7 @@
     },
     {
       "id": 8,
-      "title": "Jev requests · success and failure",
+      "title": "Jev requests \u00b7 success and failure",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -569,7 +569,7 @@
     },
     {
       "id": 9,
-      "title": "Jev latency · all outcomes",
+      "title": "Jev latency \u00b7 all outcomes",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -634,7 +634,7 @@
     {
       "id": 10,
       "title": "Model selection share",
-      "type": "barchart",
+      "type": "bargauge",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -660,42 +660,34 @@
           "color": {
             "mode": "palette-classic"
           },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 12,
-            "spanNulls": false
-          }
+          "min": 0,
+          "max": 1,
+          "displayName": "${__field.labels.model}"
         },
         "overrides": []
       },
       "options": {
         "orientation": "horizontal",
-        "showValue": "always",
-        "groupWidth": 0.7,
-        "barWidth": 0.8,
-        "stacking": "none",
-        "legend": {
-          "displayMode": "hidden"
+        "displayMode": "gradient",
+        "valueMode": "color",
+        "showUnfilled": true,
+        "minVizWidth": 0,
+        "minVizHeight": 16,
+        "maxVizHeight": 300,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "tooltip": {
-          "mode": "single"
-        }
-      },
-      "transformations": [
-        {
-          "id": "labelsToFields",
-          "options": {
-            "mode": "columns"
-          }
-        }
-      ]
+        "sizing": "auto"
+      }
     },
     {
       "id": 11,
       "title": "Tier selection share",
-      "type": "barchart",
+      "type": "bargauge",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -721,42 +713,34 @@
           "color": {
             "mode": "palette-classic"
           },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 12,
-            "spanNulls": false
-          }
+          "min": 0,
+          "max": 1,
+          "displayName": "${__field.labels.tier}"
         },
         "overrides": []
       },
       "options": {
         "orientation": "horizontal",
-        "showValue": "always",
-        "groupWidth": 0.7,
-        "barWidth": 0.8,
-        "stacking": "none",
-        "legend": {
-          "displayMode": "hidden"
+        "displayMode": "gradient",
+        "valueMode": "color",
+        "showUnfilled": true,
+        "minVizWidth": 0,
+        "minVizHeight": 16,
+        "maxVizHeight": 300,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "tooltip": {
-          "mode": "single"
-        }
-      },
-      "transformations": [
-        {
-          "id": "labelsToFields",
-          "options": {
-            "mode": "columns"
-          }
-        }
-      ]
+        "sizing": "auto"
+      }
     },
     {
       "id": 12,
       "title": "Routing reasons",
-      "type": "barchart",
+      "type": "bargauge",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -782,37 +766,28 @@
           "color": {
             "mode": "palette-classic"
           },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 12,
-            "spanNulls": false
-          }
+          "min": 0,
+          "displayName": "${__field.labels.reason}"
         },
         "overrides": []
       },
       "options": {
         "orientation": "horizontal",
-        "showValue": "always",
-        "groupWidth": 0.7,
-        "barWidth": 0.8,
-        "stacking": "none",
-        "legend": {
-          "displayMode": "hidden"
+        "displayMode": "gradient",
+        "valueMode": "color",
+        "showUnfilled": true,
+        "minVizWidth": 0,
+        "minVizHeight": 16,
+        "maxVizHeight": 300,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "tooltip": {
-          "mode": "single"
-        }
-      },
-      "transformations": [
-        {
-          "id": "labelsToFields",
-          "options": {
-            "mode": "columns"
-          }
-        }
-      ]
+        "sizing": "auto"
+      }
     },
     {
       "id": 13,
@@ -885,7 +860,7 @@
         {
           "expr": "sum by(mode,applied) (rate(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__rate_interval]))",
           "refId": "A",
-          "legendFormat": "{{mode}} · applied={{applied}}",
+          "legendFormat": "{{mode}} \u00b7 applied={{applied}}",
           "range": true,
           "instant": false
         }
@@ -986,7 +961,7 @@
     },
     {
       "id": 16,
-      "title": "Jev probability · tier p50",
+      "title": "Jev probability \u00b7 tier p50",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -1040,7 +1015,7 @@
     },
     {
       "id": 17,
-      "title": "Pending events · last received",
+      "title": "Pending events \u00b7 last received",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1086,7 +1061,7 @@
     },
     {
       "id": 18,
-      "title": "Coalesced timing · lifetime",
+      "title": "Coalesced timing \u00b7 lifetime",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1132,7 +1107,7 @@
     },
     {
       "id": 19,
-      "title": "Dropped events · lifetime",
+      "title": "Dropped events \u00b7 lifetime",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1371,7 +1346,7 @@
     },
     {
       "id": 24,
-      "title": "Jev reported spend · window",
+      "title": "Jev reported spend \u00b7 window",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1540,7 +1515,7 @@
     },
     {
       "id": 27,
-      "title": "Jev spend · average USD/hour",
+      "title": "Jev spend \u00b7 average USD/hour",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1597,7 +1572,7 @@
     },
     {
       "id": 28,
-      "title": "Jev spend rate · USD/hour",
+      "title": "Jev spend rate \u00b7 USD/hour",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -1649,7 +1624,7 @@
     },
     {
       "id": 29,
-      "title": "OpenRouter credit balance · last snapshot",
+      "title": "OpenRouter credit balance \u00b7 last snapshot",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1706,7 +1681,7 @@
     },
     {
       "id": 30,
-      "title": "Key limit remaining · last snapshot",
+      "title": "Key limit remaining \u00b7 last snapshot",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1763,7 +1738,7 @@
     },
     {
       "id": 31,
-      "title": "Key billed this month · last snapshot",
+      "title": "Key billed this month \u00b7 last snapshot",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1876,7 +1851,7 @@
     },
     {
       "id": 33,
-      "title": "Key snapshot age · freshest success",
+      "title": "Key snapshot age \u00b7 freshest success",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1988,7 +1963,7 @@
     },
     {
       "id": 35,
-      "title": "Account snapshot age · freshest success",
+      "title": "Account snapshot age \u00b7 freshest success",
       "type": "stat",
       "datasource": {
         "type": "prometheus",

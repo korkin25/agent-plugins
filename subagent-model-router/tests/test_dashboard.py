@@ -22,6 +22,21 @@ def answer(rows, ranged=False):
 
 
 class DashboardTests(unittest.TestCase):
+    def test_instant_category_panels_reduce_each_series_without_table_transform(self):
+        doc = json.loads((PLUGIN / "grafana" / "subagent-model-router.json").read_text())
+        for panel in (p for p in doc['panels'] if p['id'] in (10, 11, 12)):
+            with self.subTest(panel=panel['title']):
+                label = {10: 'model', 11: 'tier', 12: 'reason'}[panel['id']]
+                self.assertEqual(panel['type'], 'bargauge')
+                self.assertFalse(panel.get('transformations'))
+                self.assertEqual(panel['options']['reduceOptions'],
+                                 {'calcs': ['lastNotNull'], 'fields': '', 'values': False})
+                self.assertEqual(panel['fieldConfig']['defaults']['displayName'], '${__field.labels.' + label + '}')
+                self.assertTrue(panel['targets'][0]['instant'])
+                self.assertFalse(panel['targets'][0]['range'])
+                if label != 'reason':
+                    self.assertEqual(panel['fieldConfig']['defaults']['unit'], 'percentunit')
+                    self.assertEqual(panel['fieldConfig']['defaults']['max'], 1)
     def test_health_only_is_no_data_for_selected_client(self):
         def respond(config, url, body=None):
             if 'smr_telemetry_' in urllib.parse.unquote(url):
