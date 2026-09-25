@@ -50,6 +50,19 @@ class TerminalTests(unittest.TestCase):
         self.assertIn("bad' ¦x", out); self.assertNotIn('```', out); self.assertNotIn('\x1b', out); self.assertIn('█', out)
     def test_empty(self):
         out = t.format_terminal(t.local_data([])); self.assertIn('no_data', out); self.assertIn('нет данных', out)
+    def test_reported_cost_missing_zero_and_subcent_precision(self):
+        now = dt.datetime(2026, 1, 10, tzinfo=dt.timezone.utc)
+        base = dict(ts='2026-01-09T00:00:00Z', reason='rule:light', latency_ms=1)
+        old = t.local_data([base], days=7, now=now)
+        self.assertIsNone(old['summary']['jev_cost_usd'])
+        self.assertEqual(old['summary']['jev_unpriced_requests'], 1)
+        data = t.local_data([base, dict(base, usage={'cost': 0}), dict(base, usage={'cost': .000004}),
+                             dict(base, usage={'cost': True}), dict(base, usage={'cost': -1})], days=7, now=now)
+        self.assertEqual(data['summary']['jev_cost_usd'], .000004)
+        self.assertEqual(data['summary']['jev_cost_coverage'], .4)
+        self.assertEqual(data['summary']['jev_unpriced_requests'], 3)
+        self.assertIn('$0.000004', t.format_terminal(data))
+        self.assertIsNone(data['summary']['jev_cost_rate_current'])
     def test_gap(self):
         data=t.local_data([]); data.update({'status':'partial','series':{'request_rate':[{'points':[[0,1],[60,None],[120,3]]}]}})
         self.assertIn('·', t.format_terminal(data))

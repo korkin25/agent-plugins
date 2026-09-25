@@ -37,6 +37,8 @@ def _fmt(value, suffix=""):
         return f"{value * 100:.1f}%"
     if suffix == "ms":
         return f"{value * 1000:,.0f} мс"
+    if suffix == "usd":
+        return f"${value:,.6f}"
     if abs(value - round(value)) < .01:
         return f"{value:,.0f}" + suffix
     return f"{value:,.1f}" + suffix
@@ -90,6 +92,17 @@ def local_data(rows, days=None, now=None, project=None, user=None, agent=None):
     for label in ("model", "tier", "reason", "project", "user", "agent"):
         summary["by_" + label] = dict(Counter(_clean(r.get(label)) for r in rows if label not in ("model", "tier") or str(r.get("reason", "")).startswith("rule:")))
     summary.update({key: None for key in ("pending_events", "coalesced_events", "dropped_events", "last_delivery_age_seconds")})
+    costs = [value for r in attempted if isinstance(r.get("usage"), dict)
+             and isinstance(r["usage"].get("cost"), (int, float))
+             and not isinstance(r["usage"].get("cost"), bool)
+             and (value := _num(r["usage"].get("cost"))) is not None and value >= 0]
+    span_hours = (end - start) / 3600
+    summary.update(jev_cost_usd=sum(costs) if costs else None,
+                   jev_known_cost_requests=len(costs) if attempted else None,
+                   jev_unpriced_requests=len(attempted) - len(costs) if attempted else None,
+                   jev_cost_coverage=len(costs) / len(attempted) if attempted else None,
+                   jev_cost_average_hour=sum(costs) / span_hours if costs and span_hours > 0 else None,
+                   jev_cost_rate_current=None, accounts={})
     calls = [{"labels": {k: str(r.get(k) or "unknown") for k in ("model", "tier", "reason", "project", "user", "agent")},
               "points": [[_parse_time(r["ts"]).timestamp(), 1]]} for r in rows]
     return {"status": "ok" if rows else "no_data", "source": "local", "instance": "local journal", "project": project, "user": user,
@@ -121,6 +134,17 @@ def format_terminal(data):
     source = _clean(data.get("source", "victoriametrics"))
     start = _date(data.get("start")); end = _date(data.get("end"))
     lines = [f"**Статистика маршрутизации · {status}**", f"Окно: {start} — {end} UTC · источник: {source} · instance: {_clean(data.get('instance'))}", f"Клиент: {_clean(data.get('agent'), 'все')} · фильтры: project={_clean(data.get('project'), 'все')} · user={_clean(data.get('user'), 'все')}", "", "| Метрика | Значение |", "|---|---:|", f"| Вызовы (оценка) | {_fmt(_num(summary.get('calls')))} |", f"| Jev-запросы | {_fmt(_num(summary.get('jev_requests')))} |", f"| Ошибки Jev | {_fmt(_num(summary.get('error_share')), '%')} |", f"| Latency p50 / p95 / p99 | {_fmt(_num(summary.get('jev_p50_seconds')), 'ms')} / {_fmt(_num(summary.get('jev_p95_seconds')), 'ms')} / {_fmt(_num(summary.get('jev_p99_seconds')), 'ms')} |", ""]
+    lines.extend([f"**Расходы Jev за окно:** {_fmt(summary.get('jev_cost_usd'), 'usd')} · покрытие ценой {_fmt(summary.get('jev_cost_coverage'), '%')} · без цены {_fmt(summary.get('jev_unpriced_requests'))}.",
+                  f"USD/час: {_fmt(summary.get('jev_cost_rate_current'), 'usd')} сейчас · {_fmt(summary.get('jev_cost_average_hour'), 'usd')} в среднем за окно."])
+    if not summary.get('accounts'):
+        lines.append("Баланс OpenRouter и остаток лимита ключа: нет данных.")
+    for alias, values in sorted((summary.get('accounts') or {}).items()):
+        lines.append(f"**{_clean(alias)}:** баланс {_fmt(values.get('account_balance_usd'), 'usd')} · остаток лимита ключа {_fmt(values.get('key_limit_remaining_usd'), 'usd')} · ключ за месяц {_fmt(values.get('key_usage_monthly_usd'), 'usd')}.")
+        for scope, title in (("key", "ключ"), ("account", "аккаунт")):
+            success = values.get(scope + '_balance_probe_success')
+            state = "ошибка" if success == 0 else "успех" if success == 1 else "нет данных"
+            lines.append(f"Последняя проверка ({title}): {state}; возраст снимка {_fmt(values.get(scope + '_age_seconds'))} с.")
+    lines.extend(["Учтены только сообщённые цены; неизвестная цена не равна нулю. Баланс и лимит — последние снимки; суммы аккаунта включают другие инструменты. Лимит ключа не равен кредитному балансу.", ""])
     for title, key in (("Модели", "by_model"), ("Проекты", "by_project"), ("Пользователи", "by_user"), ("Агенты", "by_agent"), ("Причины", "by_reason")):
         values = data.get("summary", {}).get(key, {}) or {}
         lines.append(f"**{title}**")

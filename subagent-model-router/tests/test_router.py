@@ -46,7 +46,7 @@ PROMPT = "Найди в репозитории все файлы README и пе�
 CODEX_TASK = "TASK: Найти в каталоге проекта все файлы *.toml и вывести их пути списком.\nROLE: исследователь"
 JOURNAL_FIELDS = {"ts", "agent", "session_id", "cwd", "subagent_type", "description", "state_sha256", "provider",
                   "jev_model", "request_id", "latency_ms", "answers", "tier", "model", "effort", "session_model",
-                  "reason", "mode"}
+                  "reason", "mode", "usage"}
 REVIEW_QUESTION = ("Is the task to check someone else's finished work (code, a change, or a document) against its "
                    "requirements and to approve or reject it?")
 DROP = object()
@@ -594,7 +594,7 @@ class DecisionTests(Sandbox):
         body = json.loads(request["body"])
         self.assertEqual(set(body), {"state", "model", "questions"})
         self.assertEqual(body["model"], "jev-1.13.0")
-        self.assertEqual(body["state"], {"description": "Найти README", "task": PROMPT})
+        self.assertEqual(body["state"], router.build_state("Найти README", PROMPT))
         questions = body["questions"]
         self.assertEqual(set(questions), {"tier", "risky", "review"})
         self.assertEqual(questions["tier"]["type"], "choice")
@@ -723,7 +723,7 @@ class CodexTests(Sandbox):
         output = self.output(self.codex_hook(args, tool_name="spawn_agent"))
         self.assertEqual(output["hookSpecificOutput"]["updatedInput"],
                          dict(args, model="gpt-5.6-luna", reasoning_effort="low"))
-        self.assertEqual(self.sent_state(), {"description": "worker", "task": CODEX_TASK})
+        self.assertEqual(self.sent_state(), router.build_state("worker", CODEX_TASK))
 
     def test_v1_items_text_parts(self):
         self.serve()
@@ -734,8 +734,8 @@ class CodexTests(Sandbox):
         output = self.output(self.codex_hook(args, tool_name="spawn_agent"))
         self.assertEqual(output["hookSpecificOutput"]["updatedInput"],
                          dict(args, model="gpt-5.6-luna", reasoning_effort="low"))
-        self.assertEqual(self.sent_state(), {"description": "",
-                                             "task": "TASK: Перечислить файлы *.toml\nROLE: исследователь"})
+        self.assertEqual(self.sent_state(), router.build_state("",
+                         "TASK: Перечислить файлы *.toml\nROLE: исследователь\nREAD: /srv/notes"))
 
     def test_agent_name_with_turn_id_is_ignored(self):
         self.serve()
@@ -761,12 +761,12 @@ class CodexTests(Sandbox):
         self.assertEqual(self.fake.requests, [])
         self.assertFalse(self.journal.exists())
 
-    def test_v2_state_uses_task_name_and_task_lines(self):
+    def test_v2_state_uses_task_name_and_full_task(self):
         self.serve()
         self.write_config()
         self.codex_hook(v2_args(message=CODEX_TASK + "\nREAD: /srv/private/notes\nMUST_NOT: push"))
-        self.assertEqual(self.sent_state(), {"description": "list_toml", "task": CODEX_TASK})
-        self.assertNotIn("private/notes", self.server_file.read_text(encoding="utf-8"))
+        self.assertEqual(self.sent_state(), router.build_state("list_toml", CODEX_TASK + "\nREAD: /srv/private/notes\nMUST_NOT: push"))
+        self.assertIn("private/notes", self.server_file.read_text(encoding="utf-8"))
 
     def test_forks_are_skipped(self):
         self.serve()
@@ -1722,7 +1722,7 @@ class PrivacyTests(Sandbox):
             with self.subTest(text=text):
                 self.assertEqual(router.redact(text), text)
 
-    def test_only_task_and_role_lines_are_sent(self):
+    def test_full_multiline_task_and_constraints_are_sent(self):
         self.serve()
         self.write_config()
         prompt = ("TASK: Собрать отчёт по логам сервиса\nпродолжение задачи\n"
@@ -1730,10 +1730,10 @@ class PrivacyTests(Sandbox):
                   "EDIT: без изменений\nMUST_NOT: ничего не публиковать\n")
         self.hook(agent_input(prompt=prompt))
         state = self.sent_state()
-        self.assertEqual(state["task"], "TASK: Собрать отчёт по логам сервиса\nROLE: исполнитель без права на push")
+        self.assertEqual(state["task"], prompt)
         recorded = self.server_file.read_text(encoding="utf-8")
-        self.assertNotIn("private/notes", recorded)
-        self.assertNotIn("MUST_NOT", recorded)
+        self.assertIn("private/notes", recorded)
+        self.assertIn("MUST_NOT", recorded)
 
     def test_secret_inside_task_line_is_hidden(self):
         self.serve()
@@ -1741,13 +1741,21 @@ class PrivacyTests(Sandbox):
         self.hook(agent_input(prompt=f"TASK: залить релиз с токеном {self.SECRETS['glpat']}\nROLE: исполнитель"))
         self.assertEqual(self.sent_state()["task"], "TASK: залить релиз с токеном [redacted]\nROLE: исполнитель")
 
-    def test_fallback_sends_first_1500_characters(self):
+    def test_free_text_is_not_truncated(self):
         self.serve()
         self.write_config()
         prompt = "а" * 1000 + "б" * 499 + "в" + "TAIL-MARKER-NOT-SENT" + "г" * 500
         self.hook(agent_input(prompt=prompt))
-        self.assertEqual(self.sent_state()["task"], prompt[:1500])
-        self.assertNotIn("TAIL-MARKER-NOT-SENT", self.server_file.read_text(encoding="utf-8"))
+        self.assertEqual(self.sent_state()["task"], prompt)
+        self.assertIn("TAIL-MARKER-NOT-SENT", self.server_file.read_text(encoding="utf-8"))
+
+    def test_oversized_task_does_not_contact_jev(self):
+        self.serve()
+        self.write_config()
+        rc, out, err, _ = self.hook(agent_input(prompt="x" * 131073))
+        self.assertEqual((rc, out, err), (0, "", ""))
+        self.assertEqual(self.fake.requests, [])
+        self.assertEqual(self.last_row()["reason"], "error:input_size")
 
     def test_private_key_cut_by_truncation_is_hidden(self):
         self.serve()
@@ -1839,7 +1847,7 @@ class CommandTests(Sandbox):
             self.assertIn(fragment, out)
         self.assertNotIn("hookSpecificOutput", out)
         self.assertFalse(self.journal.exists())
-        self.assertEqual(self.sent_state()["task"], "TASK: перечисли файлы\nROLE: исполнитель")
+        self.assertEqual(self.sent_state()["task"], "TASK: перечисли файлы\nROLE: исполнитель\nREAD: /x")
         self.assertEqual(self.codex_calls(), [])
 
     def test_explain_review_and_shadow(self):
@@ -1856,7 +1864,16 @@ class CommandTests(Sandbox):
         self.write_config()
         rc, out, _err, _ = self.run_router("explain", stdin="list the files")
         self.assertEqual(rc, 0)
-        self.assertEqual(self.sent_state(), {"description": "", "task": "list the files"})
+        self.assertEqual(self.sent_state(), router.build_state("", "list the files"))
+
+    def test_preview_requires_neither_config_nor_key_and_never_calls_jev(self):
+        self.serve()
+        rc, out, err, _ = self.run_router("preview", stdin="TASK: read\nMUST_NOT: send\npassword=example-secret")
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn("MUST_NOT: send", json.loads(out)["task"])
+        self.assertNotIn("example-secret", out)
+        self.assertEqual(self.fake.requests, [])
+        self.assertFalse(self.journal.exists())
 
     def test_explain_without_key_fails_without_request(self):
         self.serve()

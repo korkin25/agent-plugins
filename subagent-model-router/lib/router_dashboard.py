@@ -1,6 +1,6 @@
 """Bounded VictoriaMetrics queries and a self-contained, script-free report.
 
-All figures describe observed routing operations, never money or model quality.
+Costs are provider-reported charges, never inferred savings or model quality.
 Counters are window estimates (PromQL increase), not a replacement for a ledger.
 """
 from __future__ import annotations
@@ -100,10 +100,10 @@ def _percentile(rows, quantile):
     return None
 
 
-def query_stats(cfg, days=7, project=None, user=None, agent=None):
+def query_stats(cfg, days=7, project=None, user=None, agent=None, account=None):
     """Return serializable operational data; failures never become zero/no-data.
 
-    Accept a full router config or its telemetry subsection. Exactly eleven
+    Accept a full router config or its telemetry subsection. At most eighteen
     bounded requests, at most three in parallel; server text/URLs are never
     included in errors or reports. The shared transport limits response bytes.
     """
@@ -116,6 +116,9 @@ def query_stats(cfg, days=7, project=None, user=None, agent=None):
     if agent is not None and agent not in ("codex", "claude"):
         raise ValueError("agent must be codex or claude")
     config = validate_config(cfg.get("telemetry", cfg))
+    account = account if account is not None else (config.get("account") or None)
+    if account is not None and (not isinstance(account, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", account)):
+        raise ValueError("account must be a safe cohort label")
     if not config.get("query_url"):
         raise ValueError("telemetry.query_url is required")
     end = int(time.time())
@@ -145,7 +148,19 @@ def query_stats(cfg, days=7, project=None, user=None, agent=None):
         "coalesced_events": (False, "sum(last_over_time(smr_telemetry_coalesced_events_total" + health_selector + "[" + window + "]))"),
         "dropped_events": (False, "sum(last_over_time(smr_telemetry_dropped_events_total" + health_selector + "[" + window + "]))"),
         "last_delivery": (False, "max(last_over_time(smr_telemetry_last_success_timestamp_seconds" + health_selector + "[" + window + "]))"),
+        "jev_cost_usd": (False, "sum(" + inc("smr_jev_cost_usd_total") + ")"),
+        "jev_known_cost_requests": (False, "sum(" + inc("smr_jev_known_cost_requests_total") + ")"),
+        "jev_unpriced_requests": (False, "sum(" + inc("smr_jev_unpriced_requests_total") + ")"),
+        "jev_cost_rate": (True, "3600 * sum(rate(smr_jev_cost_usd_total" + selector + "[" + lookback + "]))"),
+        "jev_cost_rate_current": (False, "3600 * sum(rate(smr_jev_cost_usd_total" + selector + "[" + lookback + "]))"),
     }
+    # Account balances include other tools. Never restrict them to routing
+    # project/user/agent/instance or sum the same account's installed copies.
+    account_selector = ',account=' + json.dumps(account) if account else ''
+    # Preserve installation identity until selecting one coherent, freshest
+    # successful snapshot per account and API scope; MAX of balances is unsafe.
+    queries["account_values"] = (False, 'last_over_time({__name__=~"smr_openrouter_.*_usd"' + account_selector + '}[' + window + '])')
+    queries["account_health"] = (False, 'last_over_time({__name__=~"smr_openrouter_.*_(balance_probe_success|last_success_timestamp_seconds|last_attempt_timestamp_seconds|limit_configured|limit_remaining_available|usage_daily_available|usage_weekly_available|usage_monthly_available)"' + account_selector + '}[' + window + '])')
     data, errors = {}, {}
     def fetch(item):
         name, (ranged, expression) = item
@@ -179,6 +194,51 @@ def query_stats(cfg, days=7, project=None, user=None, agent=None):
         summary[key] = _total(data[key])
     delivery = _total(data["last_delivery"])
     summary["last_delivery_age_seconds"] = max(0, end - delivery) if delivery and delivery > 0 else None
+    for key in ("jev_cost_usd", "jev_known_cost_requests", "jev_unpriced_requests", "jev_cost_rate_current"):
+        summary[key] = _total(data[key])
+    known, unpriced = summary["jev_known_cost_requests"], summary["jev_unpriced_requests"]
+    # Sparse counters: an absent category is zero only when its complementary
+    # category is observed. With neither category observed, coverage is unknown.
+    observed = (known or 0) + (unpriced or 0)
+    summary["jev_cost_coverage"] = ((known or 0) / observed if observed else None) if not any(key in errors for key in ("jev_known_cost_requests", "jev_unpriced_requests")) else None
+    summary["jev_cost_average_hour"] = summary["jev_cost_usd"] / (days * 24) if summary["jev_cost_usd"] is not None else None
+    snapshots = {}
+    for row in data["account_values"] + data["account_health"]:
+        alias = row["labels"].get("account")
+        instance = row["labels"].get("instance", "")
+        metric = row["labels"].get("__name__", "")
+        if alias and metric.startswith("smr_openrouter_"):
+            snapshots.setdefault((alias, instance), {})[metric.removeprefix("smr_openrouter_")] = _value(row)
+    accounts = {}
+    for alias in sorted({key[0] for key in snapshots}):
+        candidates = [(instance, values) for (name, instance), values in snapshots.items() if name == alias]
+        selected = accounts.setdefault(alias, {})
+        for scope in ("key", "account"):
+            stamp = scope + "_last_success_timestamp_seconds"
+            eligible = [(instance, values) for instance, values in candidates if values.get(stamp) is not None]
+            if eligible:
+                # Timestamp ties select the conservative smaller remaining
+                # amount, then the installation alias for determinism.
+                balance = scope + ("_balance_usd" if scope == "account" else "_limit_remaining_usd")
+                instance, latest = min(eligible, key=lambda pair: (-pair[1][stamp], pair[1].get(balance) if pair[1].get(balance) is not None else math.inf, pair[0]))
+                selected.update({key: value for key, value in latest.items() if key.startswith(scope + "_")})
+            # Last probe status is a separate freshness stream, including a
+            # failed newer attempt on a different installation.
+            attempt = scope + "_last_attempt_timestamp_seconds"
+            attempts = [(instance, values) for instance, values in candidates if values.get(attempt) is not None]
+            if attempts:
+                _, latest_probe = min(attempts, key=lambda pair: (-pair[1][attempt], pair[1].get(scope + "_balance_probe_success", 0), pair[0]))
+                selected[scope + "_balance_probe_success"] = latest_probe.get(scope + "_balance_probe_success")
+                selected[attempt] = latest_probe[attempt]
+    for values in accounts.values():
+        for field, marker in (("key_limit_usd", "key_limit_configured"), ("key_limit_remaining_usd", "key_limit_remaining_available"),
+                              *(("key_usage_" + period + "_usd", "key_usage_" + period + "_available") for period in ("daily", "weekly", "monthly"))):
+            if values.get(marker) != 1:
+                values[field] = None
+        for scope in ("key", "account"):
+            stamp = values.get(scope + "_last_success_timestamp_seconds")
+            values[scope + "_age_seconds"] = max(0, end - stamp) if stamp else None
+    summary["accounts"] = accounts
     for label in ("model", "tier", "reason", "project", "user", "agent"):
         counts = {}
         for row in data["calls"]:
@@ -190,10 +250,10 @@ def query_stats(cfg, days=7, project=None, user=None, agent=None):
                 counts[name] = counts.get(name, 0.0) + value
         summary["by_" + label] = counts
     has_data = any(point[1] is not None for name, rows in data.items()
-                   if name not in ("pending_events", "coalesced_events", "dropped_events", "last_delivery")
+                   if name not in ("pending_events", "coalesced_events", "dropped_events", "last_delivery", "account_values", "account_health")
                    for row in rows for point in row["points"])
     status = ("partial" if len(errors) < len(queries) else "error") if errors else ("ok" if has_data else "no_data")
-    return {"status": status, "instance": config["instance"], "project": project, "user": user, "agent": agent, "start": start, "end": end,
+    return {"status": status, "instance": config["instance"], "project": project, "user": user, "agent": agent, "account": account, "start": start, "end": end,
             "step": step, "summary": summary, "series": data, "errors": errors,
             "note": "Window estimates from received counter samples. Gaps mean no samples; a stopped worker or delayed delivery can cause gaps. Telemetry health is the last received snapshot, not live state; coalesced/dropped are lifetime counters, last-success trails by one flush. Workers exit after five minutes per run; later calls restart them. Latencies include failures. Selection share is not cost or quality evidence."}
 
@@ -207,6 +267,8 @@ def _fmt(value, unit=""):
         return f"{value * 1000:,.0f} ms"
     if unit == "s":
         return f"{value:,.0f} s"
+    if unit == "usd":
+        return f"${value:,.6f}"
     return f"{value:,.1f}".removesuffix(".0")
 
 
@@ -231,8 +293,29 @@ def format_summary(data):
                  "; coalesced lifetime " + _fmt(data["summary"]["coalesced_events"]) +
                  "; dropped lifetime " + _fmt(data["summary"]["dropped_events"]) +
                  "; delivery age " + _fmt(data["summary"]["last_delivery_age_seconds"], "s"))
+    lines.extend(title + ": " + value for title, value in money_rows(data["summary"]))
     lines.append(data["note"])
     return "\n".join(lines)
+
+
+def money_rows(summary):
+    """Small shared financial view: unknown prices and stale balances stay explicit."""
+    rows = [("Jev reported spend · window", _fmt(summary.get("jev_cost_usd"), "usd")),
+            ("Known cost coverage", _fmt(summary.get("jev_cost_coverage"), "%")),
+            ("Unpriced requests", _fmt(summary.get("jev_unpriced_requests"))),
+            ("Jev spend · recent USD/hour", _fmt(summary.get("jev_cost_rate_current"), "usd")),
+            ("Jev spend · window average USD/hour", _fmt(summary.get("jev_cost_average_hour"), "usd"))]
+    accounts = summary.get("accounts") or {}
+    if not accounts:
+        rows.append(("OpenRouter account / key snapshots", "No data"))
+    for alias, values in sorted(accounts.items()):
+        for label, key in (("Account credit balance", "account_balance_usd"), ("Key limit remaining", "key_limit_remaining_usd"), ("Key billed today", "key_usage_daily_usd"), ("Key billed this month", "key_usage_monthly_usd")):
+            rows.append((alias + " · " + label, _fmt(values.get(key), "usd")))
+        for scope in ("key", "account"):
+            success = values.get(scope + "_balance_probe_success")
+            state = "failed" if success == 0 else "success" if success == 1 else "No data"
+            rows.append((alias + " · " + scope + " latest probe / snapshot age", state + " / " + _fmt(values.get(scope + "_age_seconds"), "s")))
+    return rows
 
 
 def _chart(rows, start, end, step):
@@ -310,8 +393,10 @@ def html_document(data):
     panels = []
     for title, key, unit in (("Jev requests", "request_rate", "requests / second"),
                              ("Jev latency · p95", "latency_p95", "seconds · all outcomes"),
-                             ("Model selections", "model_rate", "selections / second")):
-        panels.append('<section><h2>' + title + '</h2><small>' + unit + '</small>' + _chart(series[key], data["start"], data["end"], data["step"]) + '</section>')
+                             ("Model selections", "model_rate", "selections / second"),
+                             ("Jev reported spend", "jev_cost_rate", "USD / hour · known costs only")):
+        panels.append('<section><h2>' + title + '</h2><small>' + unit + '</small>' + _chart(series.get(key, []), data["start"], data["end"], data["step"]) + '</section>')
+    panels.append('<section><h2>Reported costs and account snapshots</h2><p>Unpriced requests are not free. Account and key totals include other tools; key limit remaining is not wallet credit. The freshest successful snapshot is selected across installations; values may be stale. Missing key limits can mean unlimited or unavailable.</p><table><tbody>' + ''.join('<tr><td>' + esc(title) + '</td><td>' + esc(value) + '</td></tr>' for title, value in money_rows(summary)) + '</tbody></table></section>')
     for title, label, decisions in (("Calls by user", "user", False), ("Calls by project", "project", False), ("Selection share by model", "model", True), ("Selection share by tier", "tier", True), ("Routing reasons", "reason", False)):
         panels.append('<section><h2>' + title + '</h2>' + _breakdown(series["calls"], label, decisions) + '</section>')
     health_html = '<section style="margin-top:18px"><h2>Telemetry delivery · last received snapshot</h2><p>Workers exit after five minutes per run; later calls restart them. Snapshot age alone does not prove a failure.</p><table><tbody>'
