@@ -1051,8 +1051,18 @@ def hook_main():
         elif telemetry["backend"] == "victoriametrics":
             from router_telemetry import enqueue, resolve_project, resolve_user
             applied = bool((output or {}).get("hookSpecificOutput", {}).get("updatedInput"))
+            effective = (output or {}).get("hookSpecificOutput", {}).get("updatedInput") or event.get("tool_input") or {}
+            explicit_model = effective.get("model") if isinstance(effective, dict) else None
+            actual_model = explicit_model if explicit_model not in (None, "inherit") else record.get("session_model")
+            # A skipped custom role may configure a different model in its own file.
+            if record.get("reason") == "type":
+                actual_model = None
+            if record["agent"] == "codex" and effective.get("agent_type") not in (None, "", "default", "worker"):
+                actual_model = None
             project = resolve_project(_text(event.get("cwd")) or os.getcwd(), telemetry)
-            enqueue(telemetry, dict(record, applied=applied, project=project, user=resolve_user(telemetry)),
+            enqueue(telemetry, dict(record, applied=applied, project=project, user=resolve_user(telemetry),
+                                   actual_model=actual_model,
+                                   model_source="specified" if explicit_model not in (None, "inherit") else "session"),
                     time.monotonic() - started,
                     worker_command=[sys.executable, os.path.abspath(__file__), "telemetry-worker"])
     except Exception:

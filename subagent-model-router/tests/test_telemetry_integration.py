@@ -32,7 +32,7 @@ class TelemetryIntegrationTests(Sandbox):
         cfg = router.normalize_config({"telemetry": {
             "backend": "victoriametrics", "write_url": "http://127.0.0.1:8428/api/v1/import/prometheus",
             "query_url": "http://127.0.0.1:8428", "instance": "test"}})
-        event = {"tool_name": "Agent", "tool_input": agent_input()}
+        event = {"tool_name": "Agent", "tool_input": agent_input(), "model": "claude-opus-4-6"}
         record = router.base_record(event, "claude")
         record.update(reason="rule:light", model="haiku", tier="light", mode="active")
         expected = {"systemMessage": "selection"}
@@ -51,10 +51,12 @@ class TelemetryIntegrationTests(Sandbox):
             journal.assert_not_called()
             self.assertEqual(enqueue.call_args.args[0], cfg["telemetry"])
             exported = enqueue.call_args.args[1]
-            self.assertEqual({k: v for k, v in exported.items() if k not in ("project", "user")},
+            self.assertEqual({k: v for k, v in exported.items() if k not in ("project", "user", "actual_model", "model_source")},
                              dict(record, applied=False))
             self.assertTrue(exported["project"])
             self.assertTrue(exported["user"])
+            self.assertEqual(exported["actual_model"], "claude-opus-4-6")
+            self.assertEqual(exported["model_source"], "session")
             self.assertGreaterEqual(enqueue.call_args.args[2], 0)
             self.assertEqual(enqueue.call_args.kwargs["worker_command"][-1], "telemetry-worker")
         finally:
