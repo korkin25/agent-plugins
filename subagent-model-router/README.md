@@ -104,13 +104,13 @@ remains for counters and retries.
 
 The metrics cover Jev latency/errors, model/tier/effort choices, active versus shadow decisions and decision
 probabilities, with project, user and Claude/Codex cohorts. Grafana filters and compares these cohorts;
-`stats --project NAME --user NAME` selects them for a report. Terminal and VS Code extensions share this hook. They measure routing behavior, not demonstrated cost savings or task quality.
+Ask the agent to select a project, user or client for a report. Terminal and VS Code extensions share this hook. They measure routing behavior, not demonstrated cost savings or task quality.
 
 - [Setup, delivery limits and commands](skills/subagent-model-router/references/monitoring.md)
 - [Importable Grafana dashboard](grafana/subagent-model-router.json)
-- `stats --days 7 --html /path/to/router-dashboard.html`: standalone dashboard snapshot from VM.
-- `stats --days 7 --json`: compact summary for Claude/Codex to interpret.
-- `telemetry-status`: inspect local pending delivery/error state without contacting VM.
+- Ask for statistics: the agent displays a formatted dashboard directly in its reply.
+- Ask to open the dashboard: the agent opens a temporary in-memory page in an available browser.
+- Ask about delivery health: the agent checks local pending delivery/error state.
 
 VM errors are reported as errors; there is no silent fallback to old local statistics. Existing JSONL history
 is preserved and is not automatically exported. Configure a unique stable instance label for each writer.
@@ -123,72 +123,30 @@ is preserved and is not automatically exported. Configure a unique stable instan
 - Watch without changing anything: `mode = "shadow"` — requests are made and decisions are journalled, but
   no subagent call is modified.
 
-## Install
+## Install and use through Claude Code or Codex
 
-The plugin is installed for your user, not per project, and then works in every project. Each user on a
-machine has their own config and key in `~/.config/subagent-model-router/`. Python 3.11 or newer is required
-(standard library only).
+Paste this request into your Claude Code or Codex chat (terminal or VS Code):
 
-**Claude Code**
+> Install subagent-model-router from https://github.com/korkin25/agent-plugins for this user.
+> Configure OpenRouter using my existing key file at [path to file]; do not display its contents.
+> Preserve my current settings, trust only this plugin's Codex hook if needed, and check the setup.
 
-```
-/plugin marketplace add korkin25/agent-plugins
-/plugin install subagent-model-router@korkin25
-```
+The agent performs installation and setup. You do not need to find the plugin cache, change directories or
+run terminal commands. Python 3.11+ is required. Supply a path to an existing private key file, not the key
+itself in the conversation. After installation, start a new session so the client loads the plugin.
 
-**Codex**
+Once installed, ask naturally:
 
-```bash
-codex plugin marketplace add korkin25/agent-plugins
-codex plugin add subagent-model-router@korkin25
-<plugin dir>/bin/subagent-model-router codex-trust   # once: Codex runs a plugin hook only after it is trusted
-```
+- **“Show router statistics for the last seven days.”** — a dashboard directly in the answer, with counts,
+  latency, model distributions, project/user/client breakdowns and compact trend charts.
+- **“Compare Codex and Claude for project X.”** — the agent uses the stored client/project cohorts.
+- **“Open the router dashboard in the browser.”** — the same snapshot in the available in-app browser,
+  with the default desktop browser as a fallback. HTML is served from memory on a short-lived local URL,
+  not saved to a fixed file. A remote/headless session still shows the dashboard in chat.
+- **“Connect VictoriaMetrics at [URL].”** — the agent configures the endpoint; a token-file path is optional.
 
-The command lives in the plugin's `bin/` directory. Claude Code puts it on the `PATH` of its Bash tool, so
-there it is just `subagent-model-router`; in a terminal or in Codex call it by its full path inside the
-installed plugin directory, shown here as `<plugin dir>`. `codex-trust` does what the `/hooks` screen in Codex
-does, through Codex's own app-server (`hooks/list`, then `config/batchWrite` of `hooks.state` — the same
-calls, unchanged between Codex 0.153.4 and 0.154.0): it marks this plugin's hooks trusted and touches nothing
-else. A hook counts as this plugin's only when Codex lists it for a plugin named `subagent-model-router` and
-its command is exactly `…/bin/subagent-model-router hook`; hooks that do not come from a plugin are never
-trusted. `--dry-run` shows what it would trust; `--codex PATH` names the codex binary when `codex` is not on
-`PATH` (otherwise it uses `codex_bin` from the config, then `PATH`; only absolute `PATH` entries count). A
-Codex version whose app-server speaks a different protocol gets a refusal rather than a guess — trust the hook
-in `/hooks` by hand then. Trust is tied to the hook definition, not to the install path, so it survives plugin
-updates that leave `hooks/hooks.json` as it is; if Codex ever shows the hook as modified, run `codex-trust`
-again.
-
-Then create the config and the key:
-
-```bash
-install -d -m 700 ~/.config/subagent-model-router
-install -m 600 <plugin dir>/config.example.toml ~/.config/subagent-model-router/config.toml
-( umask 077; cat > ~/.config/subagent-model-router/key )   # paste the key, Enter, Ctrl-D
-<plugin dir>/bin/subagent-model-router check                # also fills the Codex model catalog cache
-```
-
-Installing for another account with `sudo -u <user>`, run the `codex plugin` commands from that account's home
-directory, for example `sudo -u <user> -H sh -c 'cd && codex plugin add subagent-model-router@korkin25'`.
-Otherwise Codex reads `.codex/config.toml` of the current directory as a project layer and may fail on its
-permissions.
-
-The key file must be a single line owned by you with permissions 0600 or 0400; otherwise the hook treats it
-as missing.
-
-### VS Code
-
-The Claude Code and Codex extensions for VS Code use the same `~/.claude` and `~/.codex` as the command-line
-tools, so a plugin installed for your user works there too. The Codex extension brings its own `codex`
-binary, which is often not on `PATH`:
-
-```bash
-ls -d ~/.vscode/extensions/openai.chatgpt-*/bin/*/codex ~/.cursor*/extensions/openai.chatgpt-*/bin/*/codex 2>/dev/null
-```
-
-Trust the hook with that binary: `subagent-model-router codex-trust --codex <that path>`. The hook itself
-finds the binary on its own and uses the catalog of the codex that runs it: the `codex` process that started
-the hook, then `codex_bin` from the config, then `codex` on `PATH` (absolute entries only). Setting
-`codex_bin` to the extension's path is possible, but that path changes with every extension update.
+The agent-side installation and diagnostic commands are documented in
+[the skill](skills/subagent-model-router/SKILL.md); they are implementation details, not steps for the user.
 
 ## Keys
 
@@ -203,7 +161,9 @@ overrides the path). [`config.example.toml`](config.example.toml) lists every ke
 key, a bad value, or a file writable by others turns the hook off with `error:config` in the journal; `check`
 says what is wrong.
 
-## Commands
+## Agent implementation commands
+
+These commands are run by Claude/Codex on the user's behalf, not copied to the user as instructions.
 
 ```bash
 subagent-model-router check [--live]          # config, key, models, codex catalog (fetched now, ≤ 30 s)

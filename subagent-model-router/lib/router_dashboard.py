@@ -100,7 +100,7 @@ def _percentile(rows, quantile):
     return None
 
 
-def query_stats(cfg, days=7, project=None, user=None):
+def query_stats(cfg, days=7, project=None, user=None, agent=None):
     """Return serializable operational data; failures never become zero/no-data.
 
     Accept a full router config or its telemetry subsection. Exactly eleven
@@ -113,6 +113,8 @@ def query_stats(cfg, days=7, project=None, user=None):
         raise ValueError("project must be a safe cohort label")
     if user is not None and (not isinstance(user, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", user)):
         raise ValueError("user must be a safe cohort label")
+    if agent is not None and agent not in ("codex", "claude"):
+        raise ValueError("agent must be codex or claude")
     config = validate_config(cfg.get("telemetry", cfg))
     if not config.get("query_url"):
         raise ValueError("telemetry.query_url is required")
@@ -125,6 +127,8 @@ def query_stats(cfg, days=7, project=None, user=None):
         selector = selector[:-1] + ",project=" + json.dumps(project) + "}"
     if user is not None:
         selector = selector[:-1] + ",user=" + json.dumps(user) + "}"
+    if agent is not None:
+        selector = selector[:-1] + ",agent=" + json.dumps(agent) + "}"
     window = str(days * 86400) + "s"
     lookback = str(max(300, step * 2)) + "s"
     def inc(metric, span=window):
@@ -175,7 +179,7 @@ def query_stats(cfg, days=7, project=None, user=None):
         summary[key] = _total(data[key])
     delivery = _total(data["last_delivery"])
     summary["last_delivery_age_seconds"] = max(0, end - delivery) if delivery and delivery > 0 else None
-    for label in ("model", "tier", "reason", "project", "user"):
+    for label in ("model", "tier", "reason", "project", "user", "agent"):
         counts = {}
         for row in data["calls"]:
             if label in ("model", "tier") and not row["labels"].get("reason", "").startswith("rule:"):
@@ -185,9 +189,11 @@ def query_stats(cfg, days=7, project=None, user=None):
                 name = row["labels"].get(label) or "unknown"
                 counts[name] = counts.get(name, 0.0) + value
         summary["by_" + label] = counts
-    has_data = any(point[1] is not None for rows in data.values() for row in rows for point in row["points"])
+    has_data = any(point[1] is not None for name, rows in data.items()
+                   if name not in ("pending_events", "coalesced_events", "dropped_events", "last_delivery")
+                   for row in rows for point in row["points"])
     status = ("partial" if len(errors) < len(queries) else "error") if errors else ("ok" if has_data else "no_data")
-    return {"status": status, "instance": config["instance"], "project": project, "user": user, "start": start, "end": end,
+    return {"status": status, "instance": config["instance"], "project": project, "user": user, "agent": agent, "start": start, "end": end,
             "step": step, "summary": summary, "series": data, "errors": errors,
             "note": "Window estimates from received counter samples. Gaps mean no samples; a stopped worker or delayed delivery can cause gaps. Telemetry health is the last received snapshot, not live state; coalesced/dropped are lifetime counters, last-success trails by one flush. Workers exit after five minutes per run; later calls restart them. Latencies include failures. Selection share is not cost or quality evidence."}
 
@@ -292,8 +298,8 @@ def _breakdown(rows, label, decisions_only=False):
     return "".join(items)
 
 
-def render_html(data, path):
-    """Write a standalone report containing escaped labels and no JavaScript."""
+def html_document(data):
+    """Build a standalone report containing escaped labels and no JavaScript."""
     esc = html.escape
     summary, series = data["summary"], data["series"]
     cards = [("Subagent calls", "calls", ""), ("Jev requests", "jev_requests", ""),
@@ -319,7 +325,13 @@ def render_html(data, path):
 *{box-sizing:border-box}body{margin:0;background:#0b111c;color:#e7eef8;font:14px system-ui,sans-serif}main{max-width:1440px;margin:auto;padding:40px 30px}header{border-bottom:1px solid #253144;margin-bottom:26px;padding-bottom:24px}.eyebrow{color:#73a7ff;letter-spacing:2px;font-size:11px;font-weight:700}h1{font-size:32px;margin:12px 0}h2{font-size:16px;margin:0 0 9px}p,small{color:#97a9be}p{line-height:1.6}.status{display:inline-block;border:1px solid #3b5677;border-radius:30px;padding:5px 13px;color:#9ec2ff}.cards{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin:25px 0}.card,section{background:#121d2c;border:1px solid #263447;border-radius:12px}.card{padding:19px}.card strong{display:block;font-size:29px;margin-top:15px;font-weight:600}.panels{display:grid;grid-template-columns:repeat(2,1fr);gap:18px}section{padding:22px;min-width:0}svg{display:block;width:100%;margin-top:16px}.legend{display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:#b8c8dc}.legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}.bar-label{display:flex;justify-content:space-between;gap:15px;margin-top:19px;font-size:12px;overflow-wrap:anywhere}.bar-label b{white-space:nowrap;color:#97a9be;font-weight:400}.track{height:7px;background:#243145;border-radius:8px;margin-top:9px}.track div{height:7px;border-radius:8px}.empty{height:210px;display:grid;place-items:center;color:#97a9be}aside{background:#382627;color:#ffb7b7;padding:15px;border-radius:10px;margin-bottom:20px}table{border-collapse:collapse;width:100%;margin-top:16px}th,td{text-align:left;border-bottom:1px solid #263447;padding:13px}th{color:#97a9be;font-size:12px}footer{margin-top:24px;color:#8294ac;font-size:12px;line-height:1.7}@media(max-width:1000px){.cards{grid-template-columns:repeat(3,1fr)}}@media(max-width:650px){main{padding:22px 15px}.cards{grid-template-columns:repeat(2,1fr)}.panels{grid-template-columns:1fr}.card strong{font-size:24px}h1{font-size:26px}}@media print{body{background:white;color:#142235}.card,section{break-inside:avoid;background:white}.cards{grid-template-columns:repeat(3,1fr)}}
 </style></head><body><main><header><div class="eyebrow">SUBAGENT MODEL ROUTER / OBSERVABILITY</div><h1>Routing operations</h1><p>''' + esc(data["instance"]) + ' · ' + esc(" → ".join(periods)) + '</p><span class="status">' + esc(data["status"].upper()) + '</span></header>' + error + '<div class="cards">' + cards_html + '</div><div class="panels">' + "".join(panels) + '</div><section style="margin-top:18px"><h2>Latency distribution</h2><table><thead><tr><th>Operation</th><th>p50</th><th>p95</th><th>p99</th></tr></thead><tbody>' + latency_rows + '</tbody></table></section><footer>' + esc(data["note"]) + ' This static report contains no credentials, remote resources, or executable scripts.</footer></main></body></html>'
     document = document.replace('<footer>', health_html + '<footer>', 1)
-    document = document.replace('<h1>Routing operations</h1>', '<h1>Routing operations</h1><p>Project: ' + esc(data.get("project") or "all") + ' · User: ' + esc(data.get("user") or "all") + '</p>', 1)
+    document = document.replace('<h1>Routing operations</h1>', '<h1>Routing operations</h1><p>Project: ' + esc(data.get("project") or "all") + ' · User: ' + esc(data.get("user") or "all") + ' · Agent: ' + esc(data.get("agent") or "all") + ' · Source: ' + esc(data.get("source") or "victoriametrics") + '</p>', 1)
+    return document
+
+
+def render_html(data, path):
+    """Explicitly export a standalone report to a private file."""
+    document = html_document(data)
     target = Path(path).expanduser()
     descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
