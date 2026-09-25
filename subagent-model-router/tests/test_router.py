@@ -1805,7 +1805,7 @@ class PrivacyTests(Sandbox):
     def test_key_absent_from_output_journal_and_stderr(self):
         echo = Reply(500, body=json.dumps({"error": {"message": "bad key Bearer " + KEY}}).encode())
         self.serve(Reply(body=SCENARIOS["light"]), echo, echo, Reply(body=SCENARIOS["light"]))
-        self.write_config(timeout_seconds=1)
+        self.write_config()  # redaction test: use normal budget, not a scheduler-sensitive timeout
         streams = []
         for args, stdin in ((("hook",), None), (("hook",), None), (("check", "--live"), ""),
                             (("explain", "перечисли файлы"), "")):

@@ -35,6 +35,9 @@ class DashboardTests(unittest.TestCase):
                 if label == 'model':
                     expected_name += ' / ${__field.labels.effort}'
                     self.assertIn('sum by(model,effort)', panel['targets'][0]['expr'])
+                    self.assertEqual(panel['targets'][0]['expr'].count('effort_source=~".+"'), 2)
+                    legacy = next(p for p in doc['panels'] if p['id'] == 36)
+                    self.assertIn('effort_source=""', legacy['targets'][0]['expr'])
                 self.assertEqual(panel['fieldConfig']['defaults']['displayName'], expected_name)
                 self.assertTrue(panel['targets'][0]['instant'])
                 self.assertFalse(panel['targets'][0]['range'])

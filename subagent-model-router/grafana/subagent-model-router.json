@@ -647,7 +647,7 @@
       },
       "targets": [
         {
-          "expr": "sum by(model,effort) (increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",reason=~\"rule:.*\"}[$__range])) / scalar(sum(increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",reason=~\"rule:.*\"}[$__range])))",
+          "expr": "sum by(model,effort) (increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",reason=~\"rule:.*\",model_source=~\".+\",effort_source=~\".+\"}[$__range])) / scalar(sum(increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",reason=~\"rule:.*\",model_source=~\".+\",effort_source=~\".+\"}[$__range])))",
           "refId": "A",
           "legendFormat": "{{model}} / {{effort}}",
           "range": false,
@@ -683,7 +683,7 @@
         },
         "sizing": "auto"
       },
-      "description": "Launch model / reasoning effort. Unknown means the host did not expose a usable value. Historic inherit/unchanged entries cannot be reconstructed. Shadow recommendations are separate from the launch identity."
+      "description": "Model / effort from the observed-identity schema (0.4.3+). Both numerator and denominator exclude older unresolvable records; see Legacy selections panel. Unknown means runtime value was not exposed; no current value is guessed for history."
     },
     {
       "id": 11,
@@ -2017,6 +2017,61 @@
         "justifyMode": "auto"
       },
       "description": "Latest successful snapshot per account alias and API scope across installations, independent of router project/user/agent/instance filters. Values are matched to their success timestamp; equal-timestamp amounts use the conservative minimum. Latest probe status follows the latest attempt separately, including failures; stopped workers do not refresh. Account totals include other tools. Key limit is not wallet credit; no key limit data can mean unlimited or unavailable."
+    },
+    {
+      "id": 36,
+      "title": "Legacy selections \u00b7 identity not recorded",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 83,
+        "w": 12,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",reason=~\"rule:.*\",effort_source=\"\"}[$__range]))",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Routing decisions recorded before model/effort source labels existed. Excluded from model/effort shares; historical identity cannot be reconstructed. Raw VM history remains unchanged."
     }
   ]
 }

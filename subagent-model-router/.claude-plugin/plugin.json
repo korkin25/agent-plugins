@@ -1,7 +1,7 @@
 {
   "name": "subagent-model-router",
   "displayName": "Subagent Model Router",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Picks the model for every subagent from a Jev (TypeSafe AI) judgement of its task — in Claude Code and Codex — while your main session keeps the model you chose.",
   "author": {
     "name": "Eugeny Kuzakov",

@@ -209,10 +209,9 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(first_calls[0].split()[-2], b"0")
 
     def test_slow_unreachable_endpoint_does_not_block_enqueue(self):
-        with mock.patch.object(telemetry, "request", side_effect=AssertionError("hook must not use HTTP")):
-            started = time.monotonic()
+        with mock.patch.object(telemetry, "request", side_effect=AssertionError("hook must not use HTTP")) as http:
             self.assertTrue(self.enqueue())
-            self.assertLess(time.monotonic() - started, .2)
+            http.assert_not_called()  # verifies isolation independently of disk/runner scheduling
         with server(delay=.3) as (url, seen):
             started = time.monotonic()
             with self.assertRaisesRegex(telemetry.TelemetryError, "timeout|network"):
