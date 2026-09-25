@@ -137,3 +137,17 @@ probe flags and age before describing a snapshot as current; stale/forbidden bal
 key limits are represented as unavailable amount plus explicit availability markers. After the five-minute
 worker exits, polling resumes only on a later hook/worker start; this is not a permanently running account
 monitor. The agent can use `stats --account ALIAS --terminal` to show the snapshot in the answer.
+
+
+## Effective model labels (0.4.2+)
+
+`smr_calls_total.model` holds the selected launch model, resolving inherited choices from the host event's
+session model. `model_source=session|specified|unknown` explains the origin; `recommended_model` keeps Jev's
+mapped recommendation separately, including in shadow mode. No model label contains `inherit` or `unchanged`.
+If a host omits its session model or a custom role overrides it without observable evidence, it is `unknown`.
+This remains a prelaunch observation, not proof of successful subagent execution. Claude aliases supplied
+by the host remain aliases; the plugin does not invent a concrete model revision.
+
+Old SQLite call counters without model_source are retired from new exports, including pending payloads;
+other metrics/retries are retained. Existing VM history is not deleted or retrospectively relabelled.
+Old `inherit` values can remain visible when the selected Grafana window includes older samples.

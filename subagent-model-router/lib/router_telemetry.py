@@ -406,12 +406,24 @@ def _points(cfg, record, duration):
     labels = dict(instance=cfg["instance"], agent=_enum(record.get("agent"), {"claude", "codex"}), project=project, user=user)
     provider = _enum(record.get("provider"), {"typesafe", "openrouter"})
     reason = _reason(record.get("reason"))
-    model = record.get("model")
-    if model is None:
-        model = "unchanged"
-    elif not isinstance(model, str) or not re.fullmatch(r"(?:gpt-[a-z0-9.-]{1,48}|claude-[a-z0-9.-]{1,48}|haiku|sonnet|opus|inherit)", model):
-        model = "other"
-    call = dict(labels, provider=provider, reason=reason, model=model,
+    def model_name(value):
+        if isinstance(value, str) and re.fullmatch(r"(?:gpt-[a-z0-9.-]{1,48}|claude-[a-z0-9.-]{1,48}|haiku|sonnet|opus)", value):
+            return value
+        return "unknown"
+
+    if "actual_model" in record:
+        actual = record["actual_model"]
+    elif record.get("mode") == "shadow" or record.get("model") in (None, "inherit"):
+        actual = record.get("session_model")
+    else:
+        actual = record.get("model")
+    recommendation = record.get("model")
+    if recommendation == "inherit":
+        recommendation = record.get("session_model")
+    source = record.get("model_source") or ("session" if record.get("mode") == "shadow" or record.get("model") in (None, "inherit") else "specified")
+    call = dict(labels, provider=provider, reason=reason, model=model_name(actual),
+                model_source=source if model_name(actual) != "unknown" and source in ("specified", "session") else "unknown",
+                recommended_model=model_name(recommendation) if reason.startswith("rule:") else "unknown",
                 mode=_enum(record.get("mode"), {"active", "shadow"}),
                 tier=_enum(record.get("tier"), {"light", "standard", "heavy"}, "none"),
                 effort=_enum(record.get("effort"), {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "inherit"}, "unchanged"),
@@ -524,8 +536,21 @@ def _kick(cfg, command, state_dir):
 
 def _prepare(db, cfg):
     db.execute("BEGIN IMMEDIATE")
+    # Old counters cannot be assigned to today's session model. Stop replaying
+    # legacy call series (including shadow recommendations), retain VM history.
+    def legacy_call(line):
+        return line.startswith("smr_calls_total{") and 'model_source="' not in line
+
+    for (name,) in db.execute("SELECT name FROM series").fetchall():
+        if legacy_call(name):
+            db.execute("DELETE FROM series WHERE name=?", (name,))
     pending = db.execute("SELECT payload,stamp,revision FROM pending WHERE id=1").fetchone()
     if pending:
+        payload = b"".join(line for line in pending[0].splitlines(keepends=True)
+                           if not legacy_call(line.decode("utf-8")))
+        if payload != pending[0]:
+            db.execute("UPDATE pending SET payload=? WHERE id=1", (payload,))
+            pending = (payload, pending[1], pending[2])
         db.commit()
         return pending
     rows = db.execute("SELECT name,value,baseline FROM series ORDER BY name").fetchall()

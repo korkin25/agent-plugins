@@ -49,6 +49,32 @@ def server(status=204, delay=0, redirect=None):
 
 
 class TelemetryTests(unittest.TestCase):
+    def test_real_model_for_inherited_and_shadow_calls(self):
+        for selected, mode, expected in [('inherit', 'active', 'gpt-6-astra'),
+                                         ('gpt-5.6-luna', 'shadow', 'gpt-6-astra'),
+                                         ('gpt-5.6-luna', 'active', 'gpt-5.6-luna')]:
+            row = dict(self.record, model=selected, mode=mode, session_model='gpt-6-astra')
+            call = next(k for k in telemetry._points(self.cfg, row, .1) if k.startswith('smr_calls_total{'))
+            self.assertIn('model="' + expected + '"', call)
+            self.assertNotIn('model="inherit"', call)
+            if mode == 'shadow':
+                self.assertIn('recommended_model="gpt-5.6-luna"', call)
+        call = next(k for k in telemetry._points(self.cfg, dict(self.record, model='inherit'), .1)
+                    if k.startswith('smr_calls_total{'))
+        self.assertIn('model="unknown"', call)
+
+    def test_old_model_counters_not_reexported_or_relabelled(self):
+        self.enqueue()
+        db = self.connection()
+        old = 'smr_calls_total{model="inherit"}'
+        db.execute('INSERT INTO series(name,value,born) VALUES(?,?,?)', (old, 12, 1))
+        payload, stamp, revision = telemetry._prepare(db, self.cfg)
+        self.assertNotIn(old.encode(), payload)
+        db.execute('UPDATE pending SET payload=?', (payload + (old + ' 12 1\n').encode(),))
+        retried = telemetry._prepare(db, self.cfg)
+        self.assertEqual(retried, (payload, stamp, revision))
+        self.assertEqual(telemetry._prepare(db, self.cfg), retried)
+        db.close()
     def setUp(self):
         # Caller may choose its own private scratch root; never default to /tmp.
         root = Path(os.environ.get("TMPDIR", "/var/tmp/agent-plugins-vm/transport"))
