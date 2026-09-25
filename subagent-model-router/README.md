@@ -101,7 +101,8 @@ configured endpoint. Python 3.11+ is required; no systemd/launchd service or ext
 Python collects and sends them automatically; no LLM turns or tokens are spent on telemetry. The synchronous
 hook only updates private aggregate state and starts one background sender, so VM latency/outages do not
 hold up model selection. The local JSONL journal stops growing in VM mode; a bounded aggregate delivery buffer
-remains for counters and retries.
+remains for counters and retries. `SessionStart` and `UserPromptSubmit` hooks also start that sender (silently,
+without a network call or a write), so delivery resumes after a client restart, not only at the next subagent.
 
 The metrics cover Jev latency/errors, model/tier/effort choices, active versus shadow decisions and decision
 probabilities, with project, user and Claude/Codex cohorts. Grafana filters and compares these cohorts;

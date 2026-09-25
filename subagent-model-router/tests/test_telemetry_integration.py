@@ -62,6 +62,34 @@ class TelemetryIntegrationTests(Sandbox):
         finally:
             stdin.close()
 
+    def test_kick_starts_worker_only_for_vm_and_stays_silent(self):
+        import router_telemetry
+        vm = router.normalize_config({"telemetry": {
+            "backend": "victoriametrics", "write_url": "http://127.0.0.1:8428/api/v1/import/prometheus",
+            "query_url": "http://127.0.0.1:8428", "instance": "test"}})
+        for cfg, calls in ((vm, 1), (router.normalize_config({"telemetry": {"backend": "off"}}), 0), (None, 0)):
+            stdin = io.TextIOWrapper(io.BytesIO(b'{"hook_event_name": "SessionStart"}'))
+            stdout = io.StringIO()
+            try:
+                with self.subTest(backend=cfg and cfg["telemetry"]["backend"]), \
+                        mock.patch.object(sys, "stdin", stdin), mock.patch.object(sys, "stdout", stdout), \
+                        mock.patch.object(router, "load_config", return_value=cfg), \
+                        mock.patch.object(router_telemetry, "_kick") as kick:
+                    self.assertEqual(router.kick_main(), 0)
+                    self.assertEqual(kick.call_count, calls)
+                    if calls:
+                        self.assertEqual(kick.call_args.args[0], vm["telemetry"])
+                        self.assertEqual(kick.call_args.args[1][-1], "telemetry-worker")
+                    self.assertEqual(stdout.getvalue(), "")
+            finally:
+                stdin.close()
+
+    def test_kick_swallows_config_errors(self):
+        self.write_config(telemetry={"backend": "victoriametrics", "write_url": "invalid"})
+        self.assertEqual(self.run_router("telemetry-kick", stdin="{}")[:3], (0, "", ""))
+        self.config.chmod(0o644)
+        self.assertEqual(self.run_router("telemetry-kick", stdin="not json")[:3], (0, "", ""))
+
     def test_stats_dispatches_vm_and_does_not_read_old_journal(self):
         import router_dashboard
         self.write_config(telemetry={"backend": "victoriametrics",

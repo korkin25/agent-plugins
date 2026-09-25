@@ -544,6 +544,14 @@ def _kick(cfg, command, state_dir):
         os.close(fd)
 
 
+def kick(cfg, worker_command, *, state_dir=None):
+    """Start the detached worker unless one already holds the lock; no write, no network."""
+    if cfg.get("backend") != "victoriametrics":
+        return False
+    _kick(cfg, worker_command, state_dir)
+    return True
+
+
 def _prepare(db, cfg):
     db.execute("BEGIN IMMEDIATE")
     # Old counters cannot be assigned to today's session model. Stop replaying

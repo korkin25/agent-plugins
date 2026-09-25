@@ -128,7 +128,7 @@ several installations must be selected by freshest successful snapshot per alias
 - `telemetry-status` — local delivery health without a network call.
 - `codex-trust [--codex PATH] [--dry-run]` — mark this plugin's hooks trusted in Codex through `codex
   app-server`, the same way `/hooks` does. Only hooks Codex lists for the plugin `subagent-model-router` whose
-  command is exactly `…/bin/subagent-model-router hook` count; all other hooks are never touched.
+  command is exactly `…/bin/subagent-model-router hook` or `… telemetry-kick` count; all other hooks are never touched.
 
 ## Config
 
