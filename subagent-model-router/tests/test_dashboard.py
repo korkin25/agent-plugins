@@ -22,6 +22,16 @@ def answer(rows, ranged=False):
 
 
 class DashboardTests(unittest.TestCase):
+    def test_health_only_is_no_data_for_selected_client(self):
+        def respond(config, url, body=None):
+            if 'smr_telemetry_' in urllib.parse.unquote(url):
+                return answer([({}, [1700000000, '0'])])
+            return answer([], 'query_range' in url)
+        with mock.patch.object(dashboard, 'request', side_effect=respond):
+            data = dashboard.query_stats(self.cfg, agent='codex')
+        self.assertEqual(data['status'], 'no_data')
+        self.assertIsNone(data['summary']['calls'])
+        self.assertIn('Agent: codex', dashboard.html_document(data))
     cfg = {"backend": "victoriametrics", "query_url": "http://127.0.0.1:8428", "write_url": "http://127.0.0.1:8428/api/v1/import/prometheus", "instance": "unit-test"}
 
     def fake(self, config, url, body=None):

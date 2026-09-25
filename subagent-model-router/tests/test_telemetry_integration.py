@@ -86,3 +86,42 @@ class TelemetryIntegrationTests(Sandbox):
         rc, out, err, _ = self.hook()
         self.assertEqual((rc, out, err), (0, "", ""))
         self.assertFalse(self.journal.exists())
+
+    def test_terminal_stats_are_in_output_without_file_or_browser(self):
+        self.journal.parent.mkdir(parents=True)
+        from datetime import datetime, timezone
+        row = {"ts": datetime.now(timezone.utc).isoformat(), "agent": "codex", "reason": "explicit"}
+        self.journal.write_text(json.dumps(row) + "\n")
+        rc, out, err, _ = self.run_router("stats", "--days", "7", "--terminal")
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn("|", out)
+        self.assertIn("codex", out)
+        self.assertNotIn("Browser report", out)
+        self.assertFalse(list(self.root.rglob("*.html")))
+
+    def test_browser_report_keeps_terminal_output_and_no_html_file(self):
+        import router_dashboard, router_browser, router_terminal
+        self.write_config(telemetry={"backend": "victoriametrics",
+            "write_url": "http://127.0.0.1:8428/api/v1/import/prometheus",
+            "query_url": "http://127.0.0.1:8428", "instance": "test"})
+        data = {"status": "ok", "summary": {}, "series": {}, "errors": {}}
+        report = router_browser.BrowserReport("http://127.0.0.1:1234/random", 123456)
+        output = io.StringIO()
+        with mock.patch.dict("os.environ", self.env()), \
+                mock.patch.object(router_dashboard, "query_stats", return_value=data) as query, \
+                mock.patch.object(router_terminal, "format_terminal", return_value="VISIBLE DASHBOARD"), \
+                mock.patch.object(router_dashboard, "html_document", return_value="<html>report</html>"), \
+                mock.patch.object(router_browser, "start_report", return_value=report) as browser, \
+                mock.patch.object(router_dashboard, "render_html") as save, \
+                mock.patch.object(sys, "stdout", output):
+            self.assertEqual(router.cmd_stats(7, terminal=True, browser=True, agent="codex"), 0)
+        self.assertIn("VISIBLE DASHBOARD", output.getvalue())
+        self.assertIn(report.url, output.getvalue())
+        query.assert_called_once_with(mock.ANY, days=7, agent="codex")
+        browser.assert_called_once_with("<html>report</html>", open_default=False)
+        save.assert_not_called()
+
+    def test_json_cannot_mix_browser_side_effects(self):
+        rc, _, err, _ = self.run_router("stats", "--json", "--open")
+        self.assertEqual(rc, 2)
+        self.assertIn("cannot be combined", err)

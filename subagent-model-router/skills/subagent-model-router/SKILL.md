@@ -9,9 +9,19 @@ A `PreToolUse` hook on the tool that starts a subagent — `Agent` in Claude Cod
 Before the subagent starts, the hook asks Jev three questions about its task and sets the subagent's model
 (in Codex also its reasoning effort). The main session is never touched.
 
-The command: in Claude Code the plugin's `bin/` is on `PATH`, so it is `subagent-model-router <command>`.
-In Codex or a plain shell, call it by path: the plugin root is two directories above this `SKILL.md`, so
-`<plugin root>/bin/subagent-model-router <command>`.
+## User interaction
+
+Users ask in their Claude/Codex chat; they do not run shell commands or locate plugin files. Perform setup,
+checks and statistics retrieval yourself with tools. Resolve the plugin root from this SKILL.md location
+(two directories above), use its absolute `bin/subagent-model-router` path, and quote paths. Never tell the
+user to run `./bin/...` from an unspecified directory or paste a versioned cache path as the normal workflow.
+
+For an installation request, install `subagent-model-router@korkin25` from `korkin25/agent-plugins` with the
+host's plugin manager. Claude Code: run `claude plugin marketplace add korkin25/agent-plugins` and
+`claude plugin install subagent-model-router@korkin25`. Codex: use `codex plugin marketplace add` and
+`codex plugin add` with the same arguments. Discover the resulting root; do not guess its version/path.
+Preserve existing settings. Both terminal and VS Code use the account's plugin storage; if the Codex CLI is
+not on PATH, use the installed extension's binary. Run per-user commands from that user's home.
 
 ## What it changes and what it leaves alone
 
@@ -70,19 +80,18 @@ Do not rely on it for anything else: a secret in any other form is sent as writt
 With the optional VictoriaMetrics backend, aggregate metrics also go to the user-configured VM endpoint;
 task text and identifying journal fields are never included. See Monitoring below.
 
-## Setup
+## Setup (agent performs these steps)
 
 1. Config (the plugin reads nothing until it exists):
    ```bash
    install -d -m 700 ~/.config/subagent-model-router
    install -m 600 "<plugin root>/config.example.toml" ~/.config/subagent-model-router/config.toml
    ```
-2. Key — the user puts it in place personally. Never read or print the key, and never ask for it in the chat:
-   ```bash
-   ( umask 077; cat > ~/.config/subagent-model-router/key )   # paste the key, Enter, Ctrl-D
-   ```
-   TypeSafe keys: console.typesafe.ai/keys. OpenRouter keys: openrouter.ai/settings/keys, together with
-   `provider = "openrouter"`. Then run `check`.
+2. Key — ask for the provider and an existing private key-file path, never for the key value in chat.
+   Configure `key_file` to that path, or copy the file only when authorized, preserving owner-only permissions.
+   Never display its contents. For an existing configured installation, reuse the configured file.
+   Keys can be obtained at console.typesafe.ai/keys or openrouter.ai/settings/keys. Set
+   `provider = "openrouter"` for OpenRouter. Run `check` yourself; no live Jev request is needed.
 3. Codex only: a hook runs there only once it is trusted. Run `subagent-model-router codex-trust` (add
    `--codex <path>` when `codex` is not on `PATH`, e.g. the binary of the VS Code extension; `--dry-run` shows
    what would be trusted). The manual fallback is the `/hooks` screen in Codex. Then run `check` once to fill
@@ -98,7 +107,7 @@ task text and identifying journal fields are never included. See Monitoring belo
 - `explain [TEXT]` (or the text on stdin, `-d DESCRIPTION`) — ask Jev about a task and show the answers, the
   threshold bands and the result for Claude Code and for Codex. It is a real request: warn the user that the
   text goes to TypeSafe or OpenRouter. It does not write the journal.
-- `stats [--days N] [--project NAME] [--user NAME] [--json] [--html PATH]` — queries the configured storage. VM mode returns bounded
+- `stats [--days N] [--project NAME] [--user NAME] [--agent codex|claude] [--terminal] [--browser|--open] [--json]` — queries the configured storage. VM mode returns bounded
   summary/graphs; local mode retains the journal summary. `--source local` explicitly reads old history.
 - `telemetry-status` — local delivery health without a network call.
 - `codex-trust [--codex PATH] [--dry-run]` — mark this plugin's hooks trusted in Codex through `codex
@@ -121,10 +130,25 @@ otherwise `P(light) + P(standard) ≥ standard_min` and `P(heavy) < heavy_max` �
 For VictoriaMetrics setup, delivery guarantees, Grafana import and report commands, read
 [references/monitoring.md](references/monitoring.md). Collection and rendering are Python code shared by both
 hosts: never schedule an agent, poll with an LLM, read raw history or call Jev to collect monitoring data.
-When asked for statistics, run `stats --days N --json` (default VM window: 7 days); for a visual report add
-`--html PATH` and return the file link with a short factual interpretation. Use the bundled report/dashboard
-instead of recreating charts in the model. Distinguish unavailable/empty data from zero and selection share
-from demonstrated token, money or quality savings. Report the queried time window and source.
+When asked for statistics, run the resolved executable with `stats --days N --terminal` (default: 7 days).
+Use `--project`, `--user`, `--agent codex|claude` when requested. Local journal rows lacking a requested cohort do not match; do not infer it from paths.
+Copy the resulting dashboard into the **final response**, preserving the tables/bars/trend gaps. Tool output
+alone is not delivery: the user must see the statistics in the agent's answer. Add only a short interpretation;
+do not recompute charts in the LLM or invent unavailable values. State source, window and scope.
+
+For a browser/HTML request, also use `--browser`: this returns a random short-lived loopback URL serving HTML
+from memory. Open that exact URL in an available in-app browser using its documented tool/skill. Do not
+inspect existing tabs, sessions or history. If no suitable in-app browser is available, use `--open` instead
+of `--browser` to ask the local default browser to open the page. Prefer a browser on the user's machine;
+loopback on an SSH/container host is not the user's loopback. If no reachable browser exists or opening fails,
+keep the complete terminal dashboard in the answer and explain the browser limitation briefly. Never ask the
+user to find/open a report file or claim that a browser rendered the page merely because an opener returned.
+
+Do not create persistent HTML as the default. The browser helper uses no report file and expires after ten
+minutes. If the user explicitly requests an exported artifact, use `mkstemp`/`NamedTemporaryFile` in a private
+random directory under the platform's authorized temporary root (this workspace: /var/tmp), with a random
+`.html` filename and mode0600. A fixed name is allowed only when the user explicitly supplies the destination.
+Detailed command/API choices belong to the agent; user-facing instructions are ordinary chat requests.
 
 ## Journal (local backend)
 
@@ -146,7 +170,7 @@ binary found), `no_catalog` (followed by `;refreshing` while a background refres
 - "Turn it off" / "turn it on" — `enabled = false` / `true` in the config. Removing the plugin (`/plugin` in
   Claude Code, `codex plugin remove`) only on a direct request.
 - "Observe only" — `mode = "shadow"`; back with `mode = "active"`.
-- "Set up the key" — give the commands from Setup, then `check`; `check --live` only when asked to test the
+- "Set up the key" — perform Setup using the authorized file, then `check`; `check --live` only when asked to test the
   connection.
 - "Do not send tasks from project X" — add its directory to `exclude`: that directory and everything inside it
   are excluded, but not a neighbour whose name merely starts the same (`~/work/x` does not cover `~/work/x.com`).

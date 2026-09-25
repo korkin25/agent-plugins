@@ -1222,7 +1222,8 @@ def cmd_local_stats(days):
     return 0
 
 
-def cmd_stats(days, source="auto", html_path=None, as_json=False, project=None, user=None):
+def cmd_stats(days, source="auto", html_path=None, as_json=False, project=None, user=None,
+              terminal=False, browser=False, open_browser=False, agent=None):
     try:
         cfg = load_config()
     except ConfigError:
@@ -1233,18 +1234,31 @@ def cmd_stats(days, source="auto", html_path=None, as_json=False, project=None, 
         print("stats: " + cfg["_telemetry_error"], file=sys.stderr)
         return 1
     backend = cfg["telemetry"]["backend"] if source == "auto" else source
-    if backend == "local":
-        if html_path or as_json or project or user:
-            print("stats: --html, --json, --project and --user require VictoriaMetrics", file=sys.stderr)
-            return 1
+    from router_dashboard import query_stats, render_html, format_summary
+    if backend == "local" and not any((terminal, browser, open_browser, html_path, as_json, project, user, agent)):
         return cmd_local_stats(days)
     if backend == "off":
         print("Statistics collection is off. Use --source local explicitly for the old journal.")
         return 0
-    from router_dashboard import query_stats, render_html, format_summary
     try:
-        filters = {k: v for k, v in (("project", project), ("user", user)) if v is not None}
-        data = query_stats(cfg["telemetry"], days=days or 7, **filters)
+        filters = {k: v for k, v in (("project", project), ("user", user), ("agent", agent)) if v is not None}
+        if backend == "local":
+            from router_terminal import local_data
+            rows = []
+            try:
+                with open(log_path(), encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        try:
+                            row = json.loads(line)
+                            if isinstance(row, dict):
+                                rows.append(row)
+                        except ValueError:
+                            continue
+            except FileNotFoundError:
+                pass
+            data = local_data(rows, days=days or 7, **filters)
+        else:
+            data = query_stats(cfg["telemetry"], days=days or 7, **filters)
         if html_path:
             render_html(data, html_path)
     except (ValueError, OSError):
@@ -1252,6 +1266,9 @@ def cmd_stats(days, source="auto", html_path=None, as_json=False, project=None, 
         return 1
     if as_json:
         print(json.dumps({k: v for k, v in data.items() if k != "series"}, ensure_ascii=False))
+    elif terminal or backend == "local":
+        from router_terminal import format_terminal
+        print(format_terminal(data))
     else:
         print(format_summary(data))
         print("Period: last " + str(days or 7) + " days")
@@ -1259,6 +1276,17 @@ def cmd_stats(days, source="auto", html_path=None, as_json=False, project=None, 
             print(name + ": " + str(error), file=sys.stderr)
         if html_path:
             print("Dashboard: " + os.path.abspath(html_path))
+    if browser or open_browser:
+        from router_dashboard import html_document
+        from router_browser import start_report
+        try:
+            report = start_report(html_document(data), open_default=open_browser)
+            print("Browser report: " + json.dumps({"url": report.url, "expires_at": report.expires_at,
+                  "default_browser_requested": open_browser,
+                  "default_browser_attempted": report.default_browser_attempted,
+                  "default_browser_opened": report.default_browser_opened}))
+        except Exception:
+            print("Browser report unavailable; the statistics above remain available.", file=sys.stderr)
     return 1 if data["status"] in ("error", "partial") else 0
 
 
@@ -1688,6 +1716,10 @@ def main(argv=None):
     stats.add_argument("--json", action="store_true", help="compact VM summary for agents")
     stats.add_argument("--project", help="only this project cohort (VM)")
     stats.add_argument("--user", help="only this user cohort (VM)")
+    stats.add_argument("--agent", choices=("codex", "claude"), help="only this client (VM)")
+    stats.add_argument("--terminal", action="store_true", help="ready-to-display agent dashboard")
+    stats.add_argument("--browser", action="store_true", help="serve HTML in memory for the agent's browser")
+    stats.add_argument("--open", action="store_true", help="serve report and ask the default browser to open it")
     sub.add_parser("telemetry-status", help="local delivery health, without network access")
     check = sub.add_parser("check", help="check the config, the key and the Codex model catalog")
     check.add_argument("--live", action="store_true", help="make one small request to Jev")
@@ -1707,7 +1739,12 @@ def main(argv=None):
     if args.cmd == "stats":
         if args.days is not None and not 1 <= args.days <= 90:
             parser.error("--days must be between 1 and 90")
-        return cmd_stats(args.days, args.source, args.html, args.json, args.project, args.user)
+        if args.json and (args.terminal or args.browser or args.open):
+            parser.error("--json cannot be combined with terminal/browser presentation")
+        if args.html and (args.browser or args.open):
+            parser.error("choose an explicit export or an in-memory browser report")
+        return cmd_stats(args.days, args.source, args.html, args.json, args.project, args.user,
+                         args.terminal, args.browser, args.open, args.agent)
     if args.cmd == "telemetry-status":
         return cmd_telemetry()
     if args.cmd == "check":
