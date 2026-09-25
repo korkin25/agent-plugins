@@ -160,3 +160,20 @@ from PreToolUse. For inherited general-purpose launches, the effort can be retai
 model it is not evidence of child effort. Custom roles and absent evidence remain unknown. Config defaults
 or ANTHROPIC_MODEL/CLAUDE_CODE_EFFORT_LEVEL are not substituted for current runtime observations. Old samples
 are not retroactively repaired and retired call-series are no longer replayed by upgraded workers.
+
+
+## Codex runtime effort (0.4.5+)
+
+For active same-model `inherit` decisions with built-in roles, the router resolves the exact parent
+`turn_context` by session UUID, turn UUID and model. It searches only the UUIDv7 session-date directories
+(with one day timezone margin), rejects ambiguous/foreign/symlink files and reads at most a 2MiB tail.
+Owner-created group-writable rollout files are accepted: they are observations, not executable policy.
+Only model/effort metadata is retained; conversation contents are never sent or logged by this lookup.
+No matching metadata means unknown, not a fallback to another turn or user config.
+
+When the cached catalog supports the observed effort, the hook pins it in `updatedInput.reasoning_effort`.
+This explicitly selects the current-turn level over subagent defaults for this same-model launch, leaving
+routing model/tier unchanged. Metric `effort_source=turn_context` distinguishes this from an original explicit
+argument. `applied` becomes true for such effort-only rewrites. Shadow, custom roles, explicit arguments,
+full forks, changed-model routes, and failures are unchanged. No app-server RPC is used inside the hook.
+The evidence proves selected launch parameters, not completion or later changes in the child.
