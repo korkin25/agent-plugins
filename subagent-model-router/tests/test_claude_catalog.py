@@ -3,6 +3,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import signal
 import time
 from unittest import mock
 
@@ -43,18 +44,64 @@ class NativeClaudeCatalogTests(Sandbox):
 
     def test_timeout_is_bounded_and_native_process_is_reaped(self):
         (self.claude_state / 'mode').write_text('sleep')
-        started = time.monotonic()
-        self.assertIsNone(self.fetch(timeout=.15))
-        self.assertLess(time.monotonic() - started, 1.5)
-        [call] = self.calls()
-        self.assertFalse(Path(f"/proc/{call['pid']}").exists())
-        self.assertFalse(Path(call['cwd']).exists())
+        # The child may not reach Python before the deadline. Observe its
+        # parent-owned Popen handle instead of requiring a child-written log.
+        processes = []
+        popen = catalog.subprocess.Popen
+
+        def observe_process(*args, **kwargs):
+            proc = popen(*args, **kwargs)
+            processes.append((proc, kwargs['cwd']))
+            proc.wait = mock.Mock(wraps=proc.wait)
+            return proc
+
+        with catalog.selectors.DefaultSelector() as selector:
+            with mock.patch.object(catalog.subprocess, 'Popen', side_effect=observe_process), \
+                    mock.patch.object(catalog.selectors, 'DefaultSelector', return_value=selector), \
+                    mock.patch.object(selector, 'select', wraps=selector.select) as select:
+                self.assertIsNone(self.fetch(timeout=.15))
+        # Verify the actual blocking budgets, independent of CI scheduling and
+        # interpreter startup. run_router retains its separate process watchdog.
+        select.assert_called_once()
+        self.assertGreater(select.call_args.args[0], 0)
+        self.assertLessEqual(select.call_args.args[0], .15)
+        [(proc, cwd)] = processes
+        self.assertEqual(proc.returncode, -signal.SIGKILL)
+        self.assertEqual(proc.wait.call_args_list, [mock.call(timeout=.2), mock.call()])
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(proc.pid, os.WNOHANG)
+        self.assertTrue(proc.stdin.closed)
+        self.assertTrue(proc.stdout.closed)
+        self.assertFalse(Path(cwd).exists())
 
     def test_malformed_error_wrong_request_and_oversized_responses_fail_closed(self):
         for mode in ('garbage', 'error', 'wrong_id', 'huge'):
             with self.subTest(mode=mode):
                 (self.claude_state / 'mode').write_text(mode)
-                self.assertIsNone(self.fetch(timeout=.2))
+                chunks = []
+                read = catalog.os.read
+
+                def observe_read(*args):
+                    chunk = read(*args)
+                    chunks.append(chunk)
+                    return chunk
+
+                before = len(self.calls())
+                with mock.patch.object(catalog.os, 'read', side_effect=observe_read):
+                    self.assertIsNone(self.fetch())
+                self.assertEqual(len(self.calls()), before + 1)
+                raw = b''.join(chunks)
+                if mode == 'garbage':
+                    self.assertEqual(raw, b'not JSON\n')
+                elif mode == 'huge':
+                    self.assertGreater(len(raw), catalog.MAX_BYTES)
+                else:
+                    response = json.loads(raw)['response']
+                    if mode == 'error':
+                        self.assertEqual(response['subtype'], 'error')
+                    else:
+                        self.assertNotEqual(response['request_id'], catalog.REQUEST_ID)
+                        self.assertEqual(chunks[-1], b'')  # ignored message followed by EOF
                 self.assertFalse(Path(f"/proc/{self.calls()[-1]['pid']}").exists())
 
     def test_alias_mapping_canonical_alias_precedes_variant(self):

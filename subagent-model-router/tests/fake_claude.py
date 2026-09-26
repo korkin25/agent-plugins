@@ -50,6 +50,8 @@ def main():
     if mode == "wrong_id":
         response["response"]["request_id"] = "unrelated"
     print(json.dumps(response), flush=True)
+    if mode == "wrong_id":
+        return 0  # ignored response then EOF; no timeout can hide this branch
     remaining = sys.stdin.read()
     if remaining:
         (state / "unexpected-input").write_text(remaining)
