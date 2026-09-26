@@ -40,11 +40,11 @@ step to run, and nothing to wait for.
 
 Getting into the first-party directories is not something CI can do, in either ecosystem:
 
-- **Anthropic's** [`claude-plugins-official`](https://github.com/anthropics/claude-plugins-official)
-  accepts third-party plugins into `external_plugins` through a
-  [submission form](https://clau.de/plugin-directory-submission), followed by a human review
-  against their quality and security bar. A pipeline can prepare and validate the plugin — it
-  cannot submit it.
+- **Anthropic's directory** takes plugin submissions from any paid Claude plan through the
+  [developer portal](https://claude.ai/directory/manage)
+  ([how to publish](https://claude.com/docs/directory/publish)). Each version is validated and
+  security-scanned, and a person reviews a new listing before it goes live. A pipeline can prepare
+  and validate the plugin — it cannot submit it.
 - **OpenAI's Codex** plugin directory has no self-serve publishing yet; their documentation
   still lists it as coming. Until it opens, a Codex user installs from a marketplace like this
   one rather than from the directory.

@@ -50,8 +50,9 @@ Ask, in this order, one at a time:
    starts from an empty environment; ask which variables it needs beyond `PATH`, `HOME`, the
    locale and `SSH_AUTH_SOCK`, for `pass_env` (names only, never values).
 6. **tmux session name** — `session`, letters, digits, `_` and `-`.
-7. **Panes** — how many tasks run at once. **Always ask**, even when the answer seems obvious;
-   never fill in the default silently.
+7. **Panes** — how many tasks run at once. Ask every time, even when the answer seems obvious,
+   and never fill in the default silently: the pane count sets how much of the machine the owner
+   commits, so it is theirs to choose.
 
 `idle_minutes` (default 15, 0 disables) frees a task's slot once its pane's visible content stops
 changing that long — the agent is presumably waiting on the owner — so the next ready task can start;

@@ -6,7 +6,7 @@ description: Jev (TypeSafe AI) directly picks a model and effort for eligible su
 # Subagent Model Router
 
 A `PreToolUse` hook on the tool that starts a subagent — `Agent` in Claude Code, `spawn_agent` in Codex.
-Version 0.5.0 asks Jev for one choice from concrete model/effort candidates for the task. It submits that
+It asks Jev for one choice from concrete model/effort candidates for the task. It submits that
 choice as native launch parameters. The main session is never touched.
 
 ## User interaction
@@ -25,8 +25,7 @@ not on PATH, use the installed extension's binary. Run per-user commands from th
 
 ## Direct selection and native launch parameters
 
-Jev chooses one offered model/effort pair. No tier/risk/review classifier, thresholds, parent model
-inheritance or transcript lookup participates in routing. Do not inspect conversation history to fill
+Jev chooses one offered model/effort pair. Do not inspect conversation history to fill
 missing model labels. Skips and missing evidence remain distinct from a successful choice.
 The request asks Jev to establish task adequacy first. For non-review tasks it prefers the lowest documented
 applicable API cost among adequate models. For review tasks it ignores price, favors a more capable model than
@@ -115,8 +114,6 @@ Sources: [Claude frontmatter](https://code.claude.com/docs/en/sub-agents#support
 [model precedence](https://code.claude.com/docs/en/sub-agents#choose-a-model),
 [effort support and overrides](https://code.claude.com/docs/en/model-config#adjust-effort-level),
 [hook updatedInput](https://code.claude.com/docs/en/hooks#pretooluse-decision-control).
-Plugin effort frontmatter is supported from Claude Code 2.1.78; the current model precedence is from
-2.1.251. The native Agent contract and definition-based effort were inspected on 2.1.280.
 
 ## Prelaunch notice
 
@@ -130,7 +127,7 @@ used as a user-facing notice. Rendering varies by client: Codex may use a UI/eve
 
 ## Installed updates and running versions
 
-From 0.4.8, synchronous `SessionStart` and `UserPromptSubmit` handlers can emit an update notice through
+Synchronous `SessionStart` and `UserPromptSubmit` handlers can emit an update notice through
 `systemMessage`, without `additionalContext`, a model request or an automatic install. They compare the
 executing plugin copy with native installed metadata and deduplicate by session/installed version. They
 cannot notify from an older session that never loaded the checker. Native metadata errors or ambiguous
@@ -160,7 +157,7 @@ that an update failed or that every session is current.
 ## What leaves the machine
 
 For each routed launch, Jev receives the **entire subagent task and its description**, after masking known
-credential formats. No TASK/ROLE extraction, summary or 1500-character truncation is performed. Multiline
+credential formats. Multiline
 instructions, permissions, checks, paths, repository names and other text in the task are included. The
 plugin does not open referenced files or add conversation history. For Codex text-item calls, only text
 items are included; attached images are not sent to Jev.
@@ -234,8 +231,8 @@ For VictoriaMetrics setup, delivery guarantees, Grafana import and report comman
 [references/monitoring.md](references/monitoring.md). Collection and rendering are Python code shared by both
 hosts: never schedule an agent, poll with an LLM, read raw history or call Jev to collect monitoring data. For money, separate reported router spend from
 whole-account/key usage; show cost coverage, separate input/output token coverage, and balance age/probe status.
-Historical classifier and local-lookup metrics are preserved but removed from the main dashboard.
-They do not describe current routing, and missing observations must not be presented as zero.
+Metrics left by earlier router versions do not describe current routing (see the reference), and
+missing observations must not be presented as zero.
 When asked for statistics, run the resolved executable with `stats --days N --terminal` (default: 7 days).
 Use `--project`, `--user`, `--agent codex|claude` when requested. Local journal rows lacking a requested cohort do not match; do not infer it from paths.
 Copy the resulting dashboard into the **final response**, preserving the tables/bars/trend gaps. Tool output
@@ -252,7 +249,7 @@ user to find/open a report file or claim that a browser rendered the page merely
 
 Do not create persistent HTML as the default. The browser helper uses no report file and expires after ten
 minutes. If the user explicitly requests an exported artifact, use `mkstemp`/`NamedTemporaryFile` in a private
-random directory under the platform's authorized temporary root (this workspace: /var/tmp), with a random
+random directory under the platform's authorized temporary root (or the one the user's instructions name), with a random
 `.html` filename and mode0600. A fixed name is allowed only when the user explicitly supplies the destination.
 Detailed command/API choices belong to the agent; user-facing instructions are ordinary chat requests.
 

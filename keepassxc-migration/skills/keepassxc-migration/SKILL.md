@@ -76,7 +76,7 @@ loader in their place:
 command -v kpxc-env >/dev/null && eval "$(kpxc-env export)"
 ```
 
-Six things decide whether this works, and all six have already gone wrong once:
+Six things decide whether this works:
 
 **The loader needs `kpxc-env` on `PATH`.** Inside Claude Code the plugin's `bin/` is on `PATH`,
 but an ordinary login shell knows nothing about it, so the line silently does nothing and every
@@ -161,13 +161,13 @@ two files back over a purged profile is the whole recovery path, and it works.
    delete the key files.
 9. **Shell secrets.** First, in KeePassXC, Tools → Settings → Secret Service Integration: untick
    **Confirm when passwords are retrieved by clients** — otherwise every entry stays withheld from
-   the loader (see below). Then `kpxc-env import --from ~/.bashrc` to see the list, `--apply` to
+   the loader (see above). Then `kpxc-env import --from ~/.bashrc` to see the list, `--apply` to
    move it, `kpxc-env install` so ordinary shells can find the loader and the system `python3`
    can read the database, `kpxc-env list` with no `withheld`, then a fresh shell to confirm and
    the `.kpxc-bak` copy deleted.
 10. **Verify the end state.** `kpxc-verify`.
 
-## Traps, each of which has already cost a session
+## Traps
 
 **Copying the store files between machines does not move the key.** A wallet file and a keyring
 file copied byte-for-byte still resolve to different values through the local daemon, because
@@ -195,7 +195,7 @@ job done. Read the KDF settings out of the KDBX header if the cause of a slow op
 the header is not encrypted.
 
 **Hard-killing a secret daemon can take the desktop shell with it.** On KDE Plasma, killing
-`kwalletd` or `gnome-keyring-daemon` has twice been enough to drop `plasmashell`, panel and all;
+`kwalletd` or `gnome-keyring-daemon` can drop `plasmashell`, panel and all;
 it comes back with `systemctl --user restart plasma-plasmashell.service`. Prefer
 `systemctl --user restart`, and expect the shell to need a restart when a kill is unavoidable.
 
@@ -222,8 +222,7 @@ log line or the agent's own transcript.
 
 The scripts are only half of it: the commands used to *check* their work are where a secret
 actually escapes. Verifying an edited dotfile with `grep -A2`, `sed -n '130p'` or a bare `cat`
-prints neighbouring lines, and one of them is a password — that is precisely how a live
-credential ended up in a terminal and a transcript during this plugin's own development. Check
+prints neighbouring lines, and one of them is a password. Check
 by name and line number, never by content: `grep -oE '^\s*export\s+[A-Za-z_]+'` lists names,
 `kpxc-env list` lists what is stored, and `kpxc-verify` answers the rest. Treat anything that
 did reach a terminal as burnt: rotate that credential, and clear the shell history and scrollback

@@ -5,6 +5,10 @@ not evaluate the direct model-and-effort selection introduced in 0.5.0. Keep its
 cases and results unchanged for historical comparisons; do not use its old
 labels or thresholds to route current tasks.
 
+`run.py` drives the router of that era (tier questions, thresholds), so it does not run against
+the current `bin/`. To reproduce the archived results, run it from a checkout of the
+`subagent-model-router-v0.4.8` tag, for example through `git worktree add`.
+
 `cases.json` is a pre-registered synthetic labelled set for comparing router
 versions. It contains 28 cases, including English/Russian goal pairs, paired
 read-only/execution variants, packet and non-packet inputs, independent review,
