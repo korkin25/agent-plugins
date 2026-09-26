@@ -186,6 +186,13 @@ Ask the agent to select a project, user or client for a report. Terminal and VS 
 - Ask to open the dashboard: the agent opens a temporary in-memory page in an available browser.
 - Ask about delivery health: the agent checks local pending delivery/error state.
 
+For a Flux-managed Grafana Operator deployment, point the Flux source at this repository's `main`
+branch and its Kustomization at `./subagent-model-router/grafana`. It publishes the JSON as the
+`monitoring/subagent-model-router-dashboard` ConfigMap under the `dashboard.json` key. The canonical
+k8s repository owns the `GrafanaDashboard` resource and references this ConfigMap through
+`spec.configMapRef`. Do not apply Flux post-build substitution to the dashboard JSON: Grafana's
+`$__` expressions must remain literal.
+
 VM errors are reported as errors; there is no silent fallback to old local statistics. Existing JSONL history
 is preserved and is not automatically exported. Configure a unique stable instance label for each writer.
 
