@@ -2,6 +2,7 @@
 import io
 import json
 import os
+from pathlib import Path
 import sys
 import uuid
 from unittest import mock
@@ -13,7 +14,10 @@ import router_telemetry
 
 class ClaudeStateIntegrationTests(Sandbox):
     def setUp(self):
-        super().setUp()
+        # Only lifecycle fixtures need every ancestor to meet the private-state
+        # boundary; runner TMPDIR can be shared. Resolve macOS /var's symlink.
+        with mock.patch("test_router.tempfile.tempdir", str(Path("/var/tmp").resolve())):
+            super().setUp()
         self.home.chmod(0o700)
         self.session = str(uuid.uuid4())
         self.identity = {"session_id": self.session,

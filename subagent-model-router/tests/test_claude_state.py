@@ -18,7 +18,10 @@ import router_claude_state as state
 
 class ClaudeStateTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="router-claude-state-")
+        # Runner TMPDIR may have writable/foreign ancestors, rejected by the
+        # production state boundary. Resolve /var on macOS to avoid its symlink.
+        self.temp = tempfile.TemporaryDirectory(prefix="router-claude-state-",
+                                                dir=Path("/var/tmp").resolve())
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name)
         self.root = self.base / "state"
@@ -245,6 +248,17 @@ class ClaudeStateTests(unittest.TestCase):
         self.slot().chmod(0o600)
         self.root.chmod(0o770)
         self.assertEqual(self.resolve(), {})
+
+    def test_group_writable_ancestor_still_rejected(self):
+        ancestor = self.base / "unsafe-runner-temp"
+        ancestor.mkdir(mode=0o770)
+        ancestor.chmod(0o770)
+        root = ancestor / "state"
+        with self.assertRaisesRegex(OSError, "state_ancestor"):
+            state._directory(root, create=True)
+        state.update_session(self.event, root)
+        self.assertEqual(state.resolve_session(self.event, root), {})
+        self.assertFalse(root.exists())
 
     def test_hardlink_rejected(self):
         self.update()
