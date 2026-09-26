@@ -66,6 +66,7 @@ worktree = "~/src/project-worktrees/{slug}"
 branch = "feature/{slug}"
 prompt = "Work on {id} ({title}) in {worktree}, branch {branch}. Session {session_id}."
 pass_env = ["PROJECT_HOST"]      # extra variable names the agent gets (names only)
+mouse = true                     # enable tmux mouse support in the session (true by default)
 
 [env]                            # added to the environment of the commands below
 REPO = "~/src/project"
@@ -159,8 +160,10 @@ bwrap --die-with-parent --unshare-pid --unshare-ipc --ro-bind / / --dev-bind /de
   desktop's sockets, and each of them can start a process outside the sandbox
   (`systemd-run --user …`), so none of them is passed through. The one socket that comes back is
   `SSH_AUTH_SOCK`, bound as a single file (also from `/tmp` or `$HOME`), so `git push` over ssh
-  keeps working. A socket inside a hidden directory (gpg-agent's `~/.gnupg/S.gpg-agent.ssh`) stays
-  hidden, so ssh there has no agent;
+  keeps working. If `SSH_AUTH_SOCK` is a dead socket, the task does not start: `check` and `start`
+  report an error, the task stays in the queue with a visible event. Inside the sandbox `SSH_AUTH_SOCK`
+  is set only when the socket is actually mounted. A socket inside a hidden directory (gpg-agent's
+  `~/.gnupg/S.gpg-agent.ssh`) stays hidden, so ssh there has no agent;
 - the tmux server's socket directory is covered and `TMUX` / `TMUX_PANE` are removed: the agent
   cannot drive its own or other panes (`tmux send-keys`);
 - container daemons' sockets (docker, podman, lxd, incus, libvirt) are replaced by `/dev/null`:

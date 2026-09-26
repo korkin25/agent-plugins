@@ -58,13 +58,15 @@ class Tmux:
         except (OSError, subprocess.TimeoutExpired):
             return False
 
-    def new_session(self, session: str, argv: list[str], cwd: str) -> str:
+    def new_session(self, session: str, argv: list[str], cwd: str, mouse: bool = True) -> str:
         """Create the detached session whose only pane is the control pane; return its id."""
         pane = self._run("new-session", "-d", "-s", session, "-n", "tasks", "-x", "200", "-y", "50",
                          "-c", cwd, "-P", "-F", "#{pane_id}", shlex.join(argv)).strip()
         self._run("set-option", "-w", "-t", f"={session}:tasks", "remain-on-exit", "off")
         self._run("set-window-option", "-t", f"={session}:tasks", "pane-border-status", "top")
         self._run("set-window-option", "-t", f"={session}:tasks", "pane-border-format", BORDER_FORMAT)
+        if mouse:
+            self._run("set-option", "-w", "-t", f"={session}:tasks", "mouse", "on", check=False)
         self.set_option(pane, TASK_OPTION, CONTROL)
         self.set_option(pane, LABEL_OPTION, "task-panes control")
         return pane
@@ -84,6 +86,11 @@ class Tmux:
 
     def set_option(self, pane: str, key: str, value: str) -> None:
         self._run("set-option", "-p", "-t", pane, key, value)
+
+    def set_mouse(self, session: str, mouse: bool) -> None:
+        """Enable or disable mouse support in session's tasks window."""
+        if mouse:
+            self._run("set-option", "-w", "-t", f"={session}:tasks", "mouse", "on", check=False)
 
     def capture(self, pane: str) -> str:
         """Visible content of a pane, plain text; empty when the pane is already gone."""

@@ -27,7 +27,7 @@ DEFAULT_PROMPT = "Work on task {id}: {title}"
 TOP_KEYS = {
     "session", "panes", "poll_seconds", "command_timeout", "idle_minutes", "agent", "tmux_socket",
     "state_dir", "worktree_exists", "slug", "worktree", "branch", "prompt", "env", "vars", "commands",
-    "agents", "sandbox", "tasks", "pass_env",
+    "agents", "sandbox", "tasks", "pass_env", "mouse",
 }
 WORKTREE_EXISTS = ("prepare", "stop", "resume")
 SANDBOX_KEYS = {"mode", "writable", "readonly", "hidden", "hide_defaults", "private_tmp", "tmpdir",
@@ -111,6 +111,7 @@ class Queue:
     sandbox: SandboxSpec = field(default_factory=SandboxSpec)
     tasks: list[Task] = field(default_factory=list)
     pass_env: list[str] = field(default_factory=list)
+    mouse: bool = True
 
     @property
     def dir(self) -> Path:
@@ -347,6 +348,9 @@ def load(path: str | os.PathLike) -> Queue:
     worktree_exists = data.get("worktree_exists", "prepare")
     if worktree_exists not in WORKTREE_EXISTS:
         raise QueueError(f"worktree_exists must be one of {list(WORKTREE_EXISTS)}")
+    mouse = data.get("mouse", True)
+    if not isinstance(mouse, bool):
+        raise QueueError("mouse must be true or false")
     queue = Queue(
         path=path, session=session, panes=panes, poll_seconds=numbers["poll_seconds"],
         command_timeout=numbers["command_timeout"], idle_minutes=idle_minutes, agent=agent, tmux_socket=socket,
@@ -358,7 +362,7 @@ def load(path: str | os.PathLike) -> Queue:
         prompt=_str(data.get("prompt", DEFAULT_PROMPT), "prompt"),
         env=_str_map(data.get("env"), "env"), vars=_str_map(data.get("vars"), "vars"),
         commands=commands, agents=agents, sandbox=_sandbox(data.get("sandbox")), tasks=tasks,
-        pass_env=pass_env)
+        pass_env=pass_env, mouse=mouse)
     for task in tasks:  # render every template once so a typo fails now, not at launch
         for name in agents:
             queue.build_argv(task, name, "00000000-0000-0000-0000-000000000000")

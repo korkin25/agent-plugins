@@ -64,6 +64,9 @@ def cmd_check(args) -> int:
           f"agents {', '.join(queue.agents)}, tasks {len(queue.tasks)}\nstate dir {queue.state_dir}\n{line}")
     if not tmux.available():
         return fail("tmux is not installed")
+    sock = os.environ.get("SSH_AUTH_SOCK", "")
+    if sock and not tp_sandbox.socket_alive(sock):
+        return fail(f"SSH_AUTH_SOCK {sock!r} is dead or missing; git push will fail")
     return 0 if ok else 1
 
 
@@ -96,6 +99,9 @@ def cmd_start(args) -> int:
     line, ok = sandbox_line(queue)
     if not ok:
         return fail(line)
+    sock = os.environ.get("SSH_AUTH_SOCK", "")
+    if sock and not tp_sandbox.socket_alive(sock):
+        return fail(f"SSH_AUTH_SOCK {sock!r} is dead or missing; git push will fail")
     pid = store.active_pid()
     if pid:
         print(f"a runner is already active for this queue (pid {pid})\n{commands_text(args, queue, tmux)}")
@@ -112,8 +118,9 @@ def cmd_start(args) -> int:
                 tmux.set_option(control, tp_tmux.TASK_OPTION, tp_tmux.CONTROL)
                 tmux.set_option(control, tp_tmux.LABEL_OPTION, "task-panes control")
                 tmux.layout(queue.session, control)
+            tmux.set_mouse(queue.session, queue.mouse)
         else:
-            tmux.new_session(queue.session, run_argv, str(queue.dir))
+            tmux.new_session(queue.session, run_argv, str(queue.dir), queue.mouse)
     except TmuxError as exc:
         return fail(str(exc))
     print(f"runner started in tmux session {queue.session}\n{commands_text(args, queue, tmux)}")
@@ -129,6 +136,9 @@ def cmd_run(args) -> int:
     line, ok = sandbox_line(queue)
     if not ok:
         return fail(line)
+    sock = os.environ.get("SSH_AUTH_SOCK", "")
+    if sock and not tp_sandbox.socket_alive(sock):
+        return fail(f"SSH_AUTH_SOCK {sock!r} is dead or missing; git push will fail")
     fd = store.lock()
     if fd is None:
         return fail(f"another runner is already active for this queue (pid {store.active_pid()})")
