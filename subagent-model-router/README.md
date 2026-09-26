@@ -23,9 +23,12 @@ Jev receives shared purpose and price metadata once per model, with each candida
 so it does not have to infer capabilities from an unfamiliar model name. Claude effort explanations use the official
 [effort-level guidance](https://code.claude.com/docs/en/model-config#choose-an-effort-level); native metadata
 controls which levels are offered. Refreshing catalogs uses client metadata, with no LLM research jobs.
-The selection instruction puts task adequacy first, then prefers the lowest documented applicable API
-cost among adequate models and the lowest sufficient effort supported by that model. Straightforward tasks
-default to that model's lowest supported effort unless a concrete requirement calls for more.
+The selection instruction puts task adequacy first. For non-review tasks it then prefers the lowest
+documented applicable API cost among adequate models. For review tasks Jev ignores price, prefers a more
+capable model than for comparable execution work, and favors the most capable catalog-supported model
+when the review has substantive, specific demands. A vague request to review everything or a long formal
+task wrapper alone does not establish that depth. Jev chooses the lowest effort sufficient for the actual
+task, without automatically maximizing effort for review.
 The hook script builds the request, reads cached metadata, calls Jev and applies the returned choice
 deterministically. The parent model does not prepare this JSON or run a separate model to estimate costs.
 Jev's API request itself still consumes provider tokens and can incur charges.
