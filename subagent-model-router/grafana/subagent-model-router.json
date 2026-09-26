@@ -175,7 +175,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "Received counter estimates for the selected window. Delayed telemetry may be absent; no data is not zero. Routing selection share does not establish cost savings or model quality.\n\nLatency histograms include failed Jev attempts. Sparse/idle worker samples can leave gaps. Use **Query inspector** to distinguish datasource failures from no data.\n\nDelivery health is the last received snapshot. Workers exit after five minutes per run; later calls restart them; last-success trails by one flush. Health panels ignore the agent/project/user filters. Coalesced and dropped health counters show lifetime totals from the last received snapshot.\n\nFinancial panels report known Jev charges only. OpenRouter balances are separate account-wide snapshots and may be stale; inspect age and probe status. Unpriced requests do not imply free calls or savings."
+        "content": "Routing call charts show direct-schema hooks in the selected window; legacy classifier calls are excluded. Jev usage and latency charts span all reporting plugin versions, so their totals need not match direct call counts. Delayed telemetry may be absent; no data is not zero. Selection share does not establish cost savings or model quality.\n\nJev request counts represent logical routing calls, including any internal retry. Latency histograms include failed requests. Sparse/idle worker samples can leave gaps. Use **Query inspector** to distinguish datasource failures from no data.\n\nDelivery health is the last received snapshot. Workers exit after five minutes per run; later calls restart them; last-success trails by one flush. Health panels ignore the agent/project/user filters. Coalesced and dropped health counters show lifetime totals from the last received snapshot.\n\nFinancial panels report known Jev charges only. OpenRouter balances are separate account-wide snapshots and may be stale; inspect age and probe status. Unpriced requests do not imply free calls or savings."
       }
     },
     {
@@ -194,7 +194,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))",
+          "expr": "sum(increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",record_schema=\"direct\"}[$__range]))",
           "refId": "A",
           "legendFormat": "{{model}}",
           "range": false,
@@ -362,7 +362,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",applied=\"true\"}[$__range]))",
+          "expr": "sum(increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",record_schema=\"direct\",applied=\"true\"}[$__range]))",
           "refId": "A",
           "legendFormat": "{{model}}",
           "range": false,
@@ -418,7 +418,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",mode=\"shadow\"}[$__range]))",
+          "expr": "sum(increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",record_schema=\"direct\",mode=\"shadow\"}[$__range]))",
           "refId": "A",
           "legendFormat": "{{model}}",
           "range": false,
@@ -683,11 +683,11 @@
         },
         "sizing": "auto"
       },
-      "description": "Jev selected model and effort. `choice` is the current decision event; `rule:*` is retained for historical series. Missing launch evidence is not reconstructed."
+      "description": "Share among successful direct Jev choices in the selected window. These are selected candidates, not observed child execution or savings."
     },
     {
       "id": 11,
-      "title": "Submitted launch model + effort share",
+      "title": "Router-applied launch model + effort share",
       "type": "bargauge",
       "datasource": {
         "type": "prometheus",
@@ -701,7 +701,7 @@
       },
       "targets": [
         {
-          "expr": "sum by(model,effort,mode,applied) (increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",record_schema=\"direct\"}[$__range])) / scalar(sum(increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",record_schema=\"direct\"}[$__range])))",
+          "expr": "sum by(model,effort,mode,applied) (increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",record_schema=\"direct\",reason=\"choice\",mode=\"active\",applied=\"true\"}[$__range])) / scalar(sum(increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",record_schema=\"direct\",reason=\"choice\",mode=\"active\",applied=\"true\"}[$__range])))",
           "refId": "A",
           "legendFormat": "{{model}} / {{effort}} \u00b7 {{mode}} \u00b7 applied={{applied}}",
           "range": false,
@@ -736,7 +736,8 @@
           "values": false
         },
         "sizing": "auto"
-      }
+      },
+      "description": "Submitted launch arguments for active, router-applied direct Jev choices. Skipped, shadow, and failed records are excluded from numerator and denominator. This does not establish observed child execution."
     },
     {
       "id": 12,
@@ -754,7 +755,7 @@
       },
       "targets": [
         {
-          "expr": "sum by(reason) (increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))",
+          "expr": "sum by(reason) (increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",record_schema=\"direct\"}[$__range]))",
           "refId": "A",
           "legendFormat": "{{reason}}",
           "range": false,
@@ -859,7 +860,7 @@
       },
       "targets": [
         {
-          "expr": "sum by(mode,applied) (rate(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__rate_interval]))",
+          "expr": "sum by(mode,applied) (rate(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",record_schema=\"direct\"}[$__rate_interval]))",
           "refId": "A",
           "legendFormat": "{{mode}} \u00b7 applied={{applied}}",
           "range": true,
@@ -962,7 +963,7 @@
     },
     {
       "id": 16,
-      "title": "Jev choice latency p95",
+      "title": "Jev request latency p95",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -985,7 +986,7 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
+          "unit": "s",
           "color": {
             "mode": "palette-classic"
           },
@@ -1012,7 +1013,7 @@
           "sort": "desc"
         }
       },
-      "description": "Jev request latency across successful and failed attempts. Missing samples remain gaps."
+      "description": "One latency observation per logical Jev request, across successful and failed outcomes; duration includes any internal retry and backoff. Missing samples remain gaps."
     },
     {
       "id": 17,
@@ -1215,7 +1216,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by(project) (rate(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__rate_interval]))",
+          "expr": "sum by(project) (rate(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",record_schema=\"direct\"}[$__rate_interval]))",
           "legendFormat": "{{project}}",
           "range": true
         }
@@ -1313,7 +1314,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by(user) (rate(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__rate_interval]))",
+          "expr": "sum by(user) (rate(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",record_schema=\"direct\"}[$__rate_interval]))",
           "legendFormat": "{{user}}",
           "range": true
         }
@@ -1418,7 +1419,7 @@
       },
       "targets": [
         {
-          "expr": "(sum(increase(smr_jev_known_cost_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) or (sum(increase(smr_jev_unpriced_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) * 0)) / ((sum(increase(smr_jev_known_cost_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) or (sum(increase(smr_jev_unpriced_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) * 0)) + (sum(increase(smr_jev_unpriced_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) or (sum(increase(smr_jev_known_cost_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) * 0)))",
+          "expr": "((sum(increase(smr_jev_known_cost_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) or (sum(increase(smr_jev_unpriced_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) * 0)) / sum(increase(smr_jev_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))) and (((sum(increase(smr_jev_known_cost_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) or (sum(increase(smr_jev_unpriced_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) * 0)) + (sum(increase(smr_jev_unpriced_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) or (sum(increase(smr_jev_known_cost_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) * 0))) <= sum(increase(smr_jev_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))) and (sum(increase(smr_jev_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) > 0)",
           "refId": "A",
           "legendFormat": "",
           "range": false,
@@ -1456,7 +1457,7 @@
         "graphMode": "none",
         "justifyMode": "auto"
       },
-      "description": "Provider-reported routing cost only, selected routing cohorts. Missing prices are unknown, never free. Counter increases are window estimates; this is not a complete ledger or a savings claim."
+      "description": "Requests with known provider-reported Jev cost divided by all observed Jev requests in the selected window. Historical requests without cost-status counters count as unknown; inconsistent counters yield no data. A reported zero cost is known, while missing cost is not free. Counter increases are estimates, not an invoice or savings claim."
     },
     {
       "id": 26,
@@ -2019,61 +2020,6 @@
       "description": "Latest successful snapshot per account alias and API scope across installations, independent of router project/user/agent/instance filters. Values are matched to their success timestamp; equal-timestamp amounts use the conservative minimum. Latest probe status follows the latest attempt separately, including failures; stopped workers do not refresh. Account totals include other tools. Key limit is not wallet credit; no key limit data can mean unlimited or unavailable."
     },
     {
-      "id": 36,
-      "title": "Historical routing calls \u00b7 direct identity unavailable",
-      "type": "stat",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 83,
-        "w": 12,
-        "h": 5
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum(increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",reason=~\"rule:.*\",effort_source=\"\"}[$__range]))",
-          "instant": true,
-          "range": false
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 12,
-            "spanNulls": false
-          },
-          "noValue": "No data"
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "values": false,
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
-        },
-        "orientation": "auto",
-        "textMode": "auto",
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto"
-      },
-      "description": "Historical `rule:*` observations are retained but excluded from direct selected and submitted views. Their parent-derived identity cannot be reconstructed. Raw VM history remains unchanged."
-    },
-    {
       "id": 37,
       "title": "Jev tokens \u00b7 reported input / output",
       "type": "stat",
@@ -2083,7 +2029,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 88,
+        "y": 83,
         "w": 12,
         "h": 5
       },
@@ -2147,7 +2093,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 88,
+        "y": 83,
         "w": 12,
         "h": 5
       },
@@ -2211,14 +2157,14 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 108,
+        "y": 88,
         "w": 24,
         "h": 8
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "time() - label_replace(max by(instance,host,user,agent,plugin_version,agent_version)(last_over_time(smr_hook_version_last_seen_timestamp_seconds{instance=~\"$instance\",user=~\"$user\",agent=~\"$agent\"}[$__range])), \"agent_version\", \"unknown\", \"agent_version\", \"^$\")",
+          "expr": "($__to / 1000) - label_replace(max by(instance,host,user,agent,plugin_version,agent_version)(((last_over_time(smr_hook_version_last_seen_timestamp_seconds{instance=~\"$instance\",user=~\"$user\",agent=~\"$agent\"}[$__range]) >= ($__from / 1000)) <= ($__to / 1000))), \"agent_version\", \"unknown\", \"agent_version\", \"^$\")",
           "format": "table",
           "instant": true,
           "range": false
@@ -2270,7 +2216,7 @@
           }
         }
       ],
-      "description": "Observed executing hook versions within instance/user/client filters, independent of project. Per reporter the smallest age is the latest observed hook, not necessarily the newest release; all historical versions remain visible. Gauge value is actual hook time; worker re-exports do not refresh it. This is not an installed-version inventory. Missing metadata and idle/unreported installations are unknown. Plugin version and invoking Claude Code/Codex agent_version are separate from the model. Missing historical client version is unknown; distinct client versions remain separate rows."
+      "description": "Observed executing hook versions within instance/user/client filters, independent of project. Only hook timestamps within the selected time range are shown; age is measured from that range's end. Per reporter the smallest age is the latest observed hook, not necessarily the newest release. Gauge value is actual hook time; worker re-exports do not refresh it. A delayed delivery after the selected range cannot reconstruct a missing historical sample. This is not an installed-version inventory. Missing metadata and idle/unreported installations are unknown. Plugin version and invoking Claude Code/Codex agent_version are separate from the model. Missing historical client version is unknown; distinct client versions remain separate rows."
     }
   ]
 }

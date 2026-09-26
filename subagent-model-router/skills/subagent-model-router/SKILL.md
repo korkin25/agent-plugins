@@ -28,6 +28,10 @@ not on PATH, use the installed extension's binary. Run per-user commands from th
 Jev chooses one offered model/effort pair. No tier/risk/review classifier, thresholds, parent model
 inheritance or transcript lookup participates in routing. Do not inspect conversation history to fill
 missing model labels. Skips and missing evidence remain distinct from a successful choice.
+The request asks Jev to establish task adequacy first, then prefer the lowest documented applicable API
+cost among adequate models and the lowest sufficient native effort for the chosen model. Straightforward
+tasks default to that model's lowest supported effort unless a concrete requirement warrants more. Prices
+remain references with unknown output and hidden context, so this policy does not guarantee the cheapest bill.
 Model-purpose and price metadata are shared once per model; candidates carry the applicable effort
 explanation without repeating the complete model description and tariff for every effort level.
 The script constructs and submits the Jev request and applies its choice; do not add parent-model work

@@ -1115,9 +1115,14 @@ def selection_questions(options, agent, request_estimate=None):
                 models[model][key] = value[key]
     instructions = (
         f"Which available concrete model and reasoning effort should execute this entire {agent} subagent task? "
-        "Choose the most suitable listed option using the full task and constraints. "
+        "First identify the listed options capable of meeting the full task and its explicit constraints. "
         "Use the supplied model-purpose and effort descriptions; do not assume capabilities from a name or prior training. "
-        "Consider only the described capability, latency, and cost tradeoffs. "
+        "Among adequately capable options, prefer the lowest documented applicable standard API cost. "
+        "Compare available price rates without inventing future output, hidden prompt, or effort costs; "
+        "missing prices are unknown and stale prices are prior observations, not current guarantees. "
+        "Within the chosen model, prefer its lowest supported effort sufficient for the task. "
+        "For straightforward tasks such as short arithmetic, default to that model's lowest supported effort "
+        "unless a concrete task requirement warrants more. Required task fields and wrappers alone do not imply difficult reasoning. "
         "Prices are standard API references, not subscription invoices; unknown is not free. "
         "Only the separate price_reference is pricing evidence; native purpose prose is not a tariff source. "
         "Effort labels are calibrated per model, not comparable absolute reasoning budgets. "
