@@ -68,7 +68,7 @@ omit its startup model even with `--model`. Optional `[claude] observe_transcrip
 exact initiating `Agent` message by session UUID and tool-use ID when lifecycle evidence is absent. Before
 enabling it, obtain authorization to read the bounded tail of the current session's JSONL transcript under
 `CLAUDE_CONFIG_DIR/projects` (default `~/.claude/projects`) for model extraction. It reads at most two 1 MiB
-tails and retries once after 100 ms for asynchronous writes. Only model/source are retained; no dialogue
+tails and retries once after 100 ms for asynchronous writes. Only model/source and bounded I/O accounting are retained; no dialogue
 is sent to Jev, metrics or chat. Ambiguous/missing evidence stays unknown. Config defaults
 are never treated as runtime evidence. For Codex same-model active
 inheritance, the hook may read the matching session's bounded rollout tail, selecting only `turn_context`
@@ -82,6 +82,34 @@ Skipped calls and failed Jev requests remain silent. Labels are redacted, stripp
 bounded; task text is never included. The notice is a selection, not proof of a successful launch or a
 role's final model. Client rendering varies: Codex uses a UI/event-stream warning; do not promise a separate
 chat message or identical presentation in every client. Tests verify hook output, not client rendering.
+
+## Installed updates and running versions
+
+From 0.4.8, synchronous `SessionStart` and `UserPromptSubmit` handlers can emit an update notice through
+`systemMessage`, without `additionalContext`, a model request or an automatic install. They compare the
+executing plugin copy with native installed metadata and deduplicate by session/installed version. They
+cannot notify from an older session that never loaded the checker. Native metadata errors or ambiguous
+installations do not prove an update and produce no notice. Checks are cached for 60 seconds; only stable
+`major.minor.patch` versions are compared. Bounded private state stores hashes, versions and timestamps,
+not raw session IDs, paths or prompt text.
+
+For Claude, use the documented `/reload-plugins` in the active session; it may defer to preserve a warm
+prompt cache. Never force `/reload-plugins --force` without the user's choice: an uncached conversation
+request can cost money outside the router's Jev accounting. For Codex, a new session is the documented
+activation path; review/trust changed hooks through `/hooks` when needed. Do not infer loaded hook state
+from an updated skill catalog or installed manifest. No automatic updater timer is installed.
+Sources: [Claude plugins](https://code.claude.com/docs/en/discover-plugins),
+[Claude hook output](https://code.claude.com/docs/en/hooks#json-output),
+[OpenAI Docs plugins](https://learn.chatgpt.com/docs/plugins),
+[OpenAI Docs hooks](https://learn.chatgpt.com/docs/hooks).
+
+When reporting versions, distinguish the plugin's `plugin_version`, the executing host client's
+`agent_version`, and the selected model. Use runtime evidence, not an arbitrary `claude`/`codex` on PATH.
+The actual native client is probed once during `SessionStart` (Linux, two-second bound); ordinary hooks
+read only its private exact-session cache, with no version subprocess or `/proc` scan. Unavailable/expired
+client metadata remains unknown. Last-seen data records actual hook observations, not worker
+heartbeats or an inventory of all hosts. Historical/mixed versions and missing reporters do not prove
+that an update failed or that every session is current.
 
 ## What leaves the machine
 
@@ -100,7 +128,7 @@ this machine. The `preview` tool shows exactly this filtered state locally, with
 the agent should use it when the user asks what will be sent, not automatically on every call.
 
 OpenRouter/TypeSafe authentication goes only to the configured provider. Optional VM metrics contain
-aggregate observations, project/user labels and reported costs, never full task text. Optional OpenRouter
+aggregate observations, host/project/user/client and version labels, and reported costs, never full task text. Optional OpenRouter
 balance polling uses the provider key only against the fixed OpenRouter key/credits API endpoints, in the
 background, at most once per five minutes per installation while its worker runs. Key limits and account
 credits are distinct; account usage may include other applications. The same account gauge reported by
@@ -139,7 +167,7 @@ several installations must be selected by freshest successful snapshot per alias
 - `telemetry-status` — local delivery health without a network call.
 - `codex-trust [--codex PATH] [--dry-run]` — mark this plugin's hooks trusted in Codex through `codex
   app-server`, the same way `/hooks` does. Only hooks Codex lists for the plugin `subagent-model-router` whose
-  command is exactly `…/bin/subagent-model-router hook`, `… telemetry-kick` or `… claude-session` count;
+  command is exactly `…/bin/subagent-model-router hook`, `… telemetry-kick`, `… claude-session` or `… update-notice` count;
   all other hooks are never touched. The Claude lifecycle handler ignores Codex rollout paths.
 
 ## Config
@@ -158,7 +186,10 @@ otherwise `P(light) + P(standard) ≥ standard_min` and `P(heavy) < heavy_max` �
 For VictoriaMetrics setup, delivery guarantees, Grafana import and report commands, read
 [references/monitoring.md](references/monitoring.md). Collection and rendering are Python code shared by both
 hosts: never schedule an agent, poll with an LLM, read raw history or call Jev to collect monitoring data. For money, separate reported router spend from
-whole-account/key usage; show cost coverage and balance age/probe status. Never turn missing cost into zero.
+whole-account/key usage; show cost coverage, separate input/output token coverage, and balance age/probe status.
+Keep `claude_model_lookup` I/O counts/time separate from Jev usage. Observed local lookups use zero API tokens
+and API dollars; do not turn file bytes into token estimates or missing observations into zero. They still
+consume local CPU/I/O, and Jev classification remains a separate paid request.
 When asked for statistics, run the resolved executable with `stats --days N --terminal` (default: 7 days).
 Use `--project`, `--user`, `--agent codex|claude` when requested. Local journal rows lacking a requested cohort do not match; do not infer it from paths.
 Copy the resulting dashboard into the **final response**, preserving the tables/bars/trend gaps. Tool output

@@ -2072,6 +2072,504 @@
         "justifyMode": "auto"
       },
       "description": "Routing decisions recorded before model/effort source labels existed. Excluded from model/effort shares; historical identity cannot be reconstructed. Raw VM history remains unchanged."
+    },
+    {
+      "id": 37,
+      "title": "Jev tokens \u00b7 reported input / output",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 88,
+        "w": 12,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(smr_jev_input_tokens_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "input",
+          "range": false,
+          "instant": true
+        },
+        {
+          "expr": "sum(increase(smr_jev_output_tokens_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))",
+          "refId": "B",
+          "legendFormat": "output",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Reported Jev tokens only. Input and output coverage are independent; missing usage is unknown, not zero. Existing history has no retroactive coverage. Selected routing cohorts; window estimates."
+    },
+    {
+      "id": 38,
+      "title": "Jev token coverage \u00b7 input / output",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 88,
+        "w": 12,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "((sum(increase(smr_jev_input_known_token_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) or (sum(increase(smr_jev_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) * 0)) / sum(increase(smr_jev_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))) and (((sum(increase(smr_jev_input_known_token_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) or (sum(increase(smr_jev_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) * 0)) + (sum(increase(smr_jev_input_unknown_token_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) or (sum(increase(smr_jev_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) * 0))) <= sum(increase(smr_jev_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))) and (sum(increase(smr_jev_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) >= 0)",
+          "refId": "A",
+          "legendFormat": "input",
+          "range": false,
+          "instant": true
+        },
+        {
+          "expr": "((sum(increase(smr_jev_output_known_token_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) or (sum(increase(smr_jev_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) * 0)) / sum(increase(smr_jev_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))) and (((sum(increase(smr_jev_output_known_token_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) or (sum(increase(smr_jev_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) * 0)) + (sum(increase(smr_jev_output_unknown_token_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) or (sum(increase(smr_jev_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) * 0))) <= sum(increase(smr_jev_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))) and (sum(increase(smr_jev_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) >= 0)",
+          "refId": "B",
+          "legendFormat": "output",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Known-token requests divided by all Jev requests in the selected window and cohorts. Pre-upgrade requests without coverage counters remain unmeasured and count as unknown. Input/output are independent. Missing or inconsistent request totals do not imply complete coverage."
+    },
+    {
+      "id": 39,
+      "title": "Claude model lookup \u00b7 observations / read attempts",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 93,
+        "w": 12,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(smr_claude_model_lookup_requests_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "requests",
+          "range": false,
+          "instant": true
+        },
+        {
+          "expr": "sum(increase(smr_claude_model_lookup_read_attempts_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))",
+          "refId": "B",
+          "legendFormat": "read_attempts",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Local Python extraction from Claude JSONL; no model/API call. API tokens and cost are factual zeros only for recorded observations. Missing historical observations stay unavailable. Bytes are not converted to tokens. Selected routing cohorts; window estimates."
+    },
+    {
+      "id": 40,
+      "title": "Claude model lookup \u00b7 bytes read",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 93,
+        "w": 12,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(smr_claude_model_lookup_bytes_read_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "bytes",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Local Python extraction from Claude JSONL; no model/API call. API tokens and cost are factual zeros only for recorded observations. Missing historical observations stay unavailable. Bytes are not converted to tokens. Selected routing cohorts; window estimates."
+    },
+    {
+      "id": 41,
+      "title": "Claude model lookup \u00b7 local duration total",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 98,
+        "w": 12,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(smr_claude_model_lookup_duration_seconds_sum{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "seconds",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Local Python extraction from Claude JSONL; no model/API call. API tokens and cost are factual zeros only for recorded observations. Missing historical observations stay unavailable. Bytes are not converted to tokens. Selected routing cohorts; window estimates."
+    },
+    {
+      "id": 42,
+      "title": "Claude model lookup \u00b7 API input / output tokens",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 98,
+        "w": 12,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(smr_claude_model_lookup_api_input_tokens_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "input",
+          "range": false,
+          "instant": true
+        },
+        {
+          "expr": "sum(increase(smr_claude_model_lookup_api_output_tokens_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))",
+          "refId": "B",
+          "legendFormat": "output",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Local Python extraction from Claude JSONL; no model/API call. API tokens and cost are factual zeros only for recorded observations. Missing historical observations stay unavailable. Bytes are not converted to tokens. Selected routing cohorts; window estimates."
+    },
+    {
+      "id": 43,
+      "title": "Claude model lookup \u00b7 API spend",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 103,
+        "w": 12,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(smr_claude_model_lookup_cost_usd_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "USD",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "noValue": "No data",
+          "decimals": 6
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Local Python extraction from Claude JSONL; no model/API call. API tokens and cost are factual zeros only for recorded observations. Missing historical observations stay unavailable. Bytes are not converted to tokens. Selected routing cohorts; window estimates."
+    },
+    {
+      "id": 44,
+      "title": "Observed hook versions \u00b7 last hook age",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 108,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - label_replace(max by(instance,host,user,agent,plugin_version,agent_version)(last_over_time(smr_hook_version_last_seen_timestamp_seconds{instance=~\"$instance\",user=~\"$user\",agent=~\"$agent\"}[$__range])), \"agent_version\", \"unknown\", \"agent_version\", \"^$\")",
+          "format": "table",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Unknown"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "displayName",
+                "value": "Last hook age"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "instance": 0,
+              "host": 1,
+              "user": 2,
+              "agent": 3,
+              "plugin_version": 4,
+              "Value": 6,
+              "agent_version": 5
+            }
+          }
+        }
+      ],
+      "description": "Observed executing hook versions within instance/user/client filters, independent of project. Per reporter the smallest age is the latest observed hook, not necessarily the newest release; all historical versions remain visible. Gauge value is actual hook time; worker re-exports do not refresh it. This is not an installed-version inventory. Missing metadata and idle/unreported installations are unknown. Plugin version and invoking Claude Code/Codex agent_version are separate from the model. Missing historical client version is unknown; distinct client versions remain separate rows."
     }
   ]
 }

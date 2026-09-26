@@ -7,6 +7,7 @@ Overflow coalesces event timing into counters; it does not retain raw events.
 from __future__ import annotations
 
 import fcntl
+import calendar
 import getpass
 import hashlib
 import json
@@ -31,6 +32,12 @@ TELEMETRY_DEFAULTS = dict(backend="local", write_url="", query_url="", instance=
 OPENROUTER_POLL_SECONDS = 300
 MAX_SERIES = 4096
 MAX_BODY_BYTES = 2 * 1024 * 1024
+_HOST_RE = re.compile(r"[A-Za-z0-9_.:-]{1,80}")
+_SEMVER_RE = re.compile(
+    r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+)
+_VERSION_GAUGE_PREFIX = "smr_hook_version_last_seen_timestamp_seconds{"
 LATENCY_BUCKETS = (.01, .025, .05, .1, .25, .5, 1, 2, 4, 8, 16, 30)
 PROBABILITY_BUCKETS = (.1, .25, .5, .7, .75, .9, .95, 1)
 _DB_OPEN_LOCK = threading.Lock()
@@ -248,7 +255,7 @@ response, credential, credential fingerprint or exception is persisted.
         now = time.time()
         db.execute("BEGIN IMMEDIATE")
         if _get(db, "openrouter_account", "") != cfg["account"]:
-            db.execute("DELETE FROM gauges")
+            db.execute("DELETE FROM gauges WHERE name LIKE 'smr_openrouter_%'")
             _set(db, "openrouter_account", cfg["account"])
             _set(db, "openrouter_last_attempt", 0)
         last = float(_get(db, "openrouter_last_attempt"))
@@ -396,6 +403,36 @@ def _number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
 
 
+def _host(value):
+    return value if isinstance(value, str) and _HOST_RE.fullmatch(value) else "unknown"
+
+
+def _plugin_version(value):
+    return value if isinstance(value, str) and len(value) <= 80 and _SEMVER_RE.fullmatch(value) else "unknown"
+
+
+def _hook_observation_time(record):
+    value = record.get("ts")
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", value):
+        try:
+            return float(calendar.timegm(time.strptime(value, "%Y-%m-%dT%H:%M:%SZ")))
+        except ValueError:
+            pass
+    return time.time()
+
+
+def _version_gauge(cfg, record):
+    agent = _enum(record.get("agent"), {"claude", "codex"})
+    version = _plugin_version(record.get("plugin_version"))
+    if agent == "unknown" or version == "unknown":
+        return None
+    user = record.get("user")
+    labels = dict(instance=cfg["instance"], host=_host(record.get("host")),
+                  user=user if isinstance(user, str) and _HOST_RE.fullmatch(user) else "unknown",
+                  agent=agent, plugin_version=version, agent_version=_plugin_version(record.get("agent_version")))
+    return _metric("hook_version_last_seen_timestamp_seconds", labels), _hook_observation_time(record)
+
+
 def _points(cfg, record, duration):
     project = record.get("project")
     if not isinstance(project, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", project):
@@ -431,6 +468,8 @@ def _points(cfg, record, duration):
     effort_source = record.get("effort_source") or ("specified" if record.get("mode") != "shadow" and _enum(record.get("effort"), efforts) != "unknown" else "session")
     effort = _enum(effort, efforts)
     call = dict(labels, provider=provider, reason=reason, model=model_name(actual),
+                plugin_version=_plugin_version(record.get("plugin_version")),
+                agent_version=_plugin_version(record.get("agent_version")), host=_host(record.get("host")),
                 model_source=source if model_name(actual) != "unknown" and source in
                 ("specified", "session", "session_start", "post_model_switch", "transcript_tool_use") else "unknown",
                 recommended_model=model_name(recommendation) if reason.startswith("rule:") else "unknown",
@@ -451,6 +490,21 @@ def _points(cfg, record, duration):
         points[_metric(name + "_count", dimensions)] = 1.0
 
     histogram("hook_duration_seconds", duration, labels, LATENCY_BUCKETS)
+    lookup = record.get("claude_model_lookup")
+    if (record.get("agent") == "claude" and isinstance(lookup, dict)
+            and lookup.get("outcome") in ("resolved", "not_found", "rejected")
+            and all(type(lookup.get(k)) is int and 0 <= lookup[k] <= bound
+                    for k, bound in (("read_attempts", 2), ("bytes_read", 2 * 1024 * 1024)))
+            and _number(lookup.get("duration_ms"))
+            and all(_number(lookup.get(k)) and lookup[k] == 0
+                    for k in ("api_input_tokens", "api_output_tokens", "cost_usd"))):
+        # This is local Python I/O, never a model request. Keep it separate
+        # from provider-reported Jev usage; missing observations are not zero.
+        prefix = "claude_model_lookup_"
+        points[_metric(prefix + "requests_total", dict(labels, outcome=lookup["outcome"]))] = 1.0
+        for field in ("read_attempts", "bytes_read", "api_input_tokens", "api_output_tokens", "cost_usd"):
+            points[_metric(prefix + field + "_total", labels)] = float(lookup[field])
+        points[_metric(prefix + "duration_seconds_sum", labels)] = lookup["duration_ms"] / 1000
     latency = record.get("latency_ms")
     if _number(latency):
         outcome = reason.removeprefix("error:") if reason.startswith("error:") else "success"
@@ -471,6 +525,9 @@ def _points(cfg, record, duration):
             tokens = usage.get(direction + "_tokens")
             if _number(tokens) and float(tokens).is_integer():
                 points[_metric("jev_" + direction + "_tokens_total", financial)] = float(tokens)
+                points[_metric("jev_" + direction + "_known_token_requests_total", financial)] = 1.0
+            else:
+                points[_metric("jev_" + direction + "_unknown_token_requests_total", financial)] = 1.0
     answers = record.get("answers")
     probs = answers.get("tier", {}) if isinstance(answers, dict) else {}
     if isinstance(probs, dict) and reason.startswith("rule:"):
@@ -497,6 +554,7 @@ into the same cumulative counters and increment coalesced_events (timing only).
     db = None
     try:
         points = _points(cfg, record, hook_duration_seconds)
+        version_gauge = _version_gauge(cfg, record)
         db = _db(cfg, state_dir)
         db.execute("BEGIN IMMEDIATE")
         revision = int(_get(db, "revision")) + 1
@@ -512,6 +570,12 @@ into the same cumulative counters and increment coalesced_events (timing only).
             _set(db, "pending_events", min(pending + 1, cfg["max_queue_events"]))
             if pending >= cfg["max_queue_events"]:
                 _set(db, "coalesced_events", int(_get(db, "coalesced_events")) + 1)
+        if version_gauge is not None:
+            name, value = version_gauge
+            exists = db.execute("SELECT 1 FROM gauges WHERE name=?", (name,)).fetchone()
+            if exists or db.execute("SELECT count(*) FROM gauges").fetchone()[0] < MAX_SERIES:
+                db.execute("INSERT INTO gauges VALUES(?,?) ON CONFLICT(name) DO UPDATE SET value=MAX(value,excluded.value)",
+                           (name, value))
         db.commit()
         if worker_command:
             _kick(cfg, worker_command, state_dir)
@@ -573,7 +637,11 @@ def _prepare(db, cfg):
         db.commit()
         return pending
     rows = db.execute("SELECT name,value,baseline FROM series ORDER BY name").fetchall()
-    gauges = db.execute("SELECT name,value FROM gauges ORDER BY name").fetchall() if cfg.get("openrouter_balance") else []
+    if cfg.get("openrouter_balance"):
+        gauges = db.execute("SELECT name,value FROM gauges ORDER BY name").fetchall()
+    else:
+        gauges = db.execute("SELECT name,value FROM gauges WHERE name LIKE ? ORDER BY name",
+                            (_VERSION_GAUGE_PREFIX + "%",)).fetchall()
     if not rows and not gauges:
         db.commit()
         return None

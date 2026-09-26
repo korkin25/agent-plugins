@@ -44,10 +44,68 @@ class ClaudeModelTests(unittest.TestCase):
     def resolve(self, event=None):
         return reader.resolve_tool_model(self.event if event is None else event, self.home)
 
+    def observed(self, event=None):
+        observation = {"discarded": "value"}
+        result = reader.resolve_tool_model(self.event if event is None else event, self.home,
+                                           observation=observation)
+        return result, observation
+
     def test_exact_match_returns_only_model_and_fixed_source(self):
         self.write([self.record()]).chmod(0o664)
         self.assertEqual(self.resolve(), {"model": "claude-opus-4-6", "source": "transcript_tool_use"})
         self.sleep.assert_not_called()
+
+    def test_observation_first_hit_preserves_legacy_return(self):
+        contents = json.dumps(self.record()).encode() + b"\n"
+        self.path.write_bytes(contents)
+        result, observation = self.observed()
+        self.assertEqual(result, {"model": "claude-opus-4-6", "source": "transcript_tool_use"})
+        self.assertEqual(observation, {"read_attempts": 1, "bytes_read": len(contents),
+                                       "duration_ms": mock.ANY, "outcome": "resolved",
+                                       "api_input_tokens": 0, "api_output_tokens": 0,
+                                       "cost_usd": 0})
+        self.assertGreaterEqual(observation["duration_ms"], 0)
+
+    def test_observation_retry_and_not_found_are_bounded(self):
+        self.sleep.side_effect = lambda _: self.write([self.record()])
+        result, observation = self.observed()
+        self.assertEqual(result["model"], "claude-opus-4-6")
+        self.assertEqual(observation["read_attempts"], 2)
+        self.assertEqual(observation["bytes_read"],
+                         len(json.dumps(self.record()).encode()) + 1)
+        self.assertEqual(observation["outcome"], "resolved")
+
+        self.path.unlink()
+        self.sleep.side_effect = None
+        result, observation = self.observed()
+        self.assertEqual(result, {})
+        self.assertEqual(observation["read_attempts"], 2)
+        self.assertEqual(observation["bytes_read"], 0)
+        self.assertEqual(observation["outcome"], "not_found")
+
+    def test_observation_rejects_invalid_identity_and_read_errors(self):
+        result, observation = self.observed({**self.event, "tool_name": "Task"})
+        self.assertEqual(result, {})
+        self.assertEqual(observation["read_attempts"], 0)
+        self.assertEqual(observation["bytes_read"], 0)
+        self.assertEqual(observation["outcome"], "rejected")
+
+        self.write([self.record()])
+        with mock.patch.object(reader.os, "read", side_effect=OSError("synthetic failure")):
+            result, observation = self.observed()
+        self.assertEqual(result, {})
+        self.assertEqual(observation["read_attempts"], 1)
+        self.assertEqual(observation["bytes_read"], 0)
+        self.assertEqual(observation["outcome"], "rejected")
+
+    def test_observation_counts_os_read_bytes_before_partial_line_discard(self):
+        prefix = b"x" * 9
+        self.path.write_bytes(prefix + b"\n" + b"x" * reader._TAIL_BYTES)
+        result, observation = self.observed()
+        self.assertEqual(result, {})
+        self.assertEqual(observation["read_attempts"], 2)
+        self.assertEqual(observation["bytes_read"], 2 * reader._TAIL_BYTES)
+        self.assertEqual(observation["outcome"], "not_found")
 
     def test_never_borrows_other_session_id_tool_or_record_type(self):
         for variant in ("session", "id", "tool", "type", "block_type", "content"):

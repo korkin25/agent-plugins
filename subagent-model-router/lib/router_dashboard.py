@@ -75,6 +75,52 @@ def _total(rows):
     return sum(values) if values else None
 
 
+def _reporter_labels(labels):
+    """Only explicit, safe observation metadata identifies a reporter."""
+    return all(isinstance(labels.get(key), str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", labels[key])
+               and labels[key] != "unknown" for key in ("host", "user", "plugin_version")) and labels.get("agent") in ("claude", "codex")
+
+
+def _agent_version(value):
+    return value if isinstance(value, str) and len(value) <= 80 and re.fullmatch(
+        r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+        r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?", value) else "unknown"
+
+
+def hook_versions(rows, end):
+    """Last hook time is the gauge value, never its heartbeat/export timestamp."""
+    observed = {}
+    for row in rows:
+        labels, stamp = row["labels"], _value(row)
+        if not _reporter_labels(labels) or stamp is None or not 0 < stamp <= end:
+            continue
+        identity = tuple(labels.get(key, "unknown") for key in ("instance", "host", "user", "agent", "plugin_version")) + (_agent_version(labels.get("agent_version")),)
+        observed[identity] = max(stamp, observed.get(identity, 0))
+    latest = {}
+    for identity, stamp in observed.items():
+        latest[identity[:4]] = max(stamp, latest.get(identity[:4], 0))
+    result = []
+    for identity, stamp in sorted(observed.items(), key=lambda item: (item[0][:4], -item[1], item[0][4:])):
+        result.append(dict(zip(("instance", "host", "user", "agent", "plugin_version", "agent_version"), identity),
+                           last_seen_timestamp=stamp, age_seconds=end - stamp,
+                           latest_observed=stamp == latest[identity[:4]]))
+    return result
+
+
+def mixed_version_reporters(rows):
+    versions = {}
+    for row in rows:
+        identity = tuple(row[key] for key in ("instance", "host", "user", "agent"))
+        versions.setdefault(identity, set()).add((row["plugin_version"], row["agent_version"]))
+    return sum(len(values) > 1 for values in versions.values()) if rows else None
+
+
+VERSION_NOTE = ("Observed hook versions within instance/user/client filters, independent of project. "
+                "Plugin version and invoking Claude Code/Codex client version are separate from the model; missing client versions remain unknown. "
+                "Latest means most recent hook timestamp per reporter, not newest release. Historical versions remain visible. "
+                "This is not an installed-version inventory; idle or unreported installations are unknown.")
+
+
 def _percentile(rows, quantile):
     buckets = []
     for row in rows:
@@ -103,7 +149,7 @@ def _percentile(rows, quantile):
 def query_stats(cfg, days=7, project=None, user=None, agent=None, account=None):
     """Return serializable operational data; failures never become zero/no-data.
 
-    Accept a full router config or its telemetry subsection. At most eighteen
+    Accept a full router config or its telemetry subsection. At most thirty-two
     bounded requests, at most three in parallel; server text/URLs are never
     included in errors or reports. The shared transport limits response bytes.
     """
@@ -132,12 +178,17 @@ def query_stats(cfg, days=7, project=None, user=None, agent=None, account=None):
         selector = selector[:-1] + ",user=" + json.dumps(user) + "}"
     if agent is not None:
         selector = selector[:-1] + ",agent=" + json.dumps(agent) + "}"
+    version_selector = health_selector
+    for key, value in (("user", user), ("agent", agent)):
+        if value is not None:
+            version_selector = version_selector[:-1] + "," + key + "=" + json.dumps(value) + "}"
     window = str(days * 86400) + "s"
     lookback = str(max(300, step * 2)) + "s"
     def inc(metric, span=window):
         return "increase(" + metric + selector + "[" + span + "])"
     queries = {
-        "calls": (False, "sum by (user,project,agent,mode,reason,tier,model,effort,applied) (" + inc("smr_calls_total") + ")"),
+        "calls": (False, "sum by (host,plugin_version,agent_version,user,project,agent,mode,reason,tier,model,effort,applied) (" + inc("smr_calls_total") + ")"),
+        "hook_versions": (False, "max by (instance,host,user,agent,plugin_version,agent_version) (last_over_time(smr_hook_version_last_seen_timestamp_seconds" + version_selector + "[" + window + "]))"),
         "requests": (False, "sum by (outcome) (" + inc("smr_jev_requests_total") + ")"),
         "jev_buckets": (False, "sum by (le) (" + inc("smr_jev_request_duration_seconds_bucket") + ")"),
         "hook_buckets": (False, "sum by (le) (" + inc("smr_hook_duration_seconds_bucket") + ")"),
@@ -154,6 +205,14 @@ def query_stats(cfg, days=7, project=None, user=None, agent=None, account=None):
         "jev_cost_rate": (True, "3600 * sum(rate(smr_jev_cost_usd_total" + selector + "[" + lookback + "]))"),
         "jev_cost_rate_current": (False, "3600 * sum(rate(smr_jev_cost_usd_total" + selector + "[" + lookback + "]))"),
     }
+    observation_metrics = ["jev_" + direction + suffix for direction in ("input", "output")
+                           for suffix in ("_tokens", "_known_token_requests", "_unknown_token_requests")]
+    observation_metrics += ["claude_model_lookup_" + suffix for suffix in
+                            ("requests", "read_attempts", "bytes_read", "duration_seconds",
+                             "api_input_tokens", "api_output_tokens", "cost_usd")]
+    for name in observation_metrics:
+        metric = "smr_" + name + ("_sum" if name.endswith("duration_seconds") else "_total")
+        queries[name] = (False, "sum(" + inc(metric) + ")")
     # Account balances include other tools. Never restrict them to routing
     # project/user/agent/instance or sum the same account's installed copies.
     account_selector = ',account=' + json.dumps(account) if account else ''
@@ -187,6 +246,10 @@ def query_stats(cfg, days=7, project=None, user=None, agent=None, account=None):
                "error_share": failed / requests if requests and failed is not None else None,
                "applied": _total(applied_rows) if applied_rows else (0.0 if total is not None else None),
                "shadow": _total(shadow_rows) if shadow_rows else (0.0 if total is not None else None)}
+    summary["hook_versions"] = hook_versions(data["hook_versions"], end)
+    summary["hook_version_mixed_reporters"] = mixed_version_reporters(summary["hook_versions"])
+    missing_metadata = [row for row in data["calls"] if not _reporter_labels(row["labels"])]
+    summary["hook_version_metadata_gaps"] = _total(missing_metadata) if missing_metadata else (0 if total is not None else None)
     for key in ("jev", "hook"):
         for q in (50, 95, 99):
             summary[key + "_p" + str(q) + "_seconds"] = _percentile(data[key + "_buckets"], q / 100)
@@ -202,6 +265,22 @@ def query_stats(cfg, days=7, project=None, user=None, agent=None, account=None):
     observed = (known or 0) + (unpriced or 0)
     summary["jev_cost_coverage"] = ((known or 0) / observed if observed else None) if not any(key in errors for key in ("jev_known_cost_requests", "jev_unpriced_requests")) else None
     summary["jev_cost_average_hour"] = summary["jev_cost_usd"] / (days * 24) if summary["jev_cost_usd"] is not None else None
+    for name in observation_metrics:
+        summary[name] = _total(data[name]) if all(_value(row) is not None and _value(row) >= 0 for row in data[name]) else None
+    for direction in ("input", "output"):
+        prefix = "jev_" + direction
+        known_key, unknown_key = prefix + "_known_token_requests", prefix + "_unknown_token_requests"
+        known, unknown = summary[known_key], summary[unknown_key]
+        unavailable = any(key in errors or (data[key] and summary[key] is None) for key in (known_key, unknown_key))
+        # Coverage counters started after the request/token counters. Include
+        # older, unmeasured requests in the denominator instead of claiming
+        # whole-window coverage from only post-upgrade observations.
+        unavailable |= "requests" in errors or requests is None or requests < 0 or any(
+            _value(row) is None or _value(row) < 0 for row in data["requests"])
+        if not unavailable:
+            unavailable = (known or 0) + (unknown or 0) > requests
+        summary[prefix + "_token_coverage"] = (known or 0) / requests if not unavailable and requests else None
+        summary[unknown_key] = requests - (known or 0) if not unavailable else None
     snapshots = {}
     for row in data["account_values"] + data["account_health"]:
         alias = row["labels"].get("account")
@@ -250,7 +329,7 @@ def query_stats(cfg, days=7, project=None, user=None, agent=None, account=None):
                 counts[name] = counts.get(name, 0.0) + value
         summary["by_" + label] = counts
     has_data = any(point[1] is not None for name, rows in data.items()
-                   if name not in ("pending_events", "coalesced_events", "dropped_events", "last_delivery", "account_values", "account_health")
+                   if name not in ("pending_events", "coalesced_events", "dropped_events", "last_delivery", "account_values", "account_health", "hook_versions")
                    for row in rows for point in row["points"])
     status = ("partial" if len(errors) < len(queries) else "error") if errors else ("ok" if has_data else "no_data")
     return {"status": status, "instance": config["instance"], "project": project, "user": user, "agent": agent, "account": account, "start": start, "end": end,
@@ -273,7 +352,8 @@ def _fmt(value, unit=""):
 
 
 def format_summary(data):
-    lines = ["VictoriaMetrics routing statistics: " + data["status"],
+    source = "Local journal" if data.get("source") == "local" else "VictoriaMetrics"
+    lines = [source + " routing statistics: " + data["status"],
              "Instance: " + data["instance"],
              "Project: " + (data.get("project") or "all"),
              "User: " + (data.get("user") or "all"),
@@ -294,6 +374,13 @@ def format_summary(data):
                  "; dropped lifetime " + _fmt(data["summary"]["dropped_events"]) +
                  "; delivery age " + _fmt(data["summary"]["last_delivery_age_seconds"], "s"))
     lines.extend(title + ": " + value for title, value in money_rows(data["summary"]))
+    lines.append(VERSION_NOTE)
+    lines.append("Reporters with multiple observed versions: " + _fmt(data["summary"].get("hook_version_mixed_reporters")))
+    lines.append("Calls with missing reporter metadata (routing filters): " + _fmt(data["summary"].get("hook_version_metadata_gaps")))
+    for row in data["summary"].get("hook_versions", []):
+        lines.append(" / ".join(row[key] for key in ("instance", "host", "user", "agent")) +
+                     ": plugin=" + row["plugin_version"] + "; client=" + row["agent_version"] + "; " +
+                     _fmt(row["age_seconds"], "s") + " ago; " + ("latest observed" if row["latest_observed"] else "historical"))
     lines.append(data["note"])
     return "\n".join(lines)
 
@@ -305,6 +392,16 @@ def money_rows(summary):
             ("Unpriced requests", _fmt(summary.get("jev_unpriced_requests"))),
             ("Jev spend · recent USD/hour", _fmt(summary.get("jev_cost_rate_current"), "usd")),
             ("Jev spend · window average USD/hour", _fmt(summary.get("jev_cost_average_hour"), "usd"))]
+    for direction in ("input", "output"):
+        prefix = "jev_" + direction
+        rows.extend([("Jev " + direction + " tokens · reported", _fmt(summary.get(prefix + "_tokens"))),
+                     ("Jev " + direction + " token coverage", _fmt(summary.get(prefix + "_token_coverage"), "%")),
+                     ("Jev requests without " + direction + " tokens", _fmt(summary.get(prefix + "_unknown_token_requests")))])
+    for title, key, unit in (("observations", "requests", ""), ("local read attempts", "read_attempts", ""),
+                             ("local bytes read", "bytes_read", ""), ("local duration · total", "duration_seconds", "ms"),
+                             ("API input tokens", "api_input_tokens", ""), ("API output tokens", "api_output_tokens", ""),
+                             ("API spend", "cost_usd", "usd")):
+        rows.append(("Claude model lookup · " + title, _fmt(summary.get("claude_model_lookup_" + key), unit)))
     accounts = summary.get("accounts") or {}
     if not accounts:
         rows.append(("OpenRouter account / key snapshots", "No data"))
@@ -396,7 +493,17 @@ def html_document(data):
                              ("Model selections", "model_rate", "selections / second"),
                              ("Jev reported spend", "jev_cost_rate", "USD / hour · known costs only")):
         panels.append('<section><h2>' + title + '</h2><small>' + unit + '</small>' + _chart(series.get(key, []), data["start"], data["end"], data["step"]) + '</section>')
-    panels.append('<section><h2>Reported costs and account snapshots</h2><p>Unpriced requests are not free. Account and key totals include other tools; key limit remaining is not wallet credit. The freshest successful snapshot is selected across installations; values may be stale. Missing key limits can mean unlimited or unavailable.</p><table><tbody>' + ''.join('<tr><td>' + esc(title) + '</td><td>' + esc(value) + '</td></tr>' for title, value in money_rows(summary)) + '</tbody></table></section>')
+    panels.append('<section><h2>Reported costs and account snapshots</h2><p>Unpriced requests are not free. Token coverage is separate for input and output. Claude model lookup runs in local Python without an API call; API zeros apply only to recorded observations. Bytes are not tokens. Account and key totals include other tools; key limit remaining is not wallet credit. The freshest successful snapshot is selected across installations; values may be stale. Missing key limits can mean unlimited or unavailable.</p><table><tbody>' + ''.join('<tr><td>' + esc(title) + '</td><td>' + esc(value) + '</td></tr>' for title, value in money_rows(summary)) + '</tbody></table></section>')
+    version_rows = []
+    for row in summary.get("hook_versions", []):
+        values = [row[key] for key in ("instance", "host", "user", "agent", "plugin_version", "agent_version")]
+        values += [_fmt(row["age_seconds"], "s"), "latest observed" if row["latest_observed"] else "historical"]
+        version_rows.append('<tr>' + ''.join('<td>' + esc(value) + '</td>' for value in values) + '</tr>')
+    panels.append('<section><h2>Observed hook versions</h2><p>' + esc(VERSION_NOTE) + '</p><p>Reporters with multiple observed versions: ' +
+                  _fmt(summary.get("hook_version_mixed_reporters")) + '</p><p>Calls with missing reporter metadata (routing filters): ' +
+                  _fmt(summary.get("hook_version_metadata_gaps")) + '</p><table><thead><tr>' +
+                  ''.join('<th>' + title + '</th>' for title in ("Instance", "Host", "User", "Client", "Plugin version", "Client version", "Last hook age", "Observation")) +
+                  '</tr></thead><tbody>' + (''.join(version_rows) or '<tr><td colspan="8">No version observations</td></tr>') + '</tbody></table></section>')
     for title, label, decisions in (("Calls by user", "user", False), ("Calls by project", "project", False), ("Selection share by model", "model", True), ("Selection share by tier", "tier", True), ("Routing reasons", "reason", False)):
         panels.append('<section><h2>' + title + '</h2>' + _breakdown(series["calls"], label, decisions) + '</section>')
     health_html = '<section style="margin-top:18px"><h2>Telemetry delivery · last received snapshot</h2><p>Workers exit after five minutes per run; later calls restart them. Snapshot age alone does not prove a failure.</p><table><tbody>'

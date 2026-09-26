@@ -459,6 +459,84 @@ finally:
             db.close()
         self.assertEqual(sum(name.startswith("smr_calls_total") for name in names), 2)
         self.assertTrue(all('user="kk573"' in name or 'user="csssr"' in name for name in names))
+
+    def test_version_and_host_labels_do_not_change_jev_financial_series(self):
+        record = dict(self.record, plugin_version="1.2.3", agent_version="0.157.0", host="router-host", usage={"cost": .1})
+        points = telemetry._points(self.cfg, record, .2)
+        call = next(name for name in points if name.startswith("smr_calls_total{"))
+        financial = next(name for name in points if name.startswith("smr_jev_cost_usd_total{"))
+        self.assertIn('plugin_version="1.2.3"', call)
+        self.assertIn('agent_version="0.157.0"', call)
+        self.assertIn('host="router-host"', call)
+        self.assertNotIn("plugin_version", financial)
+        self.assertNotIn('host="router-host"', financial)
+        unknown = next(name for name in telemetry._points(
+            self.cfg, dict(self.record, plugin_version="PRIVATE/PATH", agent_version="bad version", host="bad host"), .2)
+                       if name.startswith("smr_calls_total{"))
+        self.assertIn('plugin_version="unknown"', unknown)
+        self.assertIn('agent_version="unknown"', unknown)
+        self.assertIn('host="unknown"', unknown)
+
+    def test_version_last_seen_gauge_is_persistent_and_uses_observation_time(self):
+        self.record.update(plugin_version="1.2.3", agent_version="0.157.0", host="router-host", user="tester",
+                           ts="2026-09-26T01:02:03Z")
+        with mock.patch.object(telemetry.time, "time", return_value=9999999999):
+            self.assertTrue(self.enqueue())
+        name = telemetry._metric("hook_version_last_seen_timestamp_seconds", dict(
+            instance="test", host="router-host", user="tester", agent="codex", plugin_version="1.2.3",
+            agent_version="0.157.0"))
+        self.assertEqual(self.balance_rows()[name], 1790384523)
+        db = self.connection()
+        try:
+            payload, _, _ = telemetry._prepare(db, self.cfg)
+        finally:
+            db.close()
+        self.assertIn((name + " 1790384523 ").encode(), payload)
+
+    def test_version_last_seen_never_moves_back_for_a_late_old_hook(self):
+        self.record.update(plugin_version="1.2.3", agent_version="0.157.0", host="router-host",
+                           ts="2026-09-26T01:02:03Z")
+        self.assertTrue(self.enqueue())
+        self.record["ts"] = "2026-09-26T01:01:03Z"
+        self.assertTrue(self.enqueue())
+        version = next(value for name, value in self.balance_rows().items()
+                       if name.startswith("smr_hook_version_last_seen_timestamp_seconds{"))
+        self.assertEqual(version, 1790384523)
+
+    def test_version_gauge_is_emitted_without_balance_and_survives_account_reset(self):
+        self.record.update(plugin_version="1.2.3", agent_version="0.157.0", host="router-host")
+        self.assertTrue(self.enqueue())
+        cfg = self.balance_config()
+        with mock.patch.object(telemetry, "openrouter_request", side_effect=telemetry.TelemetryError("synthetic")), \
+                mock.patch.object(telemetry.time, "time", return_value=1000):
+            self.assertTrue(telemetry.probe_openrouter_balance(cfg, lambda: "key", state_dir=self.root))
+        version = next(name for name in self.balance_rows() if name.startswith(
+            "smr_hook_version_last_seen_timestamp_seconds{"))
+        self.assertIn('plugin_version="1.2.3"', version)
+        self.assertIn('agent_version="0.157.0"', version)
+        with mock.patch.object(telemetry, "openrouter_request", side_effect=telemetry.TelemetryError("synthetic")), \
+                mock.patch.object(telemetry.time, "time", return_value=1300):
+            telemetry.probe_openrouter_balance(telemetry.validate_config(dict(cfg, account="other")),
+                                               lambda: "key", state_dir=self.root)
+        self.assertIn(version, self.balance_rows())
+
+    def test_version_gauge_requires_valid_agent_and_semver(self):
+        for changes in ({}, {"plugin_version": "0.4"}, {"plugin_version": "PRIVATE/path"},
+                        {"plugin_version": "1.2.3", "agent": "other"}):
+            with self.subTest(changes=changes):
+                self.record.update(changes)
+                self.enqueue()
+                self.assertFalse(any(name.startswith("smr_hook_version_last_seen_timestamp_seconds{")
+                                     for name in self.balance_rows()))
+                self.record.pop("plugin_version", None)
+                self.record["agent"] = "codex"
+
+    def test_version_gauge_respects_storage_bound(self):
+        self.record.update(plugin_version="1.2.3", agent_version="0.157.0", host="router-host")
+        with mock.patch.object(telemetry, "MAX_SERIES", 0):
+            self.assertTrue(self.enqueue())
+        self.assertFalse(any(name.startswith("smr_hook_version_last_seen_timestamp_seconds{")
+                             for name in self.balance_rows()))
     def test_errors_count_request_and_duration(self):
         self.record.update(reason="error:timeout", answers=None, tier=None, latency_ms=3000)
         self.enqueue()
@@ -489,14 +567,58 @@ finally:
             self.assertFalse(any(k.startswith("smr_jev_unpriced_requests_total") for k in points))
             self.assertEqual(next(v for k, v in points.items() if k.startswith("smr_jev_input_tokens_total")), 100)
             self.assertEqual(next(v for k, v in points.items() if k.startswith("smr_jev_output_tokens_total")), 0)
+            self.assertTrue(any(k.startswith("smr_jev_input_known_token_requests_total") for k in points))
+            self.assertTrue(any(k.startswith("smr_jev_output_known_token_requests_total") for k in points))
         for usage in (None, {}, {"cost": None}, {"cost": -1}, {"cost": True}, {"cost": float("nan")},
                       {"cost": ".1", "input_tokens": -1, "output_tokens": .5}):
             self.record.update(usage=usage, reason="error:timeout")
             points = telemetry._points(self.cfg, self.record, .2)
             self.assertTrue(any(k.startswith("smr_jev_unpriced_requests_total") for k in points))
             self.assertFalse(any(k.startswith(("smr_jev_cost_usd_total", "smr_jev_input_tokens_total", "smr_jev_output_tokens_total")) for k in points))
+            self.assertTrue(any(k.startswith("smr_jev_input_unknown_token_requests_total") for k in points))
+            self.assertTrue(any(k.startswith("smr_jev_output_unknown_token_requests_total") for k in points))
         self.record.update(latency_ms=None, usage={"cost": 10}, reason="excluded")
         self.assertFalse(any(k.startswith("smr_jev_") for k in telemetry._points(self.cfg, self.record, .2)))
+
+    def test_local_lookup_accounting_is_separate_from_provider_usage(self):
+        lookup = dict(read_attempts=2, bytes_read=1500000, duration_ms=101,
+                      outcome="resolved", api_input_tokens=0, api_output_tokens=0, cost_usd=0)
+        record = dict(self.record, agent="claude", project="example", user="tester",
+                      claude_model_lookup=lookup, usage=dict(input_tokens=80, cost=.003))
+        points = telemetry._points(self.cfg, record, .2)
+        local = {k: v for k, v in points.items() if k.startswith("smr_claude_model_lookup_")}
+        self.assertEqual(len(local), 7)
+        self.assertTrue(all('agent="claude"' in k and 'project="example"' in k
+                            and 'user="tester"' in k for k in local))
+        def value(name):
+            return next(v for k, v in points.items() if k.startswith("smr_" + name + "{"))
+        self.assertEqual(value("claude_model_lookup_bytes_read_total"), 1500000)
+        self.assertEqual(value("claude_model_lookup_duration_seconds_sum"), .101)
+        self.assertEqual(value("claude_model_lookup_api_input_tokens_total"), 0)
+        self.assertEqual(value("claude_model_lookup_cost_usd_total"), 0)
+        self.assertEqual(value("jev_input_tokens_total"), 80)
+        self.assertEqual(value("jev_cost_usd_total"), .003)
+        self.assertEqual(value("jev_output_unknown_token_requests_total"), 1)
+        for bad in (None, {}, dict(lookup, bytes_read=True), dict(lookup, read_attempts=3),
+                    dict(lookup, bytes_read=2097153), dict(lookup, duration_ms=float("nan")),
+                    dict(lookup, cost_usd=1), dict(lookup, outcome="PRIVATE-CONTENT")):
+            with self.subTest(bad=bad):
+                values = telemetry._points(self.cfg, dict(record, claude_model_lookup=bad), .2)
+                self.assertFalse(any(k.startswith("smr_claude_model_lookup_") for k in values))
+
+    def test_lookup_counters_persist_without_dialogue_or_paths(self):
+        self.record.update(agent="claude", claude_model_lookup=dict(
+            read_attempts=1, bytes_read=240, duration_ms=1, outcome="not_found",
+            api_input_tokens=0, api_output_tokens=0, cost_usd=0,
+            transcript="PRIVATE-PATH-OR-DIALOGUE"))
+        self.enqueue()
+        db = self.connection()
+        try:
+            counters = dict(db.execute("SELECT name,value FROM series"))
+        finally:
+            db.close()
+        self.assertTrue(any(k.startswith("smr_claude_model_lookup_requests_total") for k in counters))
+        self.assertFalse(any("PRIVATE" in k for k in counters))
 
     def balance_config(self):
         return telemetry.validate_config(dict(self.cfg, openrouter_balance=True, account="test-account"))

@@ -44,7 +44,7 @@ def _identity(event, claude_home):
     return session, tool_id, path
 
 
-def _read_tail(path):
+def _read_tail(path, observation=None):
     """Open only the supplied file; descriptor walks never follow symlinks."""
     directory = fd = None
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -63,6 +63,8 @@ def _read_tail(path):
         offset = info.st_size - count
         os.lseek(fd, offset, os.SEEK_SET)
         data = os.read(fd, count)
+        if observation is not None:
+            observation["bytes_read"] += len(data)
         # Never interpret a prefix cut from the middle of an older JSON line.
         if offset:
             _, _, data = data.partition(b"\n")
@@ -99,13 +101,17 @@ def _exact_model(data, session, tool_id):
     return found is not None, found
 
 
-def resolve_tool_model(event, claude_home=None) -> dict:
+def resolve_tool_model(event, claude_home=None, *, observation=None) -> dict:
     """Return exact ``{model, source}`` or {}; never return transcript content.
 
     No directory scans, other sessions, configuration reads, network, or writes.
     One 100 ms retry is allowed only for an absent file or no exact match. I/O
     latency is OS-dependent; the deliberate wait and read volume are bounded.
     """
+    metrics = {"read_attempts": 0, "bytes_read": 0, "duration_ms": 0,
+               "outcome": "rejected", "api_input_tokens": 0,
+               "api_output_tokens": 0, "cost_usd": 0}
+    started = time.perf_counter()
     try:
         identity = _identity(event, claude_home)
         if identity is None:
@@ -113,14 +119,24 @@ def resolve_tool_model(event, claude_home=None) -> dict:
         session, tool_id, path = identity
         for attempt in range(2):
             try:
-                data = _read_tail(path)
+                metrics["read_attempts"] += 1
+                data = _read_tail(path, metrics)
             except FileNotFoundError:
                 data = b""
             matched, model = _exact_model(data, session, tool_id)
             if matched:
-                return {"model": model, "source": "transcript_tool_use"} if model else {}
+                if model:
+                    metrics["outcome"] = "resolved"
+                    return {"model": model, "source": "transcript_tool_use"}
+                return {}
             if attempt == 0:
                 time.sleep(_RETRY_SECONDS)
+        metrics["outcome"] = "not_found"
     except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
         pass
+    finally:
+        metrics["duration_ms"] = max(0, int((time.perf_counter() - started) * 1000))
+        if isinstance(observation, dict):
+            observation.clear()
+            observation.update(metrics)
     return {}

@@ -75,7 +75,7 @@ An optional `[claude] observe_transcript_model = true` fills missing lifecycle e
 assistant `Agent` call in the current session's transcript. Enable it only after authorizing that local
 source. The lookup checks both session UUID and tool-use ID; it never substitutes the last assistant
 message or reads another session. It reads at most two 1 MiB tails with one 100 ms retry for asynchronous
-transcript writes. Only the matching model and provenance are retained; dialogue is neither exported nor
+transcript writes. Only the matching model, provenance and bounded I/O accounting are retained; dialogue is neither exported nor
 sent to Jev. Unavailable or conflicting evidence remains unknown. This is still prelaunch parent-model
 evidence, not proof of the child's final model.
 The message reports the router's selection before launch, not successful execution; a Codex role's own model
@@ -83,6 +83,23 @@ can still override it. This uses the common [`systemMessage` hook field in Claud
 and [Codex](https://developers.openai.com/codex/hooks), not model-only `additionalContext`.
 Rendering depends on the client: Codex surfaces it as a warning in the UI or event stream; a separate chat
 message and identical display in every terminal, IDE and app are not guaranteed.
+
+### Updates in an open session
+
+From 0.4.8, a synchronous hook checks for a newer installed version at session start and on user prompts.
+It compares the version of its executing plugin copy with native installed-plugin metadata and emits a
+`systemMessage` once per session and observed installed version. This is local Python/CLI work, with no
+model request or added conversation context. It does not install updates or schedule an updater.
+Missing or ambiguous installation evidence stays silent. A session still running 0.4.7 lacks this checker
+and needs an initial reload/new session before it can report later updates.
+
+In [Claude Code](https://code.claude.com/docs/en/discover-plugins), `/reload-plugins` applies plugin changes
+without ending the session. Claude can defer reload to preserve a warm prompt cache; forcing it with
+`/reload-plugins --force` can cost an uncached request. The router never forces reload and does not account
+for that conversation cost. In [Codex](https://learn.chatgpt.com/docs/plugins), start a new session after
+updating the plugin and review changed hooks in `/hooks` if requested. Automatic discovery of local skill
+changes does not prove that new hooks are loaded or trusted. Notifications describe the executing hook,
+not every component of the session. UI rendering depends on the host.
 
 ## Why only subagents
 
@@ -107,7 +124,7 @@ this machine. The `preview` tool shows exactly this filtered state locally, with
 the agent should use it when the user asks what will be sent, not automatically on every call.
 
 OpenRouter/TypeSafe authentication goes only to the configured provider. Optional VM metrics contain
-aggregate observations, project/user labels and reported costs, never full task text. Optional OpenRouter
+aggregate observations, host/project/user/client and version labels, and reported costs, never full task text. Optional OpenRouter
 balance polling uses the provider key only against the fixed OpenRouter key/credits API endpoints, in the
 background, at most once per five minutes per installation while its worker runs. Key limits and account
 credits are distinct; account usage may include other applications. The same account gauge reported by
@@ -124,7 +141,11 @@ remains for counters and retries. `SessionStart` and `UserPromptSubmit` hooks al
 without a network call or a write), so delivery resumes after a client restart, not only at the next subagent.
 
 The metrics cover Jev latency/errors, model/tier/effort choices, active versus shadow decisions and decision
-probabilities, with project, user and Claude/Codex cohorts. Grafana filters and compares these cohorts;
+probabilities, with project, user and Claude/Codex cohorts. Reports also show observed hook/plugin and client
+versions by host and user, plus the last actual hook observation. Client version is captured once at
+session start and read from a private session cache during routing. A worker heartbeat does not refresh that
+observation. Missing, idle or older unversioned reporters remain unknown; this is not an inventory proving
+that every installation updated. Grafana filters and compares these cohorts;
 Ask the agent to select a project, user or client for a report. Terminal and VS Code extensions share this hook. They measure routing behavior, not demonstrated cost savings or task quality.
 
 - [Setup, delivery limits and commands](skills/subagent-model-router/references/monitoring.md)
@@ -197,7 +218,12 @@ subagent-model-router codex-trust [--codex PATH] [--dry-run]
 
 ## Money
 
-Router requests export provider-reported cost, known-cost coverage and token counts by cohort. Optional
+Router requests export provider-reported cost, known-cost coverage and input/output token counts with
+separate coverage for each direction. The optional Claude transcript lookup reports local read attempts,
+bytes, elapsed time and outcome separately. It runs Python against a file: observed lookups use zero API
+input/output tokens and cost zero in API fees. Bytes are never converted into an estimated token bill;
+missing lookup observations remain unknown. Jev classification still makes its own paid request.
+Terminal, HTML and Grafana reports keep these measurements separate. Optional
 background OpenRouter polling shows remaining key limit and account credit balance separately, with age and
 probe status. Ask the agent to enable balance monitoring; the existing provider key stays private. Several
 installations using one key do not multiply its account balance. Unpriced/failed requests remain unknown.

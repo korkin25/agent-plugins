@@ -26,8 +26,28 @@ def _num(value):
     try:
         value = float(value)
         return value if math.isfinite(value) else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _observed_number(value, integer=False, maximum=None):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = _num(value)
+    if number is None or number < 0 or (integer and not number.is_integer()) or (maximum is not None and number > maximum):
+        return None
+    return number
+
+
+def _lookup_observation(value):
+    if not isinstance(value, dict) or value.get("outcome") not in ("resolved", "not_found", "rejected"):
+        return None
+    for key, integer, maximum in (("read_attempts", True, 2), ("bytes_read", True, 2097152),
+                                   ("duration_ms", False, None), ("api_input_tokens", True, 0),
+                                   ("api_output_tokens", True, 0), ("cost_usd", False, 0)):
+        if _observed_number(value.get(key), integer, maximum) is None:
+            return None
+    return value
 
 
 def _fmt(value, suffix=""):
@@ -73,9 +93,11 @@ def local_data(rows, days=None, now=None, project=None, user=None, agent=None):
     rows = [r for r in rows if (stamp := _parse_time(r.get("ts"))) is not None
             and stamp <= now and (cutoff is None or stamp >= cutoff)]
     rows = [r for r in rows if all(want is None or r.get(key) == want
-                                  for key, want in (("project", project), ("user", user), ("agent", agent)))]
+                                  for key, want in (("user", user), ("agent", agent)))]
+    version_rows = rows
+    rows = [r for r in rows if project is None or r.get("project") == project]
     end = now.timestamp()
-    start = (cutoff or min((_parse_time(r.get("ts")) for r in rows), default=now)).timestamp()
+    start = (cutoff or min((_parse_time(r.get("ts")) for r in version_rows), default=now)).timestamp()
     decisions = [r for r in rows if str(r.get("reason", "")).startswith("rule:")]
     attempted = [r for r in rows if r.get("state_sha256") or _num(r.get("latency_ms")) is not None
                  or str(r.get("reason", "")).startswith("rule:")]
@@ -86,6 +108,12 @@ def local_data(rows, days=None, now=None, project=None, user=None, agent=None):
                "applied": sum(r.get("mode") == "active" and _changed(r) for r in decisions) if rows else None,
                "shadow": sum(r.get("mode") == "shadow" for r in rows) if rows else None,
                "error_share": errors / len(attempted) if attempted else None}
+    from router_dashboard import hook_versions, mixed_version_reporters, _reporter_labels
+    summary["hook_versions"] = hook_versions([
+        {"labels": dict({key: r.get(key) for key in ("host", "user", "agent", "plugin_version", "agent_version")}, instance="local journal"),
+         "points": [[end, _parse_time(r["ts"]).timestamp()]]} for r in version_rows], end)
+    summary["hook_version_mixed_reporters"] = mixed_version_reporters(summary["hook_versions"])
+    summary["hook_version_metadata_gaps"] = sum(not _reporter_labels(r) for r in rows) if rows else None
     summary.update({"jev_p" + str(q) + "_seconds": _percentile([_num(r.get("latency_ms")) for r in attempted], q)
                     for q in (50, 95, 99)})
     summary.update({"hook_p" + str(q) + "_seconds": None for q in (50, 95, 99)})
@@ -103,6 +131,19 @@ def local_data(rows, days=None, now=None, project=None, user=None, agent=None):
                    jev_cost_coverage=len(costs) / len(attempted) if attempted else None,
                    jev_cost_average_hour=sum(costs) / span_hours if costs and span_hours > 0 else None,
                    jev_cost_rate_current=None, accounts={})
+    for direction in ("input", "output"):
+        prefix = "jev_" + direction
+        tokens = [value for r in attempted if isinstance(r.get("usage"), dict)
+                  and (value := _observed_number(r["usage"].get(direction + "_tokens"), integer=True)) is not None]
+        summary.update({prefix + "_tokens": sum(tokens) if tokens else None,
+                        prefix + "_known_token_requests": len(tokens) if attempted else None,
+                        prefix + "_unknown_token_requests": len(attempted) - len(tokens) if attempted else None,
+                        prefix + "_token_coverage": len(tokens) / len(attempted) if attempted else None})
+    lookups = [value for r in rows if (value := _lookup_observation(r.get("claude_model_lookup"))) is not None]
+    summary["claude_model_lookup_requests"] = len(lookups) if lookups else None
+    for key in ("read_attempts", "bytes_read", "api_input_tokens", "api_output_tokens", "cost_usd"):
+        summary["claude_model_lookup_" + key] = sum(r[key] for r in lookups) if lookups else None
+    summary["claude_model_lookup_duration_seconds"] = sum(r["duration_ms"] for r in lookups) / 1000 if lookups else None
     calls = [{"labels": {k: str(r.get(k) or "unknown") for k in ("model", "tier", "reason", "project", "user", "agent")},
               "points": [[_parse_time(r["ts"]).timestamp(), 1]]} for r in rows]
     return {"status": "ok" if rows else "no_data", "source": "local", "instance": "local journal", "project": project, "user": user,
@@ -136,6 +177,13 @@ def format_terminal(data):
     lines = [f"**Статистика маршрутизации · {status}**", f"Окно: {start} — {end} UTC · источник: {source} · instance: {_clean(data.get('instance'))}", f"Клиент: {_clean(data.get('agent'), 'все')} · фильтры: project={_clean(data.get('project'), 'все')} · user={_clean(data.get('user'), 'все')}", "", "| Метрика | Значение |", "|---|---:|", f"| Вызовы (оценка) | {_fmt(_num(summary.get('calls')))} |", f"| Jev-запросы | {_fmt(_num(summary.get('jev_requests')))} |", f"| Ошибки Jev | {_fmt(_num(summary.get('error_share')), '%')} |", f"| Latency p50 / p95 / p99 | {_fmt(_num(summary.get('jev_p50_seconds')), 'ms')} / {_fmt(_num(summary.get('jev_p95_seconds')), 'ms')} / {_fmt(_num(summary.get('jev_p99_seconds')), 'ms')} |", ""]
     lines.extend([f"**Расходы Jev за окно:** {_fmt(summary.get('jev_cost_usd'), 'usd')} · покрытие ценой {_fmt(summary.get('jev_cost_coverage'), '%')} · без цены {_fmt(summary.get('jev_unpriced_requests'))}.",
                   f"USD/час: {_fmt(summary.get('jev_cost_rate_current'), 'usd')} сейчас · {_fmt(summary.get('jev_cost_average_hour'), 'usd')} в среднем за окно."])
+    for direction, title in (("input", "вход"), ("output", "выход")):
+        prefix = "jev_" + direction
+        lines.append(f"Токены Jev ({title}): {_fmt(summary.get(prefix + '_tokens'))} · покрытие {_fmt(summary.get(prefix + '_token_coverage'), '%')} · без данных {_fmt(summary.get(prefix + '_unknown_token_requests'))} запросов.")
+    lookup = lambda key: summary.get("claude_model_lookup_" + key)
+    lines.extend([f"**Чтение модели Claude из локального JSONL:** наблюдений {_fmt(lookup('requests'))} · чтений {_fmt(lookup('read_attempts'))} · байт {_fmt(lookup('bytes_read'))} · всего {_fmt(lookup('duration_seconds'), 'ms')}.",
+                  f"API-токены вход / выход: {_fmt(lookup('api_input_tokens'))} / {_fmt(lookup('api_output_tokens'))} · стоимость API {_fmt(lookup('cost_usd'), 'usd')}.",
+                  "Модель извлекается локальным Python без вызова модели; байты чтения не пересчитываются в токены. Нули API относятся только к зарегистрированным наблюдениям."])
     if not summary.get('accounts'):
         lines.append("Баланс OpenRouter и остаток лимита ключа: нет данных.")
     for alias, values in sorted((summary.get('accounts') or {}).items()):
@@ -145,6 +193,19 @@ def format_terminal(data):
             state = "ошибка" if success == 0 else "успех" if success == 1 else "нет данных"
             lines.append(f"Последняя проверка ({title}): {state}; возраст снимка {_fmt(values.get(scope + '_age_seconds'))} с.")
     lines.extend(["Учтены только сообщённые цены; неизвестная цена не равна нулю. Баланс и лимит — последние снимки; суммы аккаунта включают другие инструменты. Лимит ключа не равен кредитному балансу.", ""])
+    lines.extend(["**Наблюдавшиеся версии hook**", "",
+                  "Область: instance/user/клиент, независимо от project. Последняя — по времени hook, а не по номеру релиза. Это не список установленных версий; неактивные и неотчитавшиеся установки неизвестны.",
+                  "Версии плагина и вызвавшего hook клиента Claude Code/Codex показаны отдельно от модели; отсутствующая версия клиента неизвестна.",
+                  "Reporter с несколькими наблюдавшимися версиями: " + _fmt(summary.get("hook_version_mixed_reporters")) + ".",
+                  "Вызовы без метаданных reporter (фильтры маршрутизации): " + _fmt(summary.get("hook_version_metadata_gaps")) + ".", "",
+                  "| Instance / host / user / клиент | Плагин | Версия клиента | Возраст hook | Наблюдение |", "|---|---|---|---:|---|"])
+    for row in summary.get("hook_versions", []):
+        reporter = " / ".join(_clean(row.get(key)) for key in ("instance", "host", "user", "agent"))
+        state = "последняя наблюдавшаяся" if row["latest_observed"] else "историческая"
+        lines.append(f"| {reporter} | {_clean(row.get('plugin_version'))} | {_clean(row.get('agent_version'))} | {_fmt(row.get('age_seconds'))} с | {state} |")
+    if not summary.get("hook_versions"):
+        lines.append("| нет наблюдений версий | неизвестно | неизвестно | нет данных | неизвестно |")
+    lines.append("")
     for title, key in (("Модели", "by_model"), ("Проекты", "by_project"), ("Пользователи", "by_user"), ("Агенты", "by_agent"), ("Причины", "by_reason")):
         values = data.get("summary", {}).get(key, {}) or {}
         lines.append(f"**{title}**")
@@ -167,7 +228,7 @@ def format_terminal(data):
             label = ", ".join(_clean(v) for v in row.get("labels", {}).values()) or "ряд"
             lines.append(f"**{title} · {label}** `{_spark(expanded)}`")
     if data.get("errors"): lines.extend(["", "⚠ Частичный результат: недоступно " + ", ".join(_clean(k) for k in sorted(data["errors"]))])
-    if status == "no_data": lines.extend(["", "Данных в выбранном окне нет; нулевые значения не подставлены."])
+    if status == "no_data": lines.extend(["", "Данных маршрутизации в выбранном окне нет; нулевые значения не подставлены."])
     lines.extend(["", "Локальный журнал: наблюдения; квантили по измеренным запросам." if source == "local" else
                   "VictoriaMetrics: оценки по полученным счётчикам; пропуски — не нули. Доля выбора не доказывает экономию."])
     return "\n".join(lines).rstrip() + "\n"
