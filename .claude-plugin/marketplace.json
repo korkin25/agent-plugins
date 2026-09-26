@@ -15,19 +15,19 @@
       "name": "keepassxc-migration",
       "source": "./keepassxc-migration",
       "description": "Moves a Linux desktop's secrets into KeePassXC - out of gnome-keyring, KWallet and shell dotfiles, with the browser sessions surviving the move.",
-      "version": "0.2.4"
+      "version": "0.2.5"
     },
     {
       "name": "plugin-factory",
       "source": "./plugin-factory",
       "description": "Scaffold, validate and release plugins in your own marketplace repository.",
-      "version": "0.2.0"
+      "version": "0.2.1"
     },
     {
       "name": "subagent-model-router",
       "source": "./subagent-model-router",
       "description": "Jev directly selects a model and reasoning effort for each subagent task in Claude Code and Codex, with statistics for the selected and submitted parameters.",
-      "version": "0.5.4"
+      "version": "0.5.5"
     },
     {
       "name": "task-panes",

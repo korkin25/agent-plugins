@@ -1,7 +1,7 @@
 {
   "name": "plugin-factory",
   "displayName": "Plugin Factory",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Scaffold, validate and release Claude Code plugins in your own marketplace repository, with the same checks Anthropic's review pipeline runs.",
   "author": {
     "name": "Eugeny Kuzakov",

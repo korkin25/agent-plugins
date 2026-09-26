@@ -5,7 +5,8 @@ description: Create a new Claude Code plugin, add it to the user's marketplace, 
 
 # Making a plugin
 
-The user's marketplace is **`~/work/github/agent-plugins`** → `github.com/korkin25/agent-plugins`.
+The user's marketplace is the repository they name, or the current git repository when it has
+`.claude-plugin/marketplace.json`; ask when neither applies.
 The repository *is* the marketplace, so merging to `main` releases it: there is no publish step.
 
 Read `.claude-plugin/marketplace.json` first — it lists what already exists.
@@ -72,7 +73,7 @@ plugin-test [<name>]                 # behavioural checks in a throwaway HOME
 plugin-release <name> patch|minor|major|X.Y.Z
 ```
 
-**`plugin-test` is the one that saves the four-way manual hunt.** It runs everything in a
+**`plugin-test` checks what a fresh install would hit.** It runs everything in a
 clean room — a temporary `HOME` and `XDG_*` — so a plugin that only works because the author's
 machine is already set up fails here rather than for the first person who installs it. It
 asserts what actually broke in practice: that each hook **exits cleanly with nothing
@@ -127,25 +128,22 @@ push; CI validates on every push, and `main` is the release.
 
 ## Submitting to Anthropic's directory
 
-Two different things, and only one has a submission path:
+Anthropic's directory is the catalog people browse inside Claude; a listed plugin also reaches
+their Claude Code sessions. Submission is open to any paid plan (Pro, Max, Team, Enterprise; on
+Team and Enterprise an Owner, or a member granted the **Directory** permission) through the
+developer portal at [claude.ai/directory/manage](https://claude.ai/directory/manage): **Submit
+new** → **Plugin bundle**, from a public GitHub repository. The older Claude Console form is no
+longer supported. Current steps and the pre-submission checklist:
+[claude.com/docs/directory/publish](https://claude.com/docs/directory/publish).
 
-- **`claude-community`** — the public community marketplace, where third-party plugins land
-  after review. Submit through the in-app form: individual authors use
-  [platform.claude.com/plugins/submit](https://platform.claude.com/plugins/submit); a Team or
-  Enterprise organization can use
-  [claude.ai/admin-settings/directory/submissions/plugins/new](https://claude.ai/admin-settings/directory/submissions/plugins/new).
-- **`claude-plugins-official`** — curated by Anthropic at their discretion. **No application
-  process exists**; the submission form does not add anything to it. Do not promise the user a
-  route into it.
+**The submission is a human step and cannot be automated** — do not build or suggest a pipeline
+that claims to. What *is* automatic: after the first submission the directory follows the
+tracked branch, scans each new commit and serves it once published, so from then on publishing
+really is just merging. The first organization to submit a repository folder owns that listing.
 
-**The form is a human step and cannot be automated** — do not build or suggest a pipeline that
-claims to. What *is* automatic: once a plugin is approved, it is pinned to a commit SHA in the
-community catalog and CI bumps that pin as new commits are pushed, so after the one-time
-submission, publishing really is just pushing. The public catalog syncs nightly, so expect a
-delay before it appears.
-
-Before pointing the user at the form, make sure `claude plugin validate --strict` passes and the
-README states what the plugin sends where — the review includes automated safety screening.
+Before pointing the user at the portal, make sure `claude plugin validate --strict` passes and
+the README states what the plugin sends where — every version gets automated validation and a
+security scan, and a person reviews a new listing before it goes live.
 
 ## Things worth checking before publishing anything
 

@@ -288,6 +288,8 @@ full-text inputs. It does not evaluate 0.5.0 direct candidate selection, downstr
   timeout budget (3 seconds by default), and may incur provider charges.
 - Historical data is preserved; obsolete classifier and local-lookup metrics are not shown in the main
   dashboard and are not retroactively converted into direct choices.
+- Plugin effort frontmatter needs Claude Code 2.1.78 or later; the current model precedence dates from
+  2.1.251. The native Agent contract and definition-based effort were inspected on 2.1.280.
 
 ## Tests
 
