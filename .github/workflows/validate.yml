@@ -62,11 +62,11 @@ jobs:
           else
             range="$BEFORE..$GITHUB_SHA"
           fi
-          all=false; reason=""; tests=false; dirs=()
+          all=false; reason=""; tests=false; panes=false; dirs=()
           if git diff --name-only -z "$range" > "$RUNNER_TEMP/changed" 2>/dev/null; then
             echo "changed in $range:"
           else
-            all=true; reason="cannot compare $range"; tests=true; : > "$RUNNER_TEMP/changed"
+            all=true; reason="cannot compare $range"; tests=true; panes=true; : > "$RUNNER_TEMP/changed"
           fi
           while IFS= read -r -d '' file; do
             echo "  $file"
@@ -74,6 +74,7 @@ jobs:
               .claude-plugin/marketplace.json|plugin-factory/*|.github/workflows/*) all=true; reason=${reason:-$file} ;;
             esac
             case "$file" in subagent-model-router/*|.github/workflows/*) tests=true ;; esac
+            case "$file" in task-panes/*|.github/workflows/*) panes=true ;; esac
             case "$file" in */*) dirs+=("${file%%/*}") ;; esac
           done < "$RUNNER_TEMP/changed"
           if [ "$all" = true ]; then
@@ -89,7 +90,8 @@ jobs:
           echo "every plugin: $all${reason:+ ($reason)}"
           echo "plugins to check: ${plugins:-none}"
           echo "subagent-model-router unit tests: $tests"
-          { echo "all=$all"; echo "plugins=$plugins"; echo "router_tests=$tests"; } >> "$GITHUB_OUTPUT"
+          echo "task-panes unit tests: $panes"
+          { echo "all=$all"; echo "plugins=$plugins"; echo "router_tests=$tests"; echo "panes_tests=$panes"; } >> "$GITHUB_OUTPUT"
 
       - name: marketplace — names and versions of every plugin
         run: |
@@ -126,7 +128,7 @@ jobs:
             || echo "::warning::claude CLI unavailable; the official validator step will be skipped"
 
       # python3 is for plugin-test and for the unit tests below: whatever turns those tests on (a change
-      # to subagent-model-router or a workflow, a range that cannot be compared) also lists a plugin.
+      # to subagent-model-router, task-panes or a workflow, a range that cannot be compared) also lists a plugin.
       - name: runner image — node, python3 and the pinned claude CLI, on the self-hosted runner
         if: runner.environment == 'self-hosted' && steps.changes.outputs.plugins != ''
         run: |
@@ -182,3 +184,14 @@ jobs:
           fi
           python3 --version
           python3 -B subagent-model-router/tests/run_parallel.py -j "$TEST_JOBS"
+
+      - name: task-panes — unit tests
+        env:
+          RUN: ${{ steps.changes.outputs.panes_tests }}
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          if [ "$RUN" != true ]; then
+            echo "task-panes and the workflows are unchanged: unit tests skipped"; exit 0
+          fi
+          python3 --version
+          cd task-panes && python3 -B -m unittest discover -s tests -p 'test_*.py'

@@ -22,6 +22,7 @@ then browse with `/plugin`, or install directly:
 | [**keepassxc-migration**](keepassxc-migration/) | Moves a Linux desktop's secrets into KeePassXC — out of gnome-keyring, KWallet and shell dotfiles, with the browser sessions surviving the move |
 | [**plugin-factory**](plugin-factory/) | Scaffold, check and release plugins in this repository, with the same validation Anthropic's review pipeline runs |
 | [**subagent-model-router**](subagent-model-router/) | Every subagent gets a model that fits its task, chosen by Jev (TypeSafe AI) — in Claude Code and Codex — while your main session keeps the model you chose |
+| [**task-panes**](task-panes/) | A queue of agent tasks in tmux panes — Claude Code or Codex in a bubblewrap sandbox, each started when its dependencies are done and closed only when a project command confirms it finished |
 
 ## How releases work
 
