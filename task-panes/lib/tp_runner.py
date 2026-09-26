@@ -510,19 +510,34 @@ class Engine:
             self.tmux.set_option(own_pane, TASK_OPTION, CONTROL)
             self.tmux.set_option(own_pane, LABEL_OPTION, "task-panes control")
             self.control = own_pane
+            self.tmux.set_mouse(self.queue.session, self.queue.mouse)
             return
         viewer = [self.python, self.bin_path, "_log", "--state-dir", str(self.store.root)]
         if not self.tmux.has_session(self.queue.session):
-            self.control = self.tmux.new_session(self.queue.session, viewer, str(self.queue.dir))
+            self.control = self.tmux.new_session(self.queue.session, viewer, str(self.queue.dir), self.queue.mouse)
             return
         self.control = next((p.id for p in panes if p.task == CONTROL), None)
         if self.control is None and panes:
             self.control = self.tmux.split(panes[-1].id, viewer, str(self.queue.dir), above=False)
             self.tmux.set_option(self.control, TASK_OPTION, CONTROL)
             self.tmux.set_option(self.control, LABEL_OPTION, "task-panes control (log)")
+        self.tmux.set_mouse(self.queue.session, self.queue.mouse)
+
+    def check_ssh_auth_sock(self) -> str | None:
+        """None when SSH_AUTH_SOCK is live, otherwise an error message."""
+        sock = os.environ.get("SSH_AUTH_SOCK", "")
+        if not sock:
+            return None
+        if not tp_sandbox.socket_alive(sock):
+            return f"SSH_AUTH_SOCK {sock!r} is dead or missing; git push will fail"
+        return None
 
     def launch(self, task: Task, agent: str) -> bool:
         """Prepare the workdir and open the agent pane; False when the task did not start."""
+        ssh_error = self.check_ssh_auth_sock()
+        if ssh_error:
+            self.stop(task, ssh_error)
+            return False
         paths = self.queue.paths(task)
         session_id = str(uuid.uuid4())
         exists = paths.worktree.exists()

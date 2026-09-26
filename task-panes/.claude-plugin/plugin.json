@@ -1,7 +1,7 @@
 {
   "name": "task-panes",
   "displayName": "Task Panes",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Runs a queue of agent tasks in tmux panes, one interactive Claude Code or Codex agent per pane inside a bubblewrap sandbox, starting each task when its dependencies are done and closing it only when a project command confirms completion.",
   "author": { "name": "Eugeny Kuzakov", "url": "https://github.com/korkin25" },
   "homepage": "https://github.com/korkin25/agent-plugins/tree/main/task-panes",

@@ -3,6 +3,7 @@ import io
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -33,6 +34,7 @@ class FakeTmux:
         self.sessions, self.store, self.splits, self.killed, self.count = set(), {}, [], [], 0
         self.parked = []
         self.content = {}
+        self.mouse_on = {}
 
     def _new(self, argv, cwd, task=""):
         pane = f"%{self.count}"
@@ -46,8 +48,9 @@ class FakeTmux:
     def has_session(self, session):
         return session in self.sessions
 
-    def new_session(self, session, argv, cwd):
+    def new_session(self, session, argv, cwd, mouse=True):
         self.sessions.add(session)
+        self.mouse_on[session] = mouse
         return self._new(argv, cwd, "control")
 
     def split(self, target, argv, cwd, above=True):
@@ -82,6 +85,17 @@ class FakeTmux:
 
     def capture(self, pane):
         return self.content.get(pane, "")
+
+    def set_mouse(self, session, mouse):
+        self.mouse_on[session] = mouse
+
+
+def make_unix_socket(path: str) -> socket.socket:
+    """Create and bind a listening Unix socket; caller closes it."""
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(path)
+    sock.listen(1)
+    return sock
 
 
 def queue_text(tasks: str, extra: str = "", agents: str = "") -> str:
@@ -345,7 +359,10 @@ class LifecycleTest(Base):
     def test_agent_env_is_only_the_pass_list_and_task_vars(self):
         saved = dict(os.environ)
         self.addCleanup(lambda: (os.environ.clear(), os.environ.update(saved)))
-        os.environ.update(GITLAB_TOKEN="secret-value", HOME="/nowhere", SSH_AUTH_SOCK="/s/agent",
+        ssh_sock_path = str(self.dir / "ssh-agent.sock")
+        ssh_sock = make_unix_socket(ssh_sock_path)
+        self.addCleanup(ssh_sock.close)
+        os.environ.update(GITLAB_TOKEN="secret-value", HOME="/nowhere", SSH_AUTH_SOCK=ssh_sock_path,
                           PROJECT_HOST="gitlab.example")
         self.assertNotIn("GITLAB_TOKEN", tp_runner.PASS_ENV)
         queue = self.queue(queue_text(THREE, extra='pass_env = ["PROJECT_HOST", "NOT_SET_ANYWHERE"]'))
@@ -569,7 +586,8 @@ class SandboxTest(Base):
         work.mkdir()
         runtime = self.dir / "run-user"
         (runtime / "gcr").mkdir(parents=True)
-        (runtime / "gcr" / "ssh").write_text("")
+        ssh_sock = make_unix_socket(str(runtime / "gcr" / "ssh"))
+        self.addCleanup(ssh_sock.close)
         tmux_dir = self.dir / "tmux-tmp" / "tmux-1000"
         tmux_dir.mkdir(parents=True)
         env = {"XDG_RUNTIME_DIR": str(runtime), "SSH_AUTH_SOCK": str(runtime / "gcr" / "ssh"),
@@ -625,17 +643,23 @@ class SandboxTest(Base):
         gpg_sock = home / ".gnupg" / "S.gpg-agent.ssh"
         home_sock = home / ".ssh" / "agent.sock"
         plain = self.dir / "agent.sock"
-        for sock in (gpg_sock, home_sock, plain):
-            sock.write_text("")
-        for sock, bound in ((gpg_sock, False), (home_sock, True), (plain, False)):
-            env = {"XDG_RUNTIME_DIR": str(self.dir / "no-runtime"), "SSH_AUTH_SOCK": str(sock)}
-            plan = tp_sandbox.plan(tp_sandbox.SandboxSpec(private_tmp=False), [], self.dir / "work",
-                                   home=str(home), env=env, tiocsti=False)
-            joined = " ".join(plan.prefix)
-            with self.subTest(sock=sock.name):
-                self.assertEqual(f"--ro-bind {sock} {sock}" in joined, bound,
-                                 "the socket returns from the emptied $HOME, never from a hidden ~/.gnupg")
-                self.assertNotIn(str(home / ".gnupg"), plan.prefix, "~/.gnupg is gone with $HOME")
+        socks = {}
+        try:
+            socks["gpg"] = make_unix_socket(str(gpg_sock))
+            socks["home"] = make_unix_socket(str(home_sock))
+            socks["plain"] = make_unix_socket(str(plain))
+            for sock, bound in ((gpg_sock, False), (home_sock, True), (plain, False)):
+                env = {"XDG_RUNTIME_DIR": str(self.dir / "no-runtime"), "SSH_AUTH_SOCK": str(sock)}
+                plan = tp_sandbox.plan(tp_sandbox.SandboxSpec(private_tmp=False), [], self.dir / "work",
+                                       home=str(home), env=env, tiocsti=False)
+                joined = " ".join(plan.prefix)
+                with self.subTest(sock=sock.name):
+                    self.assertEqual(f"--ro-bind {sock} {sock}" in joined, bound,
+                                     "the socket returns from the emptied $HOME, never from a hidden ~/.gnupg")
+                    self.assertNotIn(str(home / ".gnupg"), plan.prefix, "~/.gnupg is gone with $HOME")
+        finally:
+            for s in socks.values():
+                s.close()
 
     def test_home_is_always_emptied(self):
         home = self.dir / "home"
@@ -728,6 +752,57 @@ class SandboxTest(Base):
         cut = record["argv"].index("--")
         self.assertEqual(record["argv"][cut + 1:cut + 3], ["sh", "-c"])
         self.assertEqual(oct((self.dir / "tmp" / "a").stat().st_mode & 0o777), "0o700")
+
+
+class SshAndMouseTest(Base):
+    def setUp(self):
+        super().setUp()
+        self.saved_env = dict(os.environ)
+        self.saved_ssh_auth_sock = os.environ.get("SSH_AUTH_SOCK")
+
+    def tearDown(self):
+        if self.saved_ssh_auth_sock:
+            os.environ["SSH_AUTH_SOCK"] = self.saved_ssh_auth_sock
+        elif "SSH_AUTH_SOCK" in os.environ:
+            del os.environ["SSH_AUTH_SOCK"]
+        super().tearDown()
+
+    def test_ssh_auth_sock_check_detects_dead_socket(self):
+        dead_sock = self.dir / "dead.sock"
+        os.environ["SSH_AUTH_SOCK"] = str(dead_sock)
+        queue = self.queue(queue_text('[[tasks]]\nid = "A"\n'))
+        engine = self.engine(queue)
+        self.assertIsNotNone(engine.check_ssh_auth_sock(), "dead socket should be detected")
+
+    def test_ssh_auth_sock_stops_task_when_dead(self):
+        dead_sock = self.dir / "dead.sock"
+        os.environ["SSH_AUTH_SOCK"] = str(dead_sock)
+        queue = self.queue(queue_text('[[tasks]]\nid = "A"\n'))
+        engine = self.engine(queue)
+        engine.heavy()
+        engine.light()
+        st = engine.state["tasks"].get("A", {})
+        self.assertEqual(st["status"], "stopped")
+        self.assertIn("SSH_AUTH_SOCK", st["reason"])
+
+    def test_mouse_option_in_queue(self):
+        queue = self.queue(queue_text(THREE, extra="mouse = false\n"))
+        self.assertFalse(queue.mouse)
+        queue2 = self.queue(queue_text(THREE))
+        self.assertTrue(queue2.mouse, "mouse defaults to true")
+
+    def test_mouse_set_on_new_session(self):
+        queue = self.queue(queue_text(THREE))
+        engine = self.engine(queue)
+        engine.ensure_session()
+        self.assertTrue(self.tmux.mouse_on.get(queue.session))
+
+    def test_mouse_set_on_existing_session(self):
+        queue = self.queue(queue_text(THREE))
+        self.tmux.new_session(queue.session, [], str(queue.dir), mouse=False)
+        engine = self.engine(queue)
+        engine.ensure_session()
+        self.assertTrue(self.tmux.mouse_on.get(queue.session), "mouse turned on for existing session")
 
 
 class PaneAndCliTest(Base):

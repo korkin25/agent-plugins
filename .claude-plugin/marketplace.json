@@ -33,7 +33,7 @@
       "name": "task-panes",
       "source": "./task-panes",
       "description": "A queue of agent tasks in tmux panes — Claude Code or Codex in a bubblewrap sandbox, each started when its dependencies are done and closed only when a project command confirms it finished.",
-      "version": "0.2.0"
+      "version": "0.2.1"
     }
   ]
 }

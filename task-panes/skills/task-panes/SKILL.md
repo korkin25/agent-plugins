@@ -57,6 +57,15 @@ Ask, in this order, one at a time:
 changing that long — the agent is presumably waiting on the owner — so the next ready task can start;
 the idle pane itself is left alone. Do not ask about it unless the owner brings it up.
 
+`mouse` (default true) enables tmux mouse support in the session (selecting, scrolling, clicking panes).
+Set to `false` if the environment or tools conflict with mouse tracking. Do not ask unless the owner
+brings it up.
+
+**SSH_AUTH_SOCK:** The runner checks that `SSH_AUTH_SOCK` points to a live socket before starting a task.
+If the socket is dead or missing, the task stays in the queue with a visible event in status; `check`
+and `start` report an error. Inside the sandbox `SSH_AUTH_SOCK` is set only when the socket is mounted.
+No action needed: the agent just won't be able to `git push` over ssh if the runner stops the task.
+
 Then write the file (the format is in the plugin's `README.md`), and run
 
 ```

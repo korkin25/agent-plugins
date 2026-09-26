@@ -4,6 +4,7 @@ from __future__ import annotations
 import glob
 import os
 import shutil
+import socket
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -105,6 +106,25 @@ def tiocsti_allowed(path: str = TIOCSTI_SYSCTL) -> bool:
         return True
 
 
+def socket_alive(path: str) -> bool:
+    """True when SSH_AUTH_SOCK is a live socket (can connect to it)."""
+    if not os.path.lexists(path):
+        return False
+    import stat
+    try:
+        st = os.stat(path)
+        if not stat.S_ISSOCK(st.st_mode):
+            return False
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.connect(path)
+            return True
+        finally:
+            sock.close()
+    except (OSError, TypeError):
+        return False
+
+
 def plan(spec: SandboxSpec, agent_state: list[str], cwd: Path, home: str | None = None,
          bwrap: str = "bwrap", sockets: list[str] | None = None, env=None,
          tiocsti: bool | None = None) -> Plan:
@@ -156,7 +176,7 @@ def plan(spec: SandboxSpec, agent_state: list[str], cwd: Path, home: str | None 
     # The ssh-agent socket returns from an emptied root, never from inside a hidden path.
     sock = env.get("SSH_AUTH_SOCK", "")
     roots = covered + ([home] if private_home else [])
-    if sock and os.path.exists(sock) and any(_under(sock, r) for r in roots) \
+    if sock and socket_alive(sock) and any(_under(sock, r) for r in roots) \
             and not any(_under(sock, str(h)) for h in hidden):
         args += ["--ro-bind", sock, sock]
     allow = [expand(p, home) for p in DEFAULT_HOME_ALLOW + spec.home_allow]
