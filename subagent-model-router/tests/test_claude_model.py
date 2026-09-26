@@ -19,7 +19,9 @@ import router_claude_model as reader  # noqa: E402
 
 class ClaudeModelTests(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp(dir="/var/tmp", prefix="router-claude-model-"))
+        # Honor the runner's TMPDIR; canonicalize only our synthetic fixture
+        # because macOS temporary roots can contain a /var symlink.
+        self.root = Path(tempfile.mkdtemp(prefix="router-claude-model-")).resolve()
         self.addCleanup(shutil.rmtree, self.root, True)
         self.home = self.root / "claude"
         self.session = str(uuid.uuid4())
