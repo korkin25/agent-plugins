@@ -85,6 +85,10 @@ class Tmux:
     def set_option(self, pane: str, key: str, value: str) -> None:
         self._run("set-option", "-p", "-t", pane, key, value)
 
+    def capture(self, pane: str) -> str:
+        """Visible content of a pane, plain text; empty when the pane is already gone."""
+        return self._run("capture-pane", "-p", "-t", pane, check=False)
+
     def panes(self, session: str) -> list[Pane]:
         if not self.has_session(session):
             return []

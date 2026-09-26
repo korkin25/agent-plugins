@@ -15,6 +15,12 @@ never on the agent's word.
   it is **never restarted automatically**. Once its agent has exited, the pane moves to a tmux window
   of its own named `<id> stopped` — still open, with the explanation — and the next ready task
   takes its place. A task stopped while its agent still runs keeps its slot until the agent exits.
+- A pane whose visible content (`tmux capture-pane`) hasn't changed for `idle_minutes` (default 15,
+  set 0 to disable) is treated as **waiting for the owner**: its slot frees and the next ready task
+  starts in a new pane, while the idle agent's own pane is left exactly as it is — never closed, never
+  sent keys. When the pane changes again it goes back to occupying a slot; that alone starts nothing
+  new, it only stops further starts once occupied panes reach `panes` again. Status and dry-run show
+  it as `waiting-owner` with the minutes waited.
 - The runner keeps its state in a file and survives its own restart: a task whose pane is still
   alive is never launched a second time.
 - Every agent runs inside a [bubblewrap](https://github.com/containers/bubblewrap) sandbox from an
@@ -53,6 +59,7 @@ them up again instead of launching them twice.
 session = "work"                 # tmux session name
 panes = 2                        # agent panes at once
 poll_seconds = 30
+idle_minutes = 15                # unchanged pane frees its slot after this long; 0 disables it
 worktree_exists = "stop"         # prepare | stop | resume — see below
 slug = "{id_lower}"
 worktree = "~/src/project-worktrees/{slug}"
