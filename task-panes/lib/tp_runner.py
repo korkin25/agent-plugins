@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -304,9 +305,37 @@ class Engine:
         elif r.code != 1:
             st["reason"] = f"completion check error, will retry: {r.reason}"
 
+    # ---- idle detection
+    def update_idle(self) -> None:
+        """A running pane whose visible content hasn't changed for idle_minutes frees its slot."""
+        seconds = self.queue.idle_minutes * 60
+        if seconds <= 0:
+            return
+        for task in self.queue.tasks:
+            st = self.state["tasks"].get(task.id)
+            if not st or st.get("status") != "running" or not st.get("pane"):
+                continue
+            try:
+                text = self.tmux.capture(st["pane"])
+            except TmuxError:
+                continue
+            digest = hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()
+            now = self.clock()
+            if digest != st.get("idle_hash"):
+                was_waiting = st.get("waiting_owner", False)
+                st["idle_hash"], st["idle_since"], st["waiting_owner"] = digest, now, False
+                if was_waiting:
+                    self.event(f"{task.id}: pane active again, slot occupied")
+                continue
+            if not st.get("waiting_owner") and now - st.get("idle_since", now) >= seconds:
+                st["waiting_owner"] = True
+                minutes = round((now - st["idle_since"]) / 60)
+                self.event(f"{task.id}: waiting-owner, ждёт ответа {minutes} мин, слот освобождён")
+
     # ---- cycles
     def heavy(self) -> None:
         """Refresh project data, verify active tasks and re-evaluate the rest."""
+        self.update_idle()
         if "refresh" in self.queue.commands:
             r = self.command("refresh")
             if r.code != 0:
@@ -337,6 +366,7 @@ class Engine:
     def light(self) -> None:
         self.apply_requests()
         self.reconcile()
+        self.update_idle()
         self.launch_ready()
         self.save()
 
@@ -384,7 +414,8 @@ class Engine:
         self.event(f"{task.id}: stopped pane {st['pane']} moved to window '{task.id} stopped'; its slot is free")
 
     def occupied(self) -> int:
-        return sum(1 for st in self.state["tasks"].values() if st.get("pane") and not st.get("parked"))
+        return sum(1 for st in self.state["tasks"].values()
+                    if st.get("pane") and not st.get("parked") and not st.get("waiting_owner"))
 
     def launch_ready(self) -> None:
         free = self.queue.panes - self.occupied()
@@ -549,6 +580,9 @@ class Engine:
         for task in self.queue.tasks:
             st = self.state["tasks"].get(task.id, {})
             status, reason = self.evals.get(task.id, (st.get("status", "pending"), st.get("reason", "")))
+            if status == "running" and st.get("waiting_owner"):
+                minutes = round((self.clock() - st.get("idle_since", self.clock())) / 60)
+                status, reason = "waiting-owner", f"ждёт ответа {minutes} мин, слот освобождён"
             rows.append({"id": task.id, "title": task.title, "status": status, "reason": reason,
                          "agent": st.get("agent") or self.agent_for(task) or "", "pane": st.get("pane") or ""})
         return rows

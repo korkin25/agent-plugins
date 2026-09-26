@@ -32,6 +32,7 @@ class FakeTmux:
         self.socket, self.exe = None, "tmux"
         self.sessions, self.store, self.splits, self.killed, self.count = set(), {}, [], [], 0
         self.parked = []
+        self.content = {}
 
     def _new(self, argv, cwd, task=""):
         pane = f"%{self.count}"
@@ -79,6 +80,9 @@ class FakeTmux:
     def layout(self, session, control, control_rows=8):
         pass
 
+    def capture(self, pane):
+        return self.content.get(pane, "")
+
 
 def queue_text(tasks: str, extra: str = "", agents: str = "") -> str:
     agents = agents or '[agents.fake]\ncommand = ["sh", "-c", "sleep 30", "{session_id}", "{prompt}"]\n'
@@ -122,8 +126,10 @@ class Base(unittest.TestCase):
         queue.state_dir = self.dir / "state"
         return queue
 
-    def engine(self, queue) -> tp_runner.Engine:
-        return tp_runner.Engine(queue, self.tmux, tp_runner.Store(queue.state_dir), BIN, out=lambda _: None)
+    def engine(self, queue, clock=None) -> tp_runner.Engine:
+        kwargs = {"clock": clock} if clock else {}
+        return tp_runner.Engine(queue, self.tmux, tp_runner.Store(queue.state_dir), BIN, out=lambda _: None,
+                                **kwargs)
 
     def mark(self, kind: str, task_id: str):
         (self.dir / f"{kind}-{task_id}").write_text("")
@@ -149,6 +155,7 @@ class QueueParsingTest(Base):
         self.assertEqual(queue.paths(queue.tasks[0]).slug, "x-1")
         self.assertEqual(queue.worktree_exists, "prepare")
         self.assertEqual(queue.sandbox.mode, "bwrap")
+        self.assertEqual(queue.idle_minutes, 15.0)
 
     def test_rejects_bad_files(self):
         cases = {
@@ -166,6 +173,8 @@ class QueueParsingTest(Base):
             'session = "s"\npass_env = ["A B"]\ntasks = ["A"]\n[commands]\ndone = "true"\n': "pass_env[0]",
             'session = "s"\ntasks = ["A"]\n[commands]\ndone = "true"\n[sandbox]\nhome_allow = "~/.x"\n':
                 "home_allow",
+            'session = "s"\nidle_minutes = -1\ntasks = ["A"]\n[commands]\ndone = "true"\n': "idle_minutes",
+            'session = "s"\nidle_minutes = "soon"\ntasks = ["A"]\n[commands]\ndone = "true"\n': "idle_minutes",
         }
         for text, needle in cases.items():
             path = self.dir / "bad.toml"
@@ -473,6 +482,72 @@ class WorktreeRuleTest(Base):
         self.cycle(engine)
         self.assertEqual(engine.status_of("A"), "running")
         self.assertEqual(engine.state["tasks"]["B"]["reason"], "prepare failed (exit 3): no branch")
+
+
+class IdleTest(Base):
+    """The runner never sleeps in these tests: a fake clock and fake tmux content stand in for both."""
+
+    def start(self, idle_minutes=1, extra_tasks='[[tasks]]\nid = "D"\n'):
+        clock = [1000.0]
+        queue = self.queue(queue_text(THREE + extra_tasks, extra=f"idle_minutes = {idle_minutes}"))
+        engine = self.engine(queue, clock=lambda: clock[0])
+        self.cycle(engine)
+        return engine, clock
+
+    def tick(self, engine, clock, pane_c, seconds=1.0):
+        clock[0] += seconds
+        self.tmux.content[pane_c] = f"c is busy at {clock[0]}"
+        engine.light()
+
+    def test_idle_below_the_threshold_keeps_the_slot(self):
+        engine, clock = self.start()
+        pane_a, pane_c = engine.state["tasks"]["A"]["pane"], engine.state["tasks"]["C"]["pane"]
+        self.tmux.content[pane_a] = "waiting for the owner"
+        self.tick(engine, clock, pane_c, seconds=0)
+        self.tick(engine, clock, pane_c, seconds=30)
+        self.assertFalse(engine.state["tasks"]["A"].get("waiting_owner"))
+        self.assertEqual(engine.status_of("D"), "pending")
+        self.assertEqual(engine.occupied(), 2)
+
+    def test_idle_at_the_threshold_frees_the_slot_and_starts_the_next(self):
+        engine, clock = self.start()
+        pane_a, pane_c = engine.state["tasks"]["A"]["pane"], engine.state["tasks"]["C"]["pane"]
+        self.tmux.content[pane_a] = "waiting for the owner"
+        self.tick(engine, clock, pane_c, seconds=0)
+        self.tick(engine, clock, pane_c, seconds=61)
+        self.assertTrue(engine.state["tasks"]["A"]["waiting_owner"])
+        self.assertEqual(engine.status_of("A"), "running", "the agent pane is not touched")
+        self.assertNotIn(pane_a, self.tmux.killed)
+        self.assertEqual(engine.status_of("D"), "running", "the freed slot let the next ready task start")
+        row = next(r for r in engine.rows() if r["id"] == "A")
+        self.assertEqual(row["status"], "waiting-owner")
+        self.assertIn("ждёт ответа", row["reason"])
+
+    def test_pane_wakes_up_reoccupies_the_slot_without_a_new_start(self):
+        engine, clock = self.start(extra_tasks='[[tasks]]\nid = "D"\n[[tasks]]\nid = "E"\n')
+        pane_a, pane_c = engine.state["tasks"]["A"]["pane"], engine.state["tasks"]["C"]["pane"]
+        self.tmux.content[pane_a] = "waiting for the owner"
+        self.tick(engine, clock, pane_c, seconds=0)
+        self.tick(engine, clock, pane_c, seconds=61)
+        self.assertEqual(engine.status_of("D"), "running")
+        self.assertEqual(engine.status_of("E"), "pending")
+        splits_before = len(self.tmux.splits)
+        self.tmux.content[pane_a] = "the owner answered"
+        self.tick(engine, clock, pane_c, seconds=1)
+        self.assertFalse(engine.state["tasks"]["A"]["waiting_owner"])
+        self.assertEqual(len(self.tmux.splits), splits_before, "no new pane while occupied panes >= panes")
+        self.assertEqual(engine.status_of("E"), "pending")
+        self.assertEqual(engine.status_of("D"), "running", "the task started while A was idle keeps running")
+        self.assertEqual(engine.status_of("A"), "running")
+
+    def test_idle_minutes_zero_disables_the_feature(self):
+        engine, clock = self.start(idle_minutes=0)
+        pane_a, pane_c = engine.state["tasks"]["A"]["pane"], engine.state["tasks"]["C"]["pane"]
+        self.tmux.content[pane_a] = "waiting for the owner"
+        for _ in range(3):
+            self.tick(engine, clock, pane_c, seconds=10000)
+        self.assertNotIn("waiting_owner", engine.state["tasks"]["A"])
+        self.assertEqual(engine.status_of("D"), "pending")
 
 
 def bound_over(args: list[str], path: Path) -> list[str]:

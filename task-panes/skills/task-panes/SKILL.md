@@ -53,6 +53,10 @@ Ask, in this order, one at a time:
 7. **Panes** — how many tasks run at once. **Always ask**, even when the answer seems obvious;
    never fill in the default silently.
 
+`idle_minutes` (default 15, 0 disables) frees a task's slot once its pane's visible content stops
+changing that long — the agent is presumably waiting on the owner — so the next ready task can start;
+the idle pane itself is left alone. Do not ask about it unless the owner brings it up.
+
 Then write the file (the format is in the plugin's `README.md`), and run
 
 ```

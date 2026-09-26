@@ -25,8 +25,8 @@ DEFAULT_AGENTS = {
 }
 DEFAULT_PROMPT = "Work on task {id}: {title}"
 TOP_KEYS = {
-    "session", "panes", "poll_seconds", "command_timeout", "agent", "tmux_socket", "state_dir",
-    "worktree_exists", "slug", "worktree", "branch", "prompt", "env", "vars", "commands",
+    "session", "panes", "poll_seconds", "command_timeout", "idle_minutes", "agent", "tmux_socket",
+    "state_dir", "worktree_exists", "slug", "worktree", "branch", "prompt", "env", "vars", "commands",
     "agents", "sandbox", "tasks", "pass_env",
 }
 WORKTREE_EXISTS = ("prepare", "stop", "resume")
@@ -95,6 +95,7 @@ class Queue:
     panes: int = 2
     poll_seconds: float = 30.0
     command_timeout: float = 120.0
+    idle_minutes: float = 15.0
     agent: str | None = None
     tmux_socket: str | None = None
     state_dir: Path | None = None
@@ -307,6 +308,10 @@ def load(path: str | os.PathLike) -> Queue:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value < low:
             raise QueueError(f"{key} must be a number of seconds, at least {low}")
         numbers[key] = float(value)
+    idle_minutes = data.get("idle_minutes", 15.0)
+    if isinstance(idle_minutes, bool) or not isinstance(idle_minutes, (int, float)) or idle_minutes < 0:
+        raise QueueError("idle_minutes must be a non-negative number of minutes (0 disables it)")
+    idle_minutes = float(idle_minutes)
     commands = _str_map(data.get("commands"), "commands")
     unknown = set(commands) - COMMAND_KEYS
     if unknown:
@@ -344,7 +349,7 @@ def load(path: str | os.PathLike) -> Queue:
         raise QueueError(f"worktree_exists must be one of {list(WORKTREE_EXISTS)}")
     queue = Queue(
         path=path, session=session, panes=panes, poll_seconds=numbers["poll_seconds"],
-        command_timeout=numbers["command_timeout"], agent=agent, tmux_socket=socket,
+        command_timeout=numbers["command_timeout"], idle_minutes=idle_minutes, agent=agent, tmux_socket=socket,
         state_dir=state_dir or default_state_dir(path, session),
         worktree_exists=worktree_exists,
         slug=_str(data.get("slug", "{id_lower}"), "slug"),
