@@ -120,14 +120,16 @@ class UpdateNoticeTests(unittest.TestCase):
         self.assertFalse((self.config / "update-notice").exists())
 
     def test_codex_cli_and_cached_failures(self):
-        self.assertIn("Начните новую сессию Codex", self.run_notice("codex")["systemMessage"])
-        self.assertEqual(self.run_notice("codex"), {})
-        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
-        self.expire_cache()
-        self.payload.write_text("invalid JSON")
-        self.assertEqual(self.run_notice("codex"), {})
-        self.assertEqual(self.run_notice("codex"), {})
-        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+        # This tests caching; the separate timeout test exercises the production budget.
+        with mock.patch.object(notice, "CLI_TIMEOUT", 10):
+            self.assertIn("Начните новую сессию Codex", self.run_notice("codex")["systemMessage"])
+            self.assertEqual(self.run_notice("codex"), {})
+            self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+            self.expire_cache()
+            self.payload.write_text("invalid JSON")
+            self.assertEqual(self.run_notice("codex"), {})
+            self.assertEqual(self.run_notice("codex"), {})
+            self.assertEqual(len(self.calls.read_text().splitlines()), 2)
 
     def test_native_codex_root_prompt_with_turn_id_notifies(self):
         # Codex hooks/src/schema.rs UserPromptSubmitCommandInput serializes

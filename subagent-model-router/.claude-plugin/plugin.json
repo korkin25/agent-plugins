@@ -1,7 +1,7 @@
 {
   "name": "subagent-model-router",
   "displayName": "Subagent Model Router",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Jev directly selects a model and reasoning effort for each subagent task in Claude Code and Codex, with statistics for the selected and submitted parameters.",
   "author": {
     "name": "Eugeny Kuzakov",

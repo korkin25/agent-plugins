@@ -27,7 +27,7 @@
       "name": "subagent-model-router",
       "source": "./subagent-model-router",
       "description": "Jev directly selects a model and reasoning effort for each subagent task in Claude Code and Codex, with statistics for the selected and submitted parameters.",
-      "version": "0.5.1"
+      "version": "0.5.2"
     },
     {
       "name": "task-panes",
