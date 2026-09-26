@@ -3,7 +3,9 @@
 The same Python hook/worker serves Claude Code and Codex. Routine collection, retries, queries and HTML
 rendering execute as code; no language-model requests, extra Jev requests or agent turns are scheduled.
 Linux and macOS use the same Python 3.11+ standard-library implementation (SQLite, POSIX locks, detached
-subprocesses). No systemd, launchd, `/proc`, Docker or platform-specific collector is needed for telemetry.
+subprocesses). No systemd, launchd, Docker or external collector is needed. Optional runtime-client version
+detection uses bounded Linux `/proc` ancestry once during `SessionStart`; unsupported platforms
+or unavailable evidence report an unknown client version without disabling telemetry.
 State defaults to `~/.local/state/subagent-model-router/telemetry` on both systems, or `XDG_STATE_HOME` when set.
 The user supplies VM endpoints. The plugin is independent of VPNs, network topology and hosting provider.
 
@@ -104,15 +106,15 @@ Grafana datasource. The browser report is a snapshot; Grafana queries current da
 Metrics describe call outcomes, selected models/tiers/effort, active/shadow application, Jev request errors,
 Jev and hook latency histograms, and Jev decision probabilities. Jev timing includes its internal retry;
 one logical routing request can involve two HTTP attempts. No task text, descriptions, cwd, session IDs,
-request IDs, task hashes or credentials are exported. Project basenames and OS login names (or configured
-aliases) are exported as cohort labels. Model selection is not proof of final execution:
+request IDs, task hashes or credentials are exported. Host names, project basenames and OS login names (or configured
+aliases), client kind and observed versions are exported as cohort labels. Model selection is not proof of final execution:
 a configured role may override it, or launching the subagent may fail.
 Hook latency measures input parsing and routing through the point before telemetry enqueue/output; it does
 not include the telemetry write itself or host-side tool execution. Storage lock waiting is capped at 100 ms.
 
 Counter window totals and histogram quantiles are monitoring estimates. They do not establish task quality,
-actual token/currency savings or the cost of the Jev request. Those require separately authorized usage and
-outcome data. Never label selection share as monetary savings.
+actual token/currency savings. Reported Jev usage is accounted separately below; downstream savings
+require separately authorized usage and outcome data. Never label selection share as monetary savings.
 
 New counter series include a synthetic initial zero one flush interval before their first snapshot. This
 allows first-batch counts to be seen, but timing within that interval is approximate. VM-side downsampling
@@ -142,6 +144,55 @@ key limits are represented as unavailable amount plus explicit availability mark
 worker exits, polling resumes on the next session start, user prompt or subagent; this is not a permanently running account
 monitor. The agent can use `stats --account ALIAS --terminal` to show the snapshot in the answer.
 
+
+## Local lookup accounting (0.4.8+)
+
+When the explicitly authorized Claude transcript fallback actually runs, the local journal records
+`claude_model_lookup`: `read_attempts`, `bytes_read`, `duration_ms`, `outcome`, `api_input_tokens`,
+`api_output_tokens`, and `cost_usd`. Outcomes are `resolved`, `not_found`, or `rejected`. Attempts count
+calls to the file reader, including a failed open; bytes count actual bytes read before discarding a partial
+first line. Elapsed monotonic time includes the optional 100 ms retry. Bounds remain two attempts and 2 MiB.
+
+VM exports `smr_claude_model_lookup_requests_total` with an `outcome` label,
+`smr_claude_model_lookup_read_attempts_total`, `smr_claude_model_lookup_bytes_read_total`, and
+`smr_claude_model_lookup_duration_seconds_sum`, plus `smr_claude_model_lookup_api_input_tokens_total`,
+`smr_claude_model_lookup_api_output_tokens_total`, and `smr_claude_model_lookup_cost_usd_total`.
+The last three are zero only for recorded observations: the lookup performs local Python I/O, without a
+model API call. Missing/historical observations remain unavailable. Bytes are not API tokens, and no
+bytes-to-tokens cost estimate is made. Telemetry does not export dialogue or transcript paths.
+
+Paid Jev usage stays separate: `smr_jev_input_tokens_total` and `smr_jev_output_tokens_total` each have
+`smr_jev_<input|output>_known_token_requests_total` and
+`smr_jev_<input|output>_unknown_token_requests_total` coverage counters. Input coverage, output coverage
+and price coverage are independent; one available field cannot fill in another. Local journal, terminal,
+HTML and Grafana reports preserve these distinctions. Forced Claude plugin reload can invalidate its
+conversation cache; that host conversation cost is outside observed Jev usage and is not estimated here.
+
+## Observed runtime versions (0.4.8+)
+
+Routing records carry the executing copy's `plugin_version` and `host`; `agent_version` identifies the
+executing Claude Code/Codex client when runtime evidence is available, otherwise `unknown`. Model labels
+are separate. A different installed executable found on PATH is not runtime-version evidence. At
+`SessionStart` on Linux, a synchronous probe follows bounded process ancestry, retains the actual native
+executable and asks it for `--version` with a two-second limit. It reads executable links and parent
+process metadata, not process command lines, environments or transcripts. Ordinary routing hooks only
+read the exact session/client cache: they do not inspect `/proc` or run a version subprocess.
+
+Private state under the router config directory's `client-versions` stores hashes, a version (or unknown)
+and time in bounded 0600 records inside a 0700 directory. Positive and failed probe observations expire
+after 24 hours; repeated startup with the same session/executable identity reuses the cached observation.
+Missing, expired, unsafe or conflicting state yields unknown, without a runtime probe on the routing path.
+An old session must first emit `SessionStart` with the upgraded handler to populate this cache.
+`smr_calls_total` includes these labels. The gauge
+`smr_hook_version_last_seen_timestamp_seconds{instance,host,user,agent,plugin_version,agent_version}`
+contains the timestamp of the actual routing hook observation. Worker delivery/heartbeats retain that
+value; they cannot make an idle old hook look newly observed.
+
+Reports list versions and age per reporter, retaining historical versions and flagging multiple observed
+plugin/client combinations. Latest means most recently observed, not highest release number. Version
+reporting follows instance/user/client filters independently of project filters. Missing reporter metadata
+is shown separately; older samples are not retrospectively labelled. No fresh samples can mean idle
+sessions, delivery gaps or uninstrumented old code: these data cannot prove all hosts are upgraded.
 
 ## Effective model labels (0.4.2+)
 

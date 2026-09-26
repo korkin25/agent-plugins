@@ -22,6 +22,11 @@
           },
           {
             "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/subagent-model-router\" update-notice; true",
+            "timeout": 2
+          },
+          {
+            "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/subagent-model-router\" telemetry-kick; true",
             "timeout": 5
           }
@@ -53,6 +58,11 @@
     "UserPromptSubmit": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/subagent-model-router\" update-notice; true",
+            "timeout": 2
+          },
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/subagent-model-router\" telemetry-kick; true",

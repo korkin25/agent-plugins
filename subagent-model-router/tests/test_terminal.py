@@ -63,6 +63,104 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(data['summary']['jev_unpriced_requests'], 3)
         self.assertIn('$0.000004', t.format_terminal(data))
         self.assertIsNone(data['summary']['jev_cost_rate_current'])
+
+    def test_local_token_coverage_and_lookup_observations(self):
+        from router_dashboard import html_document, format_summary
+        now = dt.datetime(2026, 1, 10, tzinfo=dt.timezone.utc)
+        base = dict(ts='2026-01-09T00:00:00Z', reason='rule:light', latency_ms=1,
+                    project='repo', user='dev', agent='claude')
+        lookup = dict(read_attempts=2, bytes_read=1024, duration_ms=15, outcome='resolved',
+                      api_input_tokens=0, api_output_tokens=0, cost_usd=0)
+        rows = [base, dict(base, usage={'input_tokens': 0, 'output_tokens': 2}, claude_model_lookup=lookup),
+                dict(base, usage={'input_tokens': 12, 'output_tokens': True}),
+                dict(base, usage={'input_tokens': -1, 'output_tokens': 1.5}),
+                dict(base, usage={'input_tokens': '3', 'output_tokens': float('inf')}),
+                dict(base, agent='codex', usage={'input_tokens': 999}, claude_model_lookup=lookup),
+                dict(base, project='other', claude_model_lookup=lookup),
+                dict(base, user='other', claude_model_lookup=lookup)]
+        data = t.local_data(rows, days=7, now=now, project='repo', user='dev', agent='claude')
+        s = data['summary']
+        self.assertEqual(s['jev_input_tokens'], 12)
+        self.assertEqual(s['jev_input_token_coverage'], .4)
+        self.assertEqual(s['jev_output_tokens'], 2)
+        self.assertEqual(s['jev_output_token_coverage'], .2)
+        self.assertEqual(s['claude_model_lookup_requests'], 1)
+        self.assertEqual(s['claude_model_lookup_read_attempts'], 2)
+        self.assertEqual(s['claude_model_lookup_bytes_read'], 1024)
+        self.assertEqual(s['claude_model_lookup_duration_seconds'], .015)
+        self.assertEqual(s['claude_model_lookup_cost_usd'], 0)
+        self.assertEqual(s['claude_model_lookup_api_input_tokens'], 0)
+        self.assertIn('API-токены вход / выход: 0 / 0', t.format_terminal(data))
+        self.assertIn('Jev input token coverage</td><td>40.0%', html_document(data))
+        self.assertIn('Claude model lookup · local bytes read: 1,024', format_summary(data))
+        zero = t.local_data([dict(base, usage={'input_tokens': 0})], now=now)['summary']
+        self.assertEqual(zero['jev_input_tokens'], 0)
+        self.assertEqual(zero['jev_input_token_coverage'], 1)
+        self.assertIsNone(zero['jev_output_tokens'])
+        self.assertIsNone(zero['claude_model_lookup_cost_usd'])
+
+    def test_invalid_lookup_and_missing_history_are_not_free(self):
+        now = dt.datetime(2026, 1, 10, tzinfo=dt.timezone.utc)
+        base = dict(ts='2026-01-09T00:00:00Z', reason='explicit')
+        lookup = dict(read_attempts=0, bytes_read=0, duration_ms=0, outcome='rejected',
+                      api_input_tokens=0, api_output_tokens=0, cost_usd=0)
+        invalid = [None, {}, dict(lookup, read_attempts=True), dict(lookup, read_attempts=3),
+                   dict(lookup, bytes_read=2097153), dict(lookup, duration_ms=float('nan')),
+                   dict(lookup, duration_ms=-1), dict(lookup, api_input_tokens=1), dict(lookup, bytes_read=10**1000),
+                   dict(lookup, cost_usd=True), dict(lookup, outcome='invalid')]
+        data = t.local_data([dict(base, claude_model_lookup=v) for v in invalid], now=now)
+        for key in ('requests', 'read_attempts', 'bytes_read', 'duration_seconds', 'api_input_tokens', 'cost_usd'):
+            self.assertIsNone(data['summary']['claude_model_lookup_' + key])
+        observed = t.local_data([dict(base, claude_model_lookup=lookup)], now=now)
+        self.assertEqual(observed['summary']['claude_model_lookup_requests'], 1)
+        self.assertEqual(observed['summary']['claude_model_lookup_cost_usd'], 0)
+        self.assertEqual(observed['summary']['jev_requests'], 0)
+
+    def test_local_hook_versions_preserve_history_and_ignore_project(self):
+        from router_dashboard import html_document
+        now = dt.datetime(2026, 1, 10, tzinfo=dt.timezone.utc)
+        base = dict(ts='2026-01-08T00:00:00Z', reason='explicit', host='host', user='dev',
+                    agent='claude', project='one', plugin_version='9.0')
+        rows = [base, dict(base, ts='2026-01-09T00:00:00Z', project='two', plugin_version='1.0'),
+                dict(base, host='', plugin_version='invalid'), dict(base, plugin_version=None),
+                dict(base, host='other', user='other'), dict(base, agent='codex'),
+                dict(base, ts='2027-01-01T00:00:00Z', plugin_version='future')]
+        data = t.local_data(rows, days=7, now=now, project='one', user='dev', agent='claude')
+        versions = data['summary']['hook_versions']
+        self.assertEqual(len(versions), 2)
+        self.assertEqual(versions[0]['plugin_version'], '1.0')
+        self.assertTrue(versions[0]['latest_observed'])
+        self.assertFalse(versions[1]['latest_observed'])
+        self.assertEqual(versions[0]['age_seconds'], 86400)
+        self.assertEqual(data['summary']['hook_version_metadata_gaps'], 2)
+        self.assertEqual(data['summary']['hook_version_mixed_reporters'], 1)
+        self.assertEqual(data['summary']['calls'], 3)
+        self.assertIn('историческая', t.format_terminal(data))
+        self.assertIn('independent of project', html_document(data))
+        old = t.local_data([dict(ts=base['ts'], reason='explicit')], now=now)
+        self.assertEqual(old['summary']['hook_versions'], [])
+        self.assertEqual(old['summary']['hook_version_metadata_gaps'], 1)
+        self.assertIn('нет наблюдений версий', t.format_terminal(old))
+
+    def test_local_executing_client_version_is_distinct_from_plugin_and_model(self):
+        from router_dashboard import format_summary, html_document
+        now = dt.datetime(2026, 1, 10, tzinfo=dt.timezone.utc)
+        base = dict(ts='2026-01-08T00:00:00Z', reason='explicit', host='host', user='dev',
+                    agent='claude', plugin_version='0.4.8', model='claude-opus-4-6')
+        rows = [base, dict(base, ts='2026-01-08T01:00:00Z', agent_version='2.1.20'),
+                dict(base, ts='2026-01-09T00:00:00Z', agent_version='2.1.21'),
+                dict(base, ts='2026-01-07T00:00:00Z', agent_version='invalid/private'),
+                dict(base, ts='2026-01-07T00:00:00Z', agent_version='02.1.21')]
+        data = t.local_data(rows, now=now)
+        versions = data['summary']['hook_versions']
+        self.assertEqual([v['agent_version'] for v in versions], ['2.1.21', '2.1.20', 'unknown'])
+        self.assertTrue(versions[0]['latest_observed'])
+        self.assertFalse(versions[1]['latest_observed'])
+        self.assertEqual(data['summary']['hook_version_mixed_reporters'], 1)
+        self.assertIn('| 0.4.8 | 2.1.21 |', t.format_terminal(data))
+        self.assertIn('plugin=0.4.8; client=unknown', format_summary(data))
+        self.assertIn('<th>Plugin version</th><th>Client version</th>', html_document(data))
+        self.assertNotIn('invalid/private', html_document(data))
     def test_gap(self):
         data=t.local_data([]); data.update({'status':'partial','series':{'request_rate':[{'points':[[0,1],[60,None],[120,3]]}]}})
         self.assertIn('·', t.format_terminal(data))

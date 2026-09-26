@@ -52,9 +52,9 @@ class TelemetryIntegrationTests(Sandbox):
             self.assertEqual(enqueue.call_args.args[0], cfg["telemetry"])
             exported = enqueue.call_args.args[1]
             self.assertEqual({k: v for k, v in exported.items() if k not in ("project", "user", "actual_model", "model_source", "actual_effort", "effort_source")},
-                             dict(record, applied=False))
+                             {k: v for k, v in dict(record, applied=False).items() if k != "user"})
             self.assertTrue(exported["project"])
-            self.assertTrue(exported["user"])
+            self.assertEqual(exported["user"], router_telemetry.resolve_user(cfg["telemetry"]))
             self.assertEqual(exported["actual_model"], "claude-opus-4-6")
             self.assertEqual(exported["model_source"], "session")
             self.assertGreaterEqual(enqueue.call_args.args[2], 0)

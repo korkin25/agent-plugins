@@ -64,6 +64,19 @@ class ClaudeStateIntegrationTests(Sandbox):
         self.lifecycle("SessionStart", source="startup", model="claude-opus-4-6")
         self.assertFalse((self.home / ".local/state/subagent-model-router/claude-sessions").exists())
 
+    def test_base_record_uses_executed_plugin_version_and_safe_host(self):
+        import router_client_version
+        with mock.patch.object(router, "plugin_version", return_value="1.2.3"), \
+                mock.patch.object(router.socket, "gethostname", return_value="router-host"), \
+                mock.patch.object(router_client_version, "resolve_client_version", return_value="2.1.280") as resolve:
+            record = router.base_record(self.event(), "claude")
+        self.assertEqual(record["plugin_version"], "1.2.3")
+        self.assertEqual(record["host"], "router-host")
+        self.assertEqual(record["agent_version"], "2.1.280")
+        self.assertEqual(resolve.call_args.args[:2], ("claude", self.event()))
+        with mock.patch.object(router.socket, "gethostname", return_value="/private/path"):
+            self.assertEqual(router.base_record(self.event(), "claude")["host"], "unknown")
+
     def test_config_missing_or_broken_during_resume_clears_old_model(self):
         for broken in (False, True):
             with self.subTest(broken=broken):
@@ -121,6 +134,7 @@ class ClaudeStateIntegrationTests(Sandbox):
             self.lifecycle("SessionStart", source="startup", model="claude-opus-4-6")
             _, record = self.decision(observe=True)
             self.assertEqual(record["session_model"], "claude-opus-4-6")
+            self.assertNotIn("claude_model_lookup", record)
             read.assert_not_called()
 
     def test_startup_without_model_resolves_exact_current_agent_record(self):
@@ -136,6 +150,13 @@ class ClaudeStateIntegrationTests(Sandbox):
         self.assertIsNone(output)
         self.assertEqual(record["session_model"], "claude-opus-4-6")
         self.assertEqual(record["session_model_source"], "transcript_tool_use")
+        accounting = record["claude_model_lookup"]
+        self.assertEqual(accounting["read_attempts"], 1)
+        self.assertEqual(accounting["bytes_read"], transcript.stat().st_size)
+        self.assertEqual(accounting["outcome"], "resolved")
+        self.assertEqual(accounting["api_input_tokens"], 0)
+        self.assertEqual(accounting["api_output_tokens"], 0)
+        self.assertEqual(accounting["cost_usd"], 0)
         self.assertIn("model=claude-opus-4-6 (unchanged), effort=medium", router.decision_notice(record))
         self.assertNotIn("synthetic", json.dumps(record))
 

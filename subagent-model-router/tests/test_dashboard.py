@@ -81,7 +81,7 @@ class DashboardTests(unittest.TestCase):
     def test_queries_and_summary(self):
         with mock.patch.object(dashboard, "request", side_effect=self.fake) as call:
             data = dashboard.query_stats(self.cfg, 7)
-        self.assertLessEqual(call.call_count, 18)
+        self.assertLessEqual(call.call_count, 32)
         self.assertEqual(call.call_count, len(data["series"]))
         self.assertEqual(data["status"], "ok")
         self.assertEqual(data["summary"]["error_share"], 0)
@@ -139,7 +139,7 @@ class DashboardTests(unittest.TestCase):
                 dashboard.query_stats(self.cfg, project=project)
         def fetch(config, url, body=None):
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["query"][0]
-            if "smr_telemetry_" in query or "smr_openrouter_" in query:
+            if "smr_telemetry_" in query or "smr_openrouter_" in query or "smr_hook_version_" in query:
                 self.assertNotIn("project=", query)
             else:
                 self.assertIn('project="repo-one"', query)
@@ -265,6 +265,151 @@ class DashboardTests(unittest.TestCase):
         self.assertIsNone(result['summary']['jev_cost_coverage'])
         self.assertIsNone(result['summary']['jev_cost_usd'])
 
+    def test_tokens_lookup_zero_missing_invalid_and_cohorts(self):
+        values = {'jev_requests_total': 3, 'jev_input_tokens_total': 0, 'jev_input_known_token_requests_total': 2,
+                  'jev_input_unknown_token_requests_total': 1, 'jev_output_tokens_total': 'NaN',
+                  'jev_output_unknown_token_requests_total': 3,
+                  'claude_model_lookup_requests_total': 2, 'claude_model_lookup_read_attempts_total': 3,
+                  'claude_model_lookup_bytes_read_total': 1024, 'claude_model_lookup_duration_seconds_sum': .015,
+                  'claude_model_lookup_api_input_tokens_total': 0,
+                  'claude_model_lookup_api_output_tokens_total': 0, 'claude_model_lookup_cost_usd_total': 0}
+        def respond(config, url, body=None):
+            expression = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)['query'][0]
+            if 'query_range' in url:
+                return answer([], True)
+            if 'smr_telemetry_' not in expression and 'smr_openrouter_' not in expression:
+                for label in ('instance="unit-test"', 'user="dev"', 'agent="claude"'):
+                    self.assertIn(label, expression)
+                if 'smr_hook_version_' not in expression:
+                    self.assertIn('project="repo"', expression)
+            for name, value in values.items():
+                if 'smr_' + name + '{' in expression:
+                    return answer([({}, [1700000000, str(value)])])
+            return answer([], 'query_range' in url)
+        with mock.patch.object(dashboard, 'request', side_effect=respond):
+            result = dashboard.query_stats(self.cfg, project='repo', user='dev', agent='claude')
+        s = result['summary']
+        self.assertEqual(s['jev_input_tokens'], 0)
+        self.assertEqual(s['jev_input_token_coverage'], 2 / 3)
+        self.assertIsNone(s['jev_output_tokens'])
+        self.assertEqual(s['jev_output_token_coverage'], 0)
+        self.assertEqual(s['claude_model_lookup_cost_usd'], 0)
+        self.assertEqual(s['claude_model_lookup_duration_seconds'], .015)
+        self.assertIn('Jev input tokens · reported: 0', dashboard.format_summary(result))
+        self.assertIn('Claude model lookup · API spend</td><td>$0.000000', dashboard.html_document(result))
+        values['jev_input_known_token_requests_total'] = 'NaN'
+        with mock.patch.object(dashboard, 'request', side_effect=respond):
+            invalid = dashboard.query_stats(self.cfg, project='repo', user='dev', agent='claude')
+        self.assertIsNone(invalid['summary']['jev_input_token_coverage'])
+        values.clear()
+        with mock.patch.object(dashboard, 'request', side_effect=respond):
+            empty = dashboard.query_stats(self.cfg, project='repo', user='dev', agent='claude')
+        for key in ('jev_input_tokens', 'jev_input_token_coverage', 'claude_model_lookup_cost_usd', 'claude_model_lookup_requests'):
+            self.assertIsNone(empty['summary'][key])
+
+    def test_token_coverage_query_failure_is_unknown(self):
+        def respond(config, url, body=None):
+            expression = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)['query'][0]
+            if 'smr_jev_input_known_token_requests_total' in expression:
+                raise RuntimeError('unavailable')
+            if 'smr_jev_input_unknown_token_requests_total' in expression:
+                return answer([({}, [1700000000, '3'])])
+            return answer([], 'query_range' in url)
+        with mock.patch.object(dashboard, 'request', side_effect=respond):
+            result = dashboard.query_stats(self.cfg)
+        self.assertEqual(result['status'], 'partial')
+        self.assertIsNone(result['summary']['jev_input_token_coverage'])
+
+    def test_token_coverage_includes_legacy_requests_and_rejects_bad_denominators(self):
+        cases = [(10, 1, 0, .1, 9), (10, None, None, 0, 10), (1, 1, 0, 1, 0),
+                 (0, None, None, None, 0), (None, 1, None, None, None),
+                 (1, 2, 0, None, None), (2, 1, 2, None, None),
+                 ('NaN', 1, 0, None, None), (-1, 0, 0, None, None)]
+        for requests, known, unknown, coverage, unmeasured in cases:
+            with self.subTest(requests=requests, known=known, unknown=unknown):
+                values = {'jev_requests_total': requests, 'jev_input_known_token_requests_total': known,
+                          'jev_input_unknown_token_requests_total': unknown, 'jev_input_tokens_total': 200}
+                def respond(config, url, body=None):
+                    if 'query_range' in url:
+                        return answer([], True)
+                    expression = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)['query'][0]
+                    for name, value in values.items():
+                        if 'smr_' + name + '{' in expression and value is not None:
+                            return answer([({}, [1700000000, str(value)])])
+                    return answer([])
+                with mock.patch.object(dashboard, 'request', side_effect=respond):
+                    result = dashboard.query_stats(self.cfg)
+                self.assertEqual(result['summary']['jev_input_token_coverage'], coverage)
+                self.assertEqual(result['summary']['jev_input_unknown_token_requests'], unmeasured)
+                self.assertEqual(result['summary']['jev_input_tokens'], 200)
+        doc = json.loads((PLUGIN / 'grafana' / 'subagent-model-router.json').read_text())
+        panel = next(p for p in doc['panels'] if p['id'] == 38)
+        for target in panel['targets']:
+            self.assertIn('smr_jev_requests_total', target['expr'])
+            self.assertIn(' <= ', target['expr'])
+
+    def test_hook_versions_use_hook_time_not_export_and_ignore_project(self):
+        def respond(config, url, body=None):
+            expression = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)['query'][0]
+            if 'smr_hook_version_last_seen_timestamp_seconds' in expression:
+                self.assertNotIn('project=', expression)
+                for label in ('instance="unit-test"', 'user="dev"', 'agent="claude"'):
+                    self.assertIn(label, expression)
+                self.assertIn('max by (instance,host,user,agent,plugin_version,agent_version)', expression)
+                labels = dict(instance='unit-test', host='host-a', user='dev', agent='claude')
+                return answer([(dict(labels, plugin_version='9.0'), [1000, '100']),
+                               (dict(labels, plugin_version='1.0'), [1000, '200']),
+                               (dict(labels, host='host-b', plugin_version='2.0'), [1000, '150']),
+                               (dict(labels, host='', plugin_version='3.0'), [1000, '950'])])
+            if 'smr_calls_total' in expression and 'query_range' not in url:
+                return answer([({'user': 'dev', 'agent': 'claude'}, [1000, '3'])])
+            return answer([], 'query_range' in url)
+        with mock.patch.object(dashboard, 'request', side_effect=respond), mock.patch.object(dashboard.time, 'time', return_value=1000):
+            data = dashboard.query_stats(self.cfg, project='repo', user='dev', agent='claude')
+        rows = data['summary']['hook_versions']
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[0]['plugin_version'], '1.0')
+        self.assertTrue(rows[0]['latest_observed'])
+        self.assertEqual(rows[0]['age_seconds'], 800)
+        self.assertFalse(rows[1]['latest_observed'])
+        self.assertTrue(rows[2]['latest_observed'])
+        self.assertEqual(data['summary']['hook_version_metadata_gaps'], 3)
+        self.assertEqual(data['summary']['hook_version_mixed_reporters'], 1)
+        self.assertIn('historical', dashboard.html_document(data))
+        self.assertIn('independent of project', dashboard.format_summary(data))
+
+    def test_version_only_other_project_is_not_routing_data(self):
+        def respond(config, url, body=None):
+            if 'smr_hook_version_' in urllib.parse.unquote(url):
+                return answer([({'instance': 'unit-test', 'host': 'host', 'user': 'dev', 'agent': 'claude',
+                                 'plugin_version': '1.0'}, [1000, '900'])])
+            return answer([], 'query_range' in url)
+        with mock.patch.object(dashboard, 'request', side_effect=respond), mock.patch.object(dashboard.time, 'time', return_value=1000):
+            data = dashboard.query_stats(self.cfg, project='empty')
+        self.assertEqual(data['status'], 'no_data')
+        self.assertEqual(len(data['summary']['hook_versions']), 1)
+        self.assertIsNone(data['summary']['calls'])
+
+    def test_client_versions_do_not_collapse_and_legacy_remains_unknown(self):
+        def respond(config, url, body=None):
+            expression = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)['query'][0]
+            if 'smr_hook_version_' in expression:
+                self.assertIn('plugin_version,agent_version)', expression)
+                labels = dict(instance='unit-test', host='host', user='dev', agent='codex', plugin_version='0.4.8')
+                return answer([(labels, [1000, '100']),
+                               (dict(labels, agent_version='0.120.0'), [1000, '200']),
+                               (dict(labels, agent_version='0.121.0'), [1000, '300'])])
+            return answer([], 'query_range' in url)
+        with mock.patch.object(dashboard, 'request', side_effect=respond), mock.patch.object(dashboard.time, 'time', return_value=1000):
+            data = dashboard.query_stats(self.cfg)
+        versions = data['summary']['hook_versions']
+        self.assertEqual([v['agent_version'] for v in versions], ['0.121.0', '0.120.0', 'unknown'])
+        self.assertEqual([v['latest_observed'] for v in versions], [True, False, False])
+        self.assertEqual(data['summary']['hook_version_mixed_reporters'], 1)
+        self.assertIn('plugin=0.4.8; client=unknown', dashboard.format_summary(data))
+        self.assertIn('<th>Client version</th>', dashboard.html_document(data))
+        self.assertIn('0.121.0', dashboard.html_document(data))
+
     def test_fresh_account_snapshot_beats_higher_stale_balance(self):
         def respond(config, url, body=None):
             expression = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)['query'][0]
@@ -319,6 +464,12 @@ class DashboardTests(unittest.TestCase):
                         self.assertTrue(target['expr'].startswith('min by (account)'))
                     continue
                 self.assertIn('instance=~"$instance"', target["expr"])
+                if "smr_hook_version_" in target["expr"]:
+                    self.assertIn('plugin_version,agent_version)', target['expr'])
+                    self.assertIn('agent=~"$agent"', target["expr"])
+                    self.assertIn('user=~"$user"', target["expr"])
+                    self.assertNotIn('$project', target["expr"])
+                    continue
                 if "smr_telemetry_" not in target["expr"]:
                     self.assertIn('agent=~"$agent"', target["expr"])
                     self.assertIn('project=~"$project"', target["expr"])
