@@ -146,7 +146,8 @@ monitor. The agent can use `stats --account ALIAS --terminal` to show the snapsh
 ## Effective model labels (0.4.2+)
 
 `smr_calls_total.model` holds the selected launch model, resolving inherited choices from the host event's
-session model. `model_source=session|specified|unknown` explains the origin; `recommended_model` keeps Jev's
+session model. `model_source=session|specified|session_start|post_model_switch|transcript_tool_use|unknown` explains the origin;
+`recommended_model` keeps Jev's
 mapped recommendation separately, including in shadow mode. No model label contains `inherit` or `unchanged`.
 If a host omits its session model or a custom role overrides it without observable evidence, it is `unknown`.
 This remains a prelaunch observation, not proof of successful subagent execution. Claude aliases supplied
@@ -165,6 +166,34 @@ model it is not evidence of child effort. Custom roles and absent evidence remai
 or ANTHROPIC_MODEL/CLAUDE_CODE_EFFORT_LEVEL are not substituted for current runtime observations. Old samples
 are not retroactively repaired and retired call-series are no longer replayed by upgraded workers.
 
+
+## Claude session model (0.4.7+)
+
+The silent `claude-session` handler observes `SessionStart.model` and `PostModelSwitch.to_model`, then
+invalidates on `SessionEnd`. It needs an existing router config, but no provider key or network request.
+`SessionStart` always replaces previous evidence, including on resume without a model. Missing/invalid
+config invalidates existing evidence without creating new state. A conflicting
+`from_model`, missing/invalid metadata, corrupt state or expired checkpoint yields unknown.
+
+For inherited general-purpose launches and shadow observations, the selection hook can use this evidence
+for the exact session UUID and transcript-path hash. It does not open transcripts or infer models from
+settings. Nested/custom agents, explicit launches, changed-model active routes and subagent model
+environment overrides do not use the fallback. The journal retains `session_model_source`; VM exports
+`model_source=session_start|post_model_switch`. This is selected parent-model evidence, not proof of final
+child execution. Parent effort is not attributed to a different selected child model in notices.
+
+State is private (0700/0600), under `XDG_STATE_HOME/subagent-model-router/claude-sessions` or the usual
+`~/.local/state` default. At most 256 slots of 2048 bytes are kept, with a 24-hour TTL. Slot collisions lose
+evidence. Locks never wait; contention or failed writes invalidate when the filesystem permits it.
+Start or resume Claude after upgrading so it emits the lifecycle observations. Old VM samples are unchanged.
+
+Claude 2.1.280 can omit `SessionStart.model` even when launched with `--model`. With explicit authorization,
+enable `[claude] observe_transcript_model = true` to recover only the current initiating Agent call's
+`message.model`. This fallback reads a bounded tail of the event's exact transcript under
+`CLAUDE_CONFIG_DIR/projects`, checks `sessionId` and the `Agent` block's `tool_use_id`, and rejects
+conflicting evidence. It never opens another session or uses a previous assistant message. At most two 1 MiB
+reads and one 100 ms retry cover asynchronous writes without waiting indefinitely. The exported source is
+`transcript_tool_use`; conversation text is not retained or exported. Lifecycle evidence takes precedence.
 
 ## Codex runtime effort (0.4.5+)
 

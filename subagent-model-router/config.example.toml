@@ -22,6 +22,7 @@ heavy_max = 0.3              # for standard: P(heavy) below this
 
 [claude]
 route_types = ["general-purpose"]   # subagent types to route; a call without subagent_type is general-purpose
+observe_transcript_model = false   # opt-in: exact Agent call model from bounded local transcript tail
 
 [claude.models]
 light = "haiku"

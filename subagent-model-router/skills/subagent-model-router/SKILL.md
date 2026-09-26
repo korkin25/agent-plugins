@@ -58,13 +58,24 @@ subagent starts as usual and the reason goes to the journal.
 After each successful Jev decision, the hook emits a top-level `systemMessage` for the user in both Claude
 Code and Codex: the subagent label, selected model, Codex reasoning effort and decision reason. This is emitted
 by synchronous `PreToolUse`, before the launch tool runs. `additionalContext` is not a user-facing notice.
-Inherited models show the session model supplied by the host plus `(unchanged)`; if omitted, `unknown
-(unchanged)` is used. Config defaults are never treated as runtime evidence. For Codex same-model active
+Inherited models show the session model supplied by the host plus `(unchanged)`. Claude also uses exact-session
+metadata collected from `SessionStart.model` and `PostModelSwitch.to_model` without opening transcripts.
+Resume without a model and session end invalidate prior evidence. Nested/custom agents and subagent model
+environment overrides do not use this fallback. Checkpoints expire after 24 hours and occupy at most 256
+private slots (collisions lose evidence). Without evidence, `unknown (unchanged)` is used. After updating,
+start or resume a Claude session to collect these events; old metrics are not repaired. Claude 2.1.280 can
+omit its startup model even with `--model`. Optional `[claude] observe_transcript_model = true` resolves the
+exact initiating `Agent` message by session UUID and tool-use ID when lifecycle evidence is absent. Before
+enabling it, obtain authorization to read the bounded tail of the current session's JSONL transcript under
+`CLAUDE_CONFIG_DIR/projects` (default `~/.claude/projects`) for model extraction. It reads at most two 1 MiB
+tails and retries once after 100 ms for asynchronous writes. Only model/source are retained; no dialogue
+is sent to Jev, metrics or chat. Ambiguous/missing evidence stays unknown. Config defaults
+are never treated as runtime evidence. For Codex same-model active
 inheritance, the hook may read the matching session's bounded rollout tail, selecting only `turn_context`
 metadata for the exact `session_id`, `turn_id` and model. Supported runtime effort is explicitly passed to
 the child, preventing a child-default override; source is `turn_context`. No transcript content enters Jev,
 metrics or log output. Skips, custom roles, forks, shadow and changed-model calls do not use this lookup.
-Effort uses effective launch arguments or the host-provided level (Claude effort.level); absent evidence
+Effort uses effective launch arguments or the host-provided level (Claude effort.level for inherited models); absent evidence
 is shown as unknown (unchanged), never guessed from defaults; catalog-rejected choices are not shown as selected. Shadow
 mode explicitly labels its recommendation and says launch arguments are unchanged. No extra request is made.
 Skipped calls and failed Jev requests remain silent. Labels are redacted, stripped of control characters and
@@ -128,7 +139,8 @@ several installations must be selected by freshest successful snapshot per alias
 - `telemetry-status` — local delivery health without a network call.
 - `codex-trust [--codex PATH] [--dry-run]` — mark this plugin's hooks trusted in Codex through `codex
   app-server`, the same way `/hooks` does. Only hooks Codex lists for the plugin `subagent-model-router` whose
-  command is exactly `…/bin/subagent-model-router hook` or `… telemetry-kick` count; all other hooks are never touched.
+  command is exactly `…/bin/subagent-model-router hook`, `… telemetry-kick` or `… claude-session` count;
+  all other hooks are never touched. The Claude lifecycle handler ignores Codex rollout paths.
 
 ## Config
 

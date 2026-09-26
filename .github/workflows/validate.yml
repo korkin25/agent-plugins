@@ -29,7 +29,7 @@ jobs:
           TMPDIR: ${{ runner.temp }}
         run: >-
           python3 -B subagent-model-router/tests/run_parallel.py -j 4
-          DecisionTests CodexTests ContextTests TelemetryTests DashboardTests TelemetryIntegrationTests TerminalTests BrowserTests RuntimeTests RuntimeIntegrationTests
+          DecisionTests CodexTests ContextTests TelemetryTests DashboardTests TelemetryIntegrationTests TerminalTests BrowserTests RuntimeTests RuntimeIntegrationTests ClaudeStateTests ClaudeStateIntegrationTests ClaudeModelTests
 
   validate:
     # Own pushes run on the owner's self-hosted runner; pull requests and anything else run on
@@ -174,9 +174,11 @@ jobs:
         env:
           RUN: ${{ steps.changes.outputs.router_tests }}
           TMPDIR: ${{ runner.temp }}
+          # Avoid CPU contention starving deadline fixtures on the shared runner.
+          TEST_JOBS: ${{ runner.environment == 'self-hosted' && '1' || '4' }}
         run: |
           if [ "$RUN" != true ]; then
             echo "subagent-model-router and the workflows are unchanged: unit tests skipped"; exit 0
           fi
           python3 --version
-          python3 -B subagent-model-router/tests/run_parallel.py -j 4
+          python3 -B subagent-model-router/tests/run_parallel.py -j "$TEST_JOBS"

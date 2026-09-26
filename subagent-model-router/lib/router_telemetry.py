@@ -431,7 +431,8 @@ def _points(cfg, record, duration):
     effort_source = record.get("effort_source") or ("specified" if record.get("mode") != "shadow" and _enum(record.get("effort"), efforts) != "unknown" else "session")
     effort = _enum(effort, efforts)
     call = dict(labels, provider=provider, reason=reason, model=model_name(actual),
-                model_source=source if model_name(actual) != "unknown" and source in ("specified", "session") else "unknown",
+                model_source=source if model_name(actual) != "unknown" and source in
+                ("specified", "session", "session_start", "post_model_switch", "transcript_tool_use") else "unknown",
                 recommended_model=model_name(recommendation) if reason.startswith("rule:") else "unknown",
                 mode=_enum(record.get("mode"), {"active", "shadow"}),
                 tier=_enum(record.get("tier"), {"light", "standard", "heavy"}, "none"),

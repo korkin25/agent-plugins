@@ -52,13 +52,32 @@ subagent-model-router: "find_readme" — selected for launch: model=haiku; rule:
 subagent-model-router: "list_toml" — selected for launch: model=gpt-5.6-luna, effort=low; rule:light
 ```
 
-Inherited models use the hook's session model, e.g. `model=gpt-6-astra (unchanged)`
-(`unknown (unchanged)` if the host omits its model); unchanged Codex effort as `effort=unchanged`.
+Inherited models use the hook's session model, e.g. `model=gpt-6-astra (unchanged)`.
+Claude's `PreToolUse` omits that model, so the router also tracks `SessionStart.model` and
+`PostModelSwitch.to_model` for the exact session. This turns an observed inherited selection such as
+`unknown / medium` into `claude-opus-4-6 / medium`. Claude 2.1.280 can omit the startup model even
+with `--model`, so this alone does not cover every new session. Missing evidence still stays unknown.
+Resume without a model, session end, conflicting switches and expired checkpoints invalidate old evidence.
+Unchanged Codex effort without runtime evidence is shown as `effort=unknown (unchanged)`.
 Catalog restrictions are included in the notice, so an unavailable model is never advertised as selected.
 Shadow mode says `shadow recommendation` and `launch arguments unchanged`. Disabled, excluded, explicit,
 forked or unsupported calls and request failures remain silent. There is no extra network request.
 
 The label is redacted, stripped of control characters and limited to 120 characters; task text is not shown.
+Claude lifecycle checkpoints contain only model metadata, session UUID and a hash of the transcript path;
+the lifecycle tracker never opens the transcript. Private state expires after 24 hours and is bounded to 256 slots;
+a slot collision loses evidence rather than borrowing another session's model. Nested/custom agents and
+Claude subagent model environment overrides do not use this parent-model fallback. A new Claude session
+(or resume) is needed after updating to begin collecting lifecycle observations. Historical metrics are
+not relabelled. Effort from the parent is not shown as the effort of a different selected child model.
+
+An optional `[claude] observe_transcript_model = true` fills missing lifecycle evidence from the exact
+assistant `Agent` call in the current session's transcript. Enable it only after authorizing that local
+source. The lookup checks both session UUID and tool-use ID; it never substitutes the last assistant
+message or reads another session. It reads at most two 1 MiB tails with one 100 ms retry for asynchronous
+transcript writes. Only the matching model and provenance are retained; dialogue is neither exported nor
+sent to Jev. Unavailable or conflicting evidence remains unknown. This is still prelaunch parent-model
+evidence, not proof of the child's final model.
 The message reports the router's selection before launch, not successful execution; a Codex role's own model
 can still override it. This uses the common [`systemMessage` hook field in Claude Code](https://code.claude.com/docs/en/hooks)
 and [Codex](https://developers.openai.com/codex/hooks), not model-only `additionalContext`.

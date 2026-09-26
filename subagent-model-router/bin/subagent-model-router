@@ -58,6 +58,7 @@ DEFAULTS = {
                    "standard_min": 0.7, "heavy_max": 0.3},
     "claude": {
         "route_types": ["general-purpose"],
+        "observe_transcript_model": False,
         "models": {"light": "haiku", "standard": "sonnet", "heavy": "inherit"},
     },
     "codex": {
@@ -239,6 +240,8 @@ def normalize_config(data):
     types = cfg["claude"]["route_types"]
     if not isinstance(types, list) or not all(isinstance(t, str) and t for t in types):
         raise ConfigError("claude.route_types must be a list of non-empty strings")
+    if not isinstance(cfg["claude"]["observe_transcript_model"], bool):
+        raise ConfigError("claude.observe_transcript_model must be true or false")
     agent_types = cfg["codex"]["route_agent_types"]
     if not isinstance(agent_types, list) or not all(isinstance(t, str) for t in agent_types):
         raise ConfigError("codex.route_agent_types must be a list of strings")
@@ -889,8 +892,21 @@ def base_record(event, agent):
     return record
 
 
-def _claude_decision(cfg, tool_input, tier, rule, record):
+def _claude_decision(cfg, event, tool_input, tier, rule, record):
     model = cfg["claude"]["models"][tier]
+    # Claude omits model from PreToolUse. Only its lifecycle observations can
+    # fill this gap; defaults and the last message of a transcript cannot.
+    if (not record.get("session_model") and (model == "inherit" or cfg["mode"] == "shadow")
+            and tool_input.get("subagent_type") in (None, "", "general-purpose")
+            and not any(os.environ.get(key) for key in
+                        ("CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"))):
+        from router_claude_state import resolve_session
+        observed = resolve_session(event)
+        if not observed and cfg["claude"]["observe_transcript_model"]:
+            from router_claude_model import resolve_tool_model
+            observed = resolve_tool_model(event)
+        if observed:
+            record.update(session_model=observed["model"], session_model_source=observed["source"])
     record.update(model=model, reason="rule:" + rule)
     if cfg["mode"] != "active" or model == "inherit":
         return None, record
@@ -957,7 +973,7 @@ def decision_notice(record):
     if record["agent"] == "codex":
         choice += ", effort=" + (safe(effort) if effort not in (None, "inherit") else
                                   "unknown (unchanged)")
-    elif record.get("session_effort"):
+    elif record.get("session_effort") and model in (None, "inherit"):
         choice += ", effort=" + safe(record["session_effort"]) + " (unchanged)"
     action = "shadow recommendation" if record["mode"] == "shadow" else "selected for launch"
     message = f'{NAME}: "{label}" — {action}: {choice}; {record["reason"]}'
@@ -1024,7 +1040,7 @@ def handle_event(event, agent):
     if result.get("usage"):
         record["usage"] = result["usage"]
     if agent == "claude":
-        output, record = _claude_decision(cfg, tool_input, tier, rule, record)
+        output, record = _claude_decision(cfg, event, tool_input, tier, rule, record)
     else:
         output, record = _codex_decision(cfg, event, tool_input, tier, rule, record)
     # systemMessage is user-facing in both hosts; additionalContext only informs the model.
@@ -1100,7 +1116,8 @@ def hook_main():
                                    actual_model=actual_model,
                                    actual_effort=actual_effort,
                                    effort_source=record.get("applied_effort_source") or ("specified" if explicit_effort not in (None, "inherit") else "session"),
-                                   model_source="specified" if explicit_model not in (None, "inherit") else "session"),
+                                   model_source="specified" if explicit_model not in (None, "inherit") else
+                                   record.get("session_model_source", "session")),
                     time.monotonic() - started,
                     worker_command=[sys.executable, os.path.abspath(__file__), "telemetry-worker"])
     except Exception:
@@ -1108,6 +1125,27 @@ def hook_main():
     if output is not None:
         sys.stdout.write(json.dumps(output, ensure_ascii=True))
         sys.stdout.flush()
+    return 0
+
+
+def session_main():
+    """Claude lifecycle metadata only; silent and fail-open for both hosts."""
+    try:
+        raw = sys.stdin.buffer.read(65537)
+        if len(raw) > 65536:
+            return 0
+        event = json.loads(raw)
+        from router_claude_state import invalidate_session, update_session
+        try:
+            configured = load_config(telemetry_only=True) is not None
+        except ConfigError:
+            configured = False
+        if configured:
+            update_session(event)
+        else:
+            invalidate_session(event)
+    except Exception:
+        pass
     return 0
 
 
@@ -1458,6 +1496,8 @@ def cmd_check(live):
     print(f"Request budget: {shown['timeout_seconds']} s")
     print(f"Claude Code subagent types: {', '.join(shown['claude']['route_types'])}")
     print("Claude Code models: " + _mapping(shown["claude"]["models"]))
+    print("Claude exact-call transcript model lookup: " +
+          ("enabled" if shown["claude"]["observe_transcript_model"] else "off (opt-in)"))
     _print_codex_check(shown)
     key_file = os.path.expanduser(shown["key_file"])
     key, problem = read_key(key_file)
@@ -1499,7 +1539,7 @@ BATCH_WRITE = "config/batchWrite"
 TRUST_NEEDED = ("untrusted", "modified")
 PROTOCOL_ERRORS = (-32600, -32601, -32602)
 PLUGIN_ROOT_VARS = ("${CLAUDE_PLUGIN_ROOT}", "${PLUGIN_ROOT}")
-HOOK_COMMANDS = ("hook", "telemetry-kick")
+HOOK_COMMANDS = ("hook", "telemetry-kick", "claude-session")
 SAFE_PATH_RE = re.compile(r"/[A-Za-z0-9._/+@:,= -]*")
 
 
@@ -1784,6 +1824,8 @@ def main(argv=None):
         return cmd_telemetry(worker_mode=True)
     if argv == ["telemetry-kick"]:
         return kick_main()
+    if argv == ["claude-session"]:
+        return session_main()
     if len(argv) == 2 and argv[0] == "refresh-catalog":  # служебная: фоновое обновление, которое запускает хук
         return 0 if refresh_catalog(argv[1]) else 1
     import argparse
