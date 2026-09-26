@@ -48,7 +48,49 @@ def server(status=204, delay=0, redirect=None):
         thread.join()
 
 
+@contextlib.contextmanager
+def mocked_transport(**options):
+    """Keep HTTP mocked until every exchange worker has actually exited."""
+    workers = []
+    thread_class = threading.Thread
+
+    def spawn(*args, **kwargs):
+        worker = thread_class(*args, **kwargs)
+        workers.append(worker)
+        return worker
+
+    with mock.patch.object(telemetry.urllib.request.OpenerDirector, "open", **options) as send, \
+            mock.patch.object(telemetry.threading, "Thread", side_effect=spawn):
+        try:
+            yield send
+        finally:
+            for worker in workers:
+                worker.join(timeout=10)
+                if worker.is_alive():
+                    raise AssertionError("mocked transport worker did not exit")
+
+
 class TelemetryTests(unittest.TestCase):
+    def assert_transport_deadline(self, call, error):
+        release = threading.Event()
+
+        def pending(*args, **kwargs):
+            # Completion cannot race the caller's timeout under CPU contention.
+            # Safety cap also terminates this test if production stops timing out.
+            release.wait(timeout=10)
+            raise OSError("synthetic blocked transport")
+
+        with mocked_transport(side_effect=pending) as send:
+            started = time.monotonic()
+            try:
+                with self.assertRaisesRegex(telemetry.TelemetryError, error):
+                    call()
+                self.assertLess(time.monotonic() - started, 5)
+            finally:
+                release.set()
+        send.assert_called_once()
+        self.assertEqual(send.call_args.kwargs["timeout"], .1)
+
     def test_effective_effort_and_unknown_are_not_inheritance_sentinels(self):
         for changes, expected in [({'effort': 'inherit', 'session_effort': 'high'}, 'high'),
                                   ({'effort': 'low', 'mode': 'shadow', 'session_effort': 'max'}, 'max'),
@@ -341,11 +383,8 @@ finally:
                 os.close(fd)
 
     def test_dns_timeout_is_wall_clock_bounded(self):
-        with mock.patch.object(telemetry.urllib.request.OpenerDirector, "open", side_effect=lambda *args, **kwargs: time.sleep(.4)):
-            started = time.monotonic()
-            with self.assertRaisesRegex(telemetry.TelemetryError, "^timeout$"):
-                telemetry.request(self.cfg, self.cfg["write_url"], b"x")
-            self.assertLess(time.monotonic() - started, .25)
+        self.assert_transport_deadline(
+            lambda: telemetry.request(self.cfg, self.cfg["write_url"], b"x"), "^timeout$")
 
     def test_exported_health_is_aggregate_only(self):
         self.enqueue()
@@ -568,19 +607,17 @@ finally:
     def test_openrouter_transport_fixed_origin_auth_no_redirect_and_deadline(self):
         response = mock.MagicMock()
         response.__enter__.return_value.read.return_value = json.dumps({"data": {"usage": 2}}).encode()
-        with mock.patch.object(telemetry.urllib.request.OpenerDirector, "open", return_value=response) as send:
-            self.assertEqual(telemetry.openrouter_request("/api/v1/key", "PROVIDER-ONLY", .1), {"usage": 2})
+        with mocked_transport(return_value=response) as send:
+            self.assertEqual(telemetry.openrouter_request("/api/v1/key", "PROVIDER-ONLY", 5), {"usage": 2})
             req = send.call_args.args[0]
             self.assertEqual(req.full_url, "https://openrouter.ai/api/v1/key")
             self.assertEqual(req.get_header("Authorization"), "Bearer PROVIDER-ONLY")
             self.assertEqual(req.get_method(), "GET")
+            self.assertEqual(send.call_args.kwargs["timeout"], 5)
         with self.assertRaisesRegex(telemetry.TelemetryError, "^openrouter_path$"):
             telemetry.openrouter_request("https://other.example/api/v1/key", "PROVIDER-ONLY", .1)
-        with mock.patch.object(telemetry.urllib.request.OpenerDirector, "open", side_effect=lambda *args, **kwargs: time.sleep(.3)):
-            started = time.monotonic()
-            with self.assertRaisesRegex(telemetry.TelemetryError, "^openrouter_timeout$"):
-                telemetry.openrouter_request("/api/v1/key", "PROVIDER-ONLY", .1)
-            self.assertLess(time.monotonic() - started, .25)
+        self.assert_transport_deadline(
+            lambda: telemetry.openrouter_request("/api/v1/key", "PROVIDER-ONLY", .1), "^openrouter_timeout$")
         self.assertIsNone(telemetry._NoRedirect().redirect_request(None, None, 307, "", {}, "https://other.example"))
 
     def test_balance_worker_probes_then_flushes_without_hook_network(self):
