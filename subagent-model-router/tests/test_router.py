@@ -1186,6 +1186,59 @@ class CodexTrustTests(Sandbox):
         self.assert_refused(self.trust(env=self.env(PATH=str(empty))), "codex is neither in codex_bin", "--codex")
 
 
+class JevDeadlineTests(unittest.TestCase):
+    def test_parent_deadline_times_out_while_exchange_is_still_active(self):
+        import queue
+        import threading
+
+        # Exercise both remaining-budget subtraction and the zero clamp without
+        # depending on real worker scheduling, interpreter startup, or HTTP I/O.
+        for before_wait, expected_wait, finished in ((100.3, .25, 100.55), (100.8, .05, 100.85)):
+            with self.subTest(before_wait=before_wait):
+                entered, release = threading.Event(), threading.Event()
+                threads = []
+                thread_class = threading.Thread
+                box = queue.Queue(maxsize=1)
+                cfg, state, questions = {'timeout_seconds': .5}, {'task': 'synthetic'}, {}
+
+                def exchange(*args):
+                    entered.set()
+                    release.wait()
+                    return {}
+
+                def make_thread(*args, **kwargs):
+                    thread = thread_class(*args, **kwargs)
+                    threads.append(thread)
+                    return thread
+
+                def expire_wait(*, timeout):
+                    self.assertTrue(entered.wait(10), 'fixture worker did not enter _exchange')
+                    self.assertTrue(threads[0].is_alive())
+                    self.assertFalse(release.is_set())
+                    self.assertAlmostEqual(timeout, expected_wait)
+                    raise queue.Empty
+
+                clock = mock.Mock(side_effect=[100.0, before_wait, finished])
+                with mock.patch.object(router, 'time', types.SimpleNamespace(monotonic=clock)), \
+                        mock.patch.object(router, '_exchange', side_effect=exchange) as worker, \
+                        mock.patch.object(threading, 'Thread', side_effect=make_thread), \
+                        mock.patch.object(queue, 'Queue', return_value=box), \
+                        mock.patch.object(box, 'get', side_effect=expire_wait) as wait:
+                    try:
+                        with self.assertRaises(router.JevError) as caught:
+                            router.ask_jev(cfg, KEY, state, questions)
+                        self.assertEqual(caught.exception.kind, 'timeout')
+                        self.assertEqual(caught.exception.latency_ms, int((finished - 100.0) * 1000))
+                        worker.assert_called_once_with(cfg, KEY, state, questions, 100.5)
+                        wait.assert_called_once()
+                        self.assertTrue(threads[0].is_alive())  # timeout came from parent, not worker
+                    finally:
+                        release.set()
+                        for thread in threads:
+                            thread.join(timeout=10)
+                            self.assertFalse(thread.is_alive(), 'fixture worker was not cleaned up')
+
+
 class FailureTests(Sandbox):
     """Сбои Jev: тихий выход, причина и latency запроса отдельно от запуска hook."""
 
@@ -1238,10 +1291,12 @@ class FailureTests(Sandbox):
 
 
     def test_answer_slower_than_budget(self):
-        self.fail_case(Reply(body=SCENARIOS["light"], delay=5), reason="error:timeout", short=True, requests=1)
+        # Under load the worker may exhaust .5 s before sending any request.
+        # JevDeadlineTests separately proves cutoff with a known active worker.
+        self.fail_case(Reply(body=SCENARIOS["light"], delay=5), reason="error:timeout", short=True)
 
     def test_trickling_answer_is_cut_at_budget(self):
-        self.fail_case(Reply(body=SCENARIOS["light"], trickle=0.2), reason="error:timeout", short=True, requests=1)
+        self.fail_case(Reply(body=SCENARIOS["light"], trickle=0.2), reason="error:timeout", short=True)
 
     def test_connection_refused(self):
         with socket.socket() as probe:

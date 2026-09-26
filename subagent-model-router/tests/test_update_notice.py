@@ -160,11 +160,50 @@ class UpdateNoticeTests(unittest.TestCase):
                 self.assertEqual(self.run_notice("codex", event=self.fresh_event()), {})
 
     def test_cli_timeout_and_output_bound(self):
-        for code in ("import time; time.sleep(10)", "print('x' * 300000)"):
-            self.fake.write_text(f"#!{sys.executable}\n{code}\n")
-            start = time.monotonic()
-            self.assertEqual(self.run_notice("codex", event=self.fresh_event()), {})
-            self.assertLess(time.monotonic() - start, 1.5)
+        for code, budget, overflow in (("import time; time.sleep(10)", .05, False),
+                                       ("print('x' * 300000)", 30, True)):
+            with self.subTest(overflow=overflow):
+                self.fake.write_text(f"#!{sys.executable}\n{code}\n")
+                processes, chunks = [], []
+                popen, read = notice.subprocess.Popen, notice.os.read
+
+                def observe_process(*args, **kwargs):
+                    process = popen(*args, **kwargs)
+                    wait = process.wait
+                    self.addCleanup(wait)
+                    self.addCleanup(process.stdout.close)
+
+                    def delayed_reap(*args, **kwargs):
+                        if kwargs.get('timeout') == .1:
+                            raise notice.subprocess.TimeoutExpired(process.args, .1)
+                        return wait(*args, **kwargs)
+
+                    process.wait = mock.Mock(side_effect=delayed_reap)
+                    processes.append(process)
+                    return process
+
+                def observe_read(*args):
+                    chunk = read(*args)
+                    chunks.append(chunk)
+                    return chunk
+
+                with notice.selectors.DefaultSelector() as selector:
+                    with mock.patch.object(notice, 'CLI_TIMEOUT', budget), \
+                            mock.patch.object(notice.subprocess, 'Popen', side_effect=observe_process), \
+                            mock.patch.object(notice.os, 'read', side_effect=observe_read), \
+                            mock.patch.object(notice.selectors, 'DefaultSelector', return_value=selector), \
+                            mock.patch.object(selector, 'select', wraps=selector.select) as select:
+                        self.assertEqual(self.run_notice('codex', event=self.fresh_event()), {})
+                for call in select.call_args_list:
+                    self.assertGreater(call.args[0], 0)
+                    self.assertLessEqual(call.args[0], budget)
+                if overflow:
+                    self.assertGreater(len(b''.join(chunks)), notice.MAX_INPUT_BYTES)
+                [process] = processes
+                self.assertIsNotNone(process.returncode)
+                self.assertTrue(process.stdout.closed)
+                with self.assertRaises(ChildProcessError):
+                    os.waitpid(process.pid, os.WNOHANG)
 
     def test_scope_and_install_path_must_be_unambiguous(self):
         entry = json.loads(self.registry.read_text())["plugins"][notice.PLUGIN_ID][0]

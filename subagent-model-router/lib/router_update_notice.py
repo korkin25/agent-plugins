@@ -137,7 +137,7 @@ def _claude_installed(base, cache, event):
 
 
 def _codex_output(binary):
-    """Read at most 256 KiB in <=1 second, discard stderr, kill on overflow."""
+    """Read at most 256 KiB with a one-second probe budget; always reap the child."""
     if not isinstance(binary, (str, os.PathLike)) or not Path(binary).is_absolute():
         return None
     process = None
@@ -166,11 +166,15 @@ def _codex_output(binary):
         if process is not None:
             # Also stop a child retaining stdout after its parent exits.
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait(timeout=0.1)
-            process.stdout.close()
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                # SIGKILL is asynchronous. A second short timeout can leave an
+                # unreaped child and skip closing stdout on a busy machine.
+                process.wait()
+            finally:
+                process.stdout.close()
 
 
 def _codex_installed(binary):
