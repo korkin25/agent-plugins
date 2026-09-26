@@ -1219,7 +1219,8 @@ class HooksJsonTests(Sandbox):
 
     def hooks(self):
         hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8"))
-        self.assertEqual(set(hooks["hooks"]), {"PreToolUse", "SessionStart", "UserPromptSubmit"})
+        self.assertEqual(set(hooks["hooks"]), {"PreToolUse", "SessionStart", "UserPromptSubmit",
+                                              "PostModelSwitch", "SessionEnd"})
         return hooks["hooks"]
 
     def entry(self):
@@ -1231,7 +1232,7 @@ class HooksJsonTests(Sandbox):
             with self.subTest(event=event):
                 [entry] = self.hooks()[event]
                 self.assertNotIn("matcher", entry)
-                [handler] = entry["hooks"]
+                handler = entry["hooks"][-1]
                 self.assertEqual(handler, {"type": "command", "timeout": 5, "command":
                                            '"${CLAUDE_PLUGIN_ROOT}/bin/subagent-model-router" telemetry-kick; true'})
                 self.assertTrue(router.is_our_command(handler["command"]))
@@ -1240,6 +1241,15 @@ class HooksJsonTests(Sandbox):
         proc = subprocess.run(["sh", "-c", handler["command"]], input=b'{"hook_event_name": "SessionStart"}',
                               capture_output=True, env=env, timeout=30)
         self.assertEqual((proc.returncode, proc.stdout, proc.stderr), (0, b"", b""))
+
+    def test_claude_lifecycle_hooks_track_model_silently(self):
+        for event in ("SessionStart", "PostModelSwitch", "SessionEnd"):
+            [entry] = self.hooks()[event]
+            handler = entry["hooks"][0]
+            self.assertEqual(handler, {"type": "command", "timeout": 5, "command":
+                                      '"${CLAUDE_PLUGIN_ROOT}/bin/subagent-model-router" claude-session; true'})
+            self.assertTrue(router.is_our_command(handler["command"]))
+        self.assertEqual(self.run_router("claude-session", stdin="not json")[:3], (0, "", ""))
 
     def test_matcher_as_regex(self):
         pattern = re.compile(self.entry()["matcher"])
@@ -1257,12 +1267,14 @@ class HooksJsonTests(Sandbox):
         self.write_config()
         env = self.env(CLAUDE_PLUGIN_ROOT=str(PLUGIN), PATH=f"{self.fakebin}:{Path(sys.executable).parent}:"
                                                              "/usr/bin:/bin")
-        event = json.dumps(self.codex_event(v2_args()))
+        # Exercise the installed command without consulting a real Codex ancestor
+        # when this test is itself launched by Codex. Its routing has dedicated tests.
+        event = json.dumps({"tool_name": "Agent", "tool_input": agent_input()})
         proc = subprocess.run(["sh", "-c", handler["command"]], input=event.encode(), capture_output=True,
                               env=env, timeout=30)
         self.assertEqual(proc.returncode, 0)
         output = json.loads(proc.stdout)
-        self.assertEqual(output["hookSpecificOutput"]["updatedInput"]["model"], "gpt-5.6-luna")
+        self.assertEqual(output["hookSpecificOutput"]["updatedInput"]["model"], "haiku")
         proc = subprocess.run(["sh", "-c", handler["command"]], input=b"{}", capture_output=True, env=env,
                               timeout=30)
         self.assertEqual((proc.returncode, proc.stdout), (0, b""))
