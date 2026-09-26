@@ -28,6 +28,12 @@
       "source": "./subagent-model-router",
       "description": "Jev directly selects a model and reasoning effort for each subagent task in Claude Code and Codex, with statistics for the selected and submitted parameters.",
       "version": "0.5.0"
+    },
+    {
+      "name": "task-panes",
+      "source": "./task-panes",
+      "description": "A queue of agent tasks in tmux panes — Claude Code or Codex in a bubblewrap sandbox, each started when its dependencies are done and closed only when a project command confirms it finished.",
+      "version": "0.1.0"
     }
   ]
 }

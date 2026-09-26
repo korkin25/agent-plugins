@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""task-panes: run a queue of agent tasks in tmux panes, checking completion by a command."""
+import argparse
+import json
+import os
+import shlex
+import sys
+import time
+import uuid
+from pathlib import Path
+
+BIN = os.path.realpath(__file__)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(BIN)), "lib"))
+
+import tp_queue  # noqa: E402
+import tp_runner  # noqa: E402
+import tp_sandbox  # noqa: E402
+import tp_tmux  # noqa: E402
+from tp_tmux import Tmux, TmuxError  # noqa: E402
+
+
+def fail(message: str, code: int = 1) -> int:
+    print(f"task-panes: {message}", file=sys.stderr)
+    return code
+
+
+def setup(args):
+    queue = tp_queue.load(args.queue)
+    socket = args.socket or queue.tmux_socket
+    return queue, Tmux(socket), tp_runner.Store(queue.state_dir)
+
+
+def me(args, *rest: str) -> str:
+    words = [BIN] + (["--socket", args.socket] if args.socket else []) + list(rest)
+    return shlex.join(words)
+
+
+def commands_text(args, queue, tmux) -> str:
+    q = str(queue.path)
+    return "\n".join([
+        f"start:     {me(args, 'start', q)}",
+        f"attach:    {shlex.join(tmux.attach_argv(queue.session))}",
+        f"status:    {me(args, 'status', q)}",
+        f"stop:      {me(args, 'stop', q)}    (runner only; agent panes keep running)",
+        f"stop all:  {me(args, 'stop', q, '--kill-session')}    (also closes every agent pane)",
+    ])
+
+
+def sandbox_line(queue) -> tuple[str, bool]:
+    if queue.sandbox.mode == "none":
+        return "sandbox: none (agents run with the owner's full access)", True
+    problem = tp_sandbox.probe()
+    if problem:
+        return (f"sandbox: bwrap UNAVAILABLE - {problem}. Agents will not start. Either allow unprivileged "
+                "user namespaces for bwrap, or set [sandbox] mode = \"none\" and rely on the agents' own "
+                "sandboxes (see README)."), False
+    return "sandbox: bwrap works", True
+
+
+def cmd_check(args) -> int:
+    queue, tmux, store = setup(args)
+    line, ok = sandbox_line(queue)
+    print(f"queue {queue.path}: valid\nsession {queue.session}, panes {queue.panes}, poll {queue.poll_seconds:g}s, "
+          f"agents {', '.join(queue.agents)}, tasks {len(queue.tasks)}\nstate dir {queue.state_dir}\n{line}")
+    if not tmux.available():
+        return fail("tmux is not installed")
+    return 0 if ok else 1
+
+
+def cmd_status(args) -> int:
+    queue, tmux, store = setup(args)
+    if args.no_refresh:
+        queue.commands.pop("refresh", None)
+    engine = tp_runner.Engine(queue, tmux, store, BIN, dry=True)
+    engine.heavy()
+    rows = engine.rows()
+    if args.json:
+        print(json.dumps({"tasks": rows, "would_start": engine.would_start()}, ensure_ascii=False, indent=1))
+        return 0
+    pid = store.active_pid()
+    line, _ = sandbox_line(queue)
+    print(f"queue {queue.path}\nsession {queue.session}, panes {queue.panes}; "
+          f"runner {'active, pid ' + str(pid) if pid else 'not running'}\n{line}\n")
+    print(tp_runner.table(rows))
+    start = engine.would_start()
+    asks = [r["id"] for r in rows if r["id"] in start and r["status"] == "needs-agent"]
+    print(f"\nwould start now: {', '.join(start) or 'nothing'}"
+          + (f" (asks which agent first: {', '.join(asks)})" if asks else ""))
+    return 0
+
+
+def cmd_start(args) -> int:
+    queue, tmux, store = setup(args)
+    if not tmux.available():
+        return fail("tmux is not installed")
+    line, ok = sandbox_line(queue)
+    if not ok:
+        return fail(line)
+    pid = store.active_pid()
+    if pid:
+        print(f"a runner is already active for this queue (pid {pid})\n{commands_text(args, queue, tmux)}")
+        return 0
+    run_argv = [sys.executable, BIN] + (["--socket", tmux.socket] if tmux.socket else []) + ["run", str(queue.path)]
+    try:
+        if tmux.has_session(queue.session):
+            panes = tmux.panes(queue.session)
+            control = next((p.id for p in panes if p.task == "control"), None)
+            if control:
+                tmux.respawn(control, run_argv, str(queue.dir))
+            else:
+                control = tmux.split(panes[-1].id if panes else None, run_argv, str(queue.dir), above=False)
+                tmux.set_option(control, tp_tmux.TASK_OPTION, tp_tmux.CONTROL)
+                tmux.set_option(control, tp_tmux.LABEL_OPTION, "task-panes control")
+                tmux.layout(queue.session, control)
+        else:
+            tmux.new_session(queue.session, run_argv, str(queue.dir))
+    except TmuxError as exc:
+        return fail(str(exc))
+    print(f"runner started in tmux session {queue.session}\n{commands_text(args, queue, tmux)}")
+    if args.attach:
+        os.execvp(tmux.exe, tmux.attach_argv(queue.session))
+    return 0
+
+
+def cmd_run(args) -> int:
+    queue, tmux, store = setup(args)
+    if not tmux.available():
+        return fail("tmux is not installed")
+    line, ok = sandbox_line(queue)
+    if not ok:
+        return fail(line)
+    fd = store.lock()
+    if fd is None:
+        return fail(f"another runner is already active for this queue (pid {store.active_pid()})")
+    (store.root / "runner.pid").write_text(str(os.getpid()))
+    engine = tp_runner.Engine(queue, tmux, store, BIN, out=lambda text: print(text, flush=True))
+    own = os.environ.get("TMUX_PANE")
+    if own and os.environ.get("TMUX", "").split(",")[0] != tmux.socket_path():
+        own = None  # a pane of another tmux server
+    try:
+        engine.ensure_session(own)
+    except TmuxError as exc:
+        return fail(str(exc))
+    print(line, flush=True)
+    if args.once:
+        engine.heavy()
+        engine.light()
+        print(tp_runner.table(engine.rows()))
+        return 0
+    stdin = sys.stdin if sys.stdin is not None and sys.stdin.isatty() else None
+    return tp_runner.serve(engine, stdin)
+
+
+def cmd_stop(args) -> int:
+    queue, tmux, store = setup(args)
+    pid = store.active_pid()
+    if pid and pid > 0:
+        try:
+            os.kill(pid, 15)
+        except ProcessLookupError:
+            pass
+        for _ in range(40):
+            if not store.active_pid():
+                break
+            time.sleep(0.25)
+        print(f"runner (pid {pid}) stopped; agent panes keep running" if not store.active_pid()
+              else f"runner (pid {pid}) did not stop within 10s")
+    else:
+        print("no runner is active for this queue")
+    if args.kill_session:
+        if tmux.has_session(queue.session):
+            tmux.kill_session(queue.session)
+            print(f"tmux session {queue.session} killed together with every agent in it")
+        else:
+            print(f"tmux session {queue.session} does not exist")
+    return 0
+
+
+def request(args, kind: str, data: dict, done: str) -> int:
+    queue, tmux, store = setup(args)
+    queue.task(data["task"])
+    if kind == "answers" and data["agent"] not in queue.agents:
+        return fail(f"unknown agent {data['agent']!r}; the queue defines {', '.join(queue.agents)}")
+    store.write_json(store.root / kind / f"{data['task']}.json", data)
+    when = "within a few seconds" if store.active_pid() else "when the runner starts"
+    print(f"{done}; the runner applies it {when}")
+    return 0
+
+
+def cmd_answer(args) -> int:
+    return request(args, "answers", {"task": args.task, "agent": args.agent}, f"{args.task}: agent {args.agent} saved")
+
+
+def cmd_reset(args) -> int:
+    return request(args, "resets", {"task": args.task}, f"{args.task}: reset requested")
+
+
+def cmd_commands(args) -> int:
+    queue, tmux, store = setup(args)
+    print(commands_text(args, queue, tmux))
+    return 0
+
+
+def cmd_sandbox_run(args) -> int:
+    queue, tmux, store = setup(args)
+    task = queue.task(args.task)
+    agent = args.agent or queue.resolve_agent(task) or next(iter(queue.agents))
+    if agent not in queue.agents:
+        return fail(f"unknown agent {agent!r}")
+    cwd = Path(args.cwd) if args.cwd else queue.paths(task).worktree
+    if not cwd.is_dir():
+        return fail(f"workdir {cwd} does not exist")
+    spec = queue.sandbox_for(task, agent, str(uuid.uuid4()))
+    if spec.mode == "none":
+        return fail('[sandbox] mode is "none": nothing to run inside')
+    plan = tp_sandbox.plan(spec, queue.agents[agent].writable, cwd.resolve(),
+                           sockets=[tp_tmux.socket_path(tmux.socket)])
+    command = args.command
+    if args.print or not command:
+        print(shlex.join(plan.prefix + (command or ["<command>"])))
+        return 0
+    for path in plan.create:
+        tp_runner.make_private_dirs(path)
+    env = tp_runner.agent_env(queue)
+    env.update({k: os.environ[k] for k in tp_runner.PANE_ENV if k in os.environ})
+    os.execvpe(plan.prefix[0], plan.prefix + command, env)
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(prog="task-panes", description=__doc__)
+    parser.add_argument("--socket", help="tmux -L socket name (overrides tmux_socket in the queue)")
+    sub = parser.add_subparsers(dest="cmd", metavar="COMMAND")
+    p = sub.add_parser("check", help="validate a queue file and probe tmux and the sandbox")
+    p.add_argument("queue")
+    for name in ("dry-run", "status"):
+        p = sub.add_parser(name, help="show done / ready / waiting / stopped tasks; launches nothing")
+        p.add_argument("queue")
+        p.add_argument("--no-refresh", action="store_true", help="skip the refresh command")
+        p.add_argument("--json", action="store_true")
+    p = sub.add_parser("start", help="start the runner in the control pane of the tmux session")
+    p.add_argument("queue")
+    p.add_argument("--attach", action="store_true")
+    p = sub.add_parser("run", help="run the runner in this terminal")
+    p.add_argument("queue")
+    p.add_argument("--once", action="store_true", help="one cycle, then exit")
+    p = sub.add_parser("stop", help="stop the runner; agent panes keep running")
+    p.add_argument("queue")
+    p.add_argument("--kill-session", action="store_true", help="also kill the tmux session and its agents")
+    p = sub.add_parser("answer", help="choose the agent for a task")
+    p.add_argument("queue")
+    p.add_argument("task")
+    p.add_argument("agent")
+    p = sub.add_parser("reset", help="make a stopped task startable again")
+    p.add_argument("queue")
+    p.add_argument("task")
+    p = sub.add_parser("commands", help="print the exact start / attach / status / stop commands")
+    p.add_argument("queue")
+    p = sub.add_parser("sandbox-run", help="run a command inside a task's sandbox")
+    p.add_argument("queue")
+    p.add_argument("--task", required=True)
+    p.add_argument("--agent")
+    p.add_argument("--cwd")
+    p.add_argument("--print", action="store_true", help="print the bwrap command instead of running it")
+    p = sub.add_parser("_pane")
+    p.add_argument("--state-dir", required=True)
+    p.add_argument("--task", required=True)
+    p = sub.add_parser("_log")
+    p.add_argument("--state-dir", required=True)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    tail: list[str] = []
+    # Everything after `--` is the sandboxed command, so options may follow the queue path.
+    if "sandbox-run" in argv and "--" in argv[argv.index("sandbox-run"):]:
+        cut = argv.index("--", argv.index("sandbox-run"))
+        argv, tail = argv[:cut], argv[cut + 1:]
+    args = parser.parse_args(argv)
+    args.command = tail
+    handlers = {"check": cmd_check, "dry-run": cmd_status, "status": cmd_status, "start": cmd_start,
+                "run": cmd_run, "stop": cmd_stop, "answer": cmd_answer, "reset": cmd_reset,
+                "commands": cmd_commands, "sandbox-run": cmd_sandbox_run}
+    if args.cmd is None:
+        parser.print_usage(sys.stderr)
+        return fail("choose a command; `task-panes --help` lists them. Start with `task-panes check <queue.toml>`.",
+                    2)
+    try:
+        if args.cmd == "_pane":
+            return tp_runner.pane_main(Path(args.state_dir), args.task)
+        if args.cmd == "_log":
+            return tp_runner.log_main(Path(args.state_dir))
+        return handlers[args.cmd](args)
+    except (tp_queue.QueueError, tp_runner.RunnerError, TmuxError) as exc:
+        return fail(str(exc))
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
