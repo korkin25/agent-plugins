@@ -13,6 +13,7 @@ from collections import Counter
 
 _BARS = "▏▎▍▌▋▊▉█"
 _SPARK = "▁▂▃▄▅▆▇█"
+_MODEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,199}\Z")
 
 
 def _clean(value, fallback="unknown"):
@@ -98,10 +99,9 @@ def local_data(rows, days=None, now=None, project=None, user=None, agent=None):
     rows = [r for r in rows if project is None or r.get("project") == project]
     end = now.timestamp()
     start = (cutoff or min((_parse_time(r.get("ts")) for r in version_rows), default=now)).timestamp()
-    decisions = [r for r in rows if str(r.get("reason", "")).startswith("rule:")]
-    attempted = [r for r in rows if r.get("state_sha256") or _num(r.get("latency_ms")) is not None
-                 or str(r.get("reason", "")).startswith("rule:")]
-    errors = sum(str(r.get("reason", "")).startswith("error:") for r in attempted)
+    decisions = [r for r in rows if _is_direct_choice(r)]
+    attempted = [r for r in rows if _jev_attempted(r)]
+    errors = sum(_jev_outcome(r) != "success" for r in attempted)
     summary = {"calls": len(rows) if rows else None,
                "jev_requests": len(attempted) if rows else None,
                "jev_errors": errors if attempted else None,
@@ -117,8 +117,10 @@ def local_data(rows, days=None, now=None, project=None, user=None, agent=None):
     summary.update({"jev_p" + str(q) + "_seconds": _percentile([_num(r.get("latency_ms")) for r in attempted], q)
                     for q in (50, 95, 99)})
     summary.update({"hook_p" + str(q) + "_seconds": None for q in (50, 95, 99)})
-    for label in ("model", "tier", "reason", "project", "user", "agent"):
-        summary["by_" + label] = dict(Counter(_clean(r.get(label)) for r in rows if label not in ("model", "tier") or str(r.get("reason", "")).startswith("rule:")))
+    for label in ("recommended_model", "recommended_effort", "model", "effort", "reason", "project", "user", "agent"):
+        summary["by_" + label] = dict(Counter(_clean(_journal_label(r, label)) for r in rows
+                                            if (not label.startswith("recommended_") or _is_direct_choice(r))
+                                            and (label not in ("model", "effort") or _is_current_record(r))))
     summary.update({key: None for key in ("pending_events", "coalesced_events", "dropped_events", "last_delivery_age_seconds")})
     costs = [value for r in attempted if isinstance(r.get("usage"), dict)
              and isinstance(r["usage"].get("cost"), (int, float))
@@ -144,7 +146,8 @@ def local_data(rows, days=None, now=None, project=None, user=None, agent=None):
     for key in ("read_attempts", "bytes_read", "api_input_tokens", "api_output_tokens", "cost_usd"):
         summary["claude_model_lookup_" + key] = sum(r[key] for r in lookups) if lookups else None
     summary["claude_model_lookup_duration_seconds"] = sum(r["duration_ms"] for r in lookups) / 1000 if lookups else None
-    calls = [{"labels": {k: str(r.get(k) or "unknown") for k in ("model", "tier", "reason", "project", "user", "agent")},
+    calls = [{"labels": {k: str(_journal_label(r, k) or "unknown") for k in ("recommended_model", "recommended_effort", "model", "effort", "reason", "project", "user", "agent")}
+              | {"record_schema": "direct" if _is_current_record(r) else "legacy"},
               "points": [[_parse_time(r["ts"]).timestamp(), 1]]} for r in rows]
     return {"status": "ok" if rows else "no_data", "source": "local", "instance": "local journal", "project": project, "user": user,
             "agent": agent, "start": start, "end": end, "step": 0, "summary": summary,
@@ -159,8 +162,62 @@ def _parse_time(value):
 
 
 def _changed(row):
-    vals = (row.get("model"), row.get("effort")) if row.get("agent") == "codex" else (row.get("model"),)
-    return any(v not in (None, "inherit") for v in vals)
+    return row.get("applied") is True
+
+
+def _is_choice(reason):
+    return reason == "choice" or str(reason or "").startswith("rule:")
+
+
+def _is_current_record(row):
+    return isinstance(row.get("jev_attempted"), bool)
+
+
+def _is_direct_choice(row):
+    return row.get("reason") == "choice" and row.get("jev_attempted") is True
+
+
+def _is_successful_direct_choice(row):
+    return _is_direct_choice(row) and row.get("jev_outcome") == "success"
+
+
+def _jev_attempted(row):
+    if _is_current_record(row):
+        return row["jev_attempted"] is True
+    return _num(row.get("latency_ms")) is not None
+
+
+def _jev_outcome(row):
+    if _is_current_record(row):
+        value = row.get("jev_outcome")
+        if value == "success":
+            return "success"
+        return value.removeprefix("error:") if isinstance(value, str) and value.startswith("error:") else "unknown"
+    return str(row.get("reason", "")).removeprefix("error:") if str(row.get("reason", "")).startswith("error:") else "success"
+
+
+def _journal_label(row, label):
+    """Map journal's core fields to the same selected/submitted contract as VM."""
+    if label == "recommended_model":
+        value = row.get(label, row.get("model") if _is_successful_direct_choice(row) else None)
+        return value if isinstance(value, str) and _MODEL_ID_RE.fullmatch(value) and _is_successful_direct_choice(row) else None
+    if label == "recommended_effort":
+        value = row.get(label, row.get("effort") if _is_direct_choice(row) else None)
+        return "not_supported" if (value is None and _is_successful_direct_choice(row)
+                                    and row.get("selected_effort_supported") is False) else value
+    if label == "model":
+        value = row.get("actual_model")
+        exact = (_is_successful_direct_choice(row) and row.get("applied") is True
+                 and value == row.get("model"))
+        return value if exact and isinstance(value, str) and _MODEL_ID_RE.fullmatch(value) else None
+    if label == "effort":
+        value = row.get("actual_effort")
+        exact = (_is_successful_direct_choice(row) and row.get("applied") is True
+                 and row.get("actual_model") == row.get("model"))
+        if value is None and "actual_effort" in row:
+            return "not_supported" if exact and row.get("selected_effort_supported") is False else "not_set"
+        return value if exact else None
+    return row.get(label)
 
 
 def _percentile(values, q):
@@ -180,10 +237,6 @@ def format_terminal(data):
     for direction, title in (("input", "вход"), ("output", "выход")):
         prefix = "jev_" + direction
         lines.append(f"Токены Jev ({title}): {_fmt(summary.get(prefix + '_tokens'))} · покрытие {_fmt(summary.get(prefix + '_token_coverage'), '%')} · без данных {_fmt(summary.get(prefix + '_unknown_token_requests'))} запросов.")
-    lookup = lambda key: summary.get("claude_model_lookup_" + key)
-    lines.extend([f"**Чтение модели Claude из локального JSONL:** наблюдений {_fmt(lookup('requests'))} · чтений {_fmt(lookup('read_attempts'))} · байт {_fmt(lookup('bytes_read'))} · всего {_fmt(lookup('duration_seconds'), 'ms')}.",
-                  f"API-токены вход / выход: {_fmt(lookup('api_input_tokens'))} / {_fmt(lookup('api_output_tokens'))} · стоимость API {_fmt(lookup('cost_usd'), 'usd')}.",
-                  "Модель извлекается локальным Python без вызова модели; байты чтения не пересчитываются в токены. Нули API относятся только к зарегистрированным наблюдениям."])
     if not summary.get('accounts'):
         lines.append("Баланс OpenRouter и остаток лимита ключа: нет данных.")
     for alias, values in sorted((summary.get('accounts') or {}).items()):
@@ -206,7 +259,7 @@ def format_terminal(data):
     if not summary.get("hook_versions"):
         lines.append("| нет наблюдений версий | неизвестно | неизвестно | нет данных | неизвестно |")
     lines.append("")
-    for title, key in (("Модели", "by_model"), ("Проекты", "by_project"), ("Пользователи", "by_user"), ("Агенты", "by_agent"), ("Причины", "by_reason")):
+    for title, key in (("Выбор Jev: модели", "by_recommended_model"), ("Выбор Jev: effort", "by_recommended_effort"), ("Переданные модели", "by_model"), ("Переданный effort", "by_effort"), ("Проекты", "by_project"), ("Пользователи", "by_user"), ("Агенты", "by_agent"), ("Причины", "by_reason")):
         values = data.get("summary", {}).get(key, {}) or {}
         lines.append(f"**{title}**")
         lines.append("")

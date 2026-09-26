@@ -1,5 +1,10 @@
 # Frozen routing benchmark
 
+This is an archived benchmark for the pre-0.5.0 tier/risk/review router. It does
+not evaluate the direct model-and-effort selection introduced in 0.5.0. Keep its
+cases and results unchanged for historical comparisons; do not use its old
+labels or thresholds to route current tasks.
+
 `cases.json` is a pre-registered synthetic labelled set for comparing router
 versions. It contains 28 cases, including English/Russian goal pairs, paired
 read-only/execution variants, packet and non-packet inputs, independent review,

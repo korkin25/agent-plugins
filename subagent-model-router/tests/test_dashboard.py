@@ -26,24 +26,30 @@ class DashboardTests(unittest.TestCase):
         doc = json.loads((PLUGIN / "grafana" / "subagent-model-router.json").read_text())
         for panel in (p for p in doc['panels'] if p['id'] in (10, 11, 12)):
             with self.subTest(panel=panel['title']):
-                label = {10: 'model', 11: 'tier', 12: 'reason'}[panel['id']]
+                label = {10: 'recommended_model', 11: 'model', 12: 'reason'}[panel['id']]
                 self.assertEqual(panel['type'], 'bargauge')
                 self.assertFalse(panel.get('transformations'))
                 self.assertEqual(panel['options']['reduceOptions'],
                                  {'calcs': ['lastNotNull'], 'fields': '', 'values': False})
                 expected_name = '${__field.labels.' + label + '}'
-                if label == 'model':
-                    expected_name += ' / ${__field.labels.effort}'
-                    self.assertIn('sum by(model,effort)', panel['targets'][0]['expr'])
-                    self.assertEqual(panel['targets'][0]['expr'].count('effort_source=~".+"'), 2)
-                    legacy = next(p for p in doc['panels'] if p['id'] == 36)
-                    self.assertIn('effort_source=""', legacy['targets'][0]['expr'])
+                if panel['id'] == 10:
+                    expected_name += ' / ${__field.labels.recommended_effort}'
+                    self.assertIn('sum by(recommended_model,recommended_effort)', panel['targets'][0]['expr'])
+                    self.assertEqual(panel['targets'][0]['expr'].count('reason="choice",record_schema="direct"'), 2)
+                if panel['id'] == 11:
+                    self.assertIn('sum by(model,effort,mode,applied)', panel['targets'][0]['expr'])
+                    expected_name += ' / ${__field.labels.effort} · ${__field.labels.mode} · applied=${__field.labels.applied}'
                 self.assertEqual(panel['fieldConfig']['defaults']['displayName'], expected_name)
                 self.assertTrue(panel['targets'][0]['instant'])
                 self.assertFalse(panel['targets'][0]['range'])
                 if label != 'reason':
                     self.assertEqual(panel['fieldConfig']['defaults']['unit'], 'percentunit')
                     self.assertEqual(panel['fieldConfig']['defaults']['max'], 1)
+
+    def test_default_grafana_excludes_parent_lookup_panels(self):
+        doc = json.loads((PLUGIN / "grafana" / "subagent-model-router.json").read_text())
+        self.assertFalse(any(39 <= panel['id'] <= 43 for panel in doc['panels']))
+        self.assertNotIn('Claude model lookup', json.dumps(doc))
     def test_health_only_is_no_data_for_selected_client(self):
         def respond(config, url, body=None):
             if 'smr_telemetry_' in urllib.parse.unquote(url):
@@ -75,8 +81,9 @@ class DashboardTests(unittest.TestCase):
             return answer([({}, [1700000000, "28"])])
         if "smr_jev_requests_total" in expr:
             return answer([({"outcome": "success"}, [1700000000, "100"])])
-        return answer([({"reason": "rule:standard", "model": '<script>alert("x")</script>',
-                         "user": "developer", "project": "repo-one", "tier": "standard", "applied": "true", "mode": "active"}, [1700000000, "100"])])
+        return answer([({"reason": "choice", "model": 'gpt-6-astra', "effort": "high",
+                         "recommended_model": '<script>alert("x")</script>', "recommended_effort": "high",
+                         "record_schema": "direct", "user": "developer", "project": "repo-one", "applied": "true", "mode": "active"}, [1700000000, "100"])])
 
     def test_queries_and_summary(self):
         with mock.patch.object(dashboard, "request", side_effect=self.fake) as call:
@@ -88,11 +95,11 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(data["summary"]["applied"], 100)
         self.assertEqual(data["summary"]["coalesced_events"], 28)
         self.assertEqual(data["summary"]["dropped_events"], 28)
-        self.assertEqual(data["summary"]["by_tier"], {"standard": 100})
         self.assertEqual(data["summary"]["by_project"], {"repo-one": 100})
         self.assertEqual(data["summary"]["by_user"], {"developer": 100})
-        self.assertEqual(data["summary"]["by_reason"], {"rule:standard": 100})
-        self.assertEqual(data["summary"]["by_model"], {'<script>alert("x")</script>': 100})
+        self.assertEqual(data["summary"]["by_reason"], {"choice": 100})
+        self.assertEqual(data["summary"]["by_recommended_model"], {'<script>alert("x")</script>': 100})
+        self.assertEqual(data["summary"]["by_model"], {'gpt-6-astra': 100})
         self.assertIn("coalesced lifetime 28", dashboard.format_summary(data))
         self.assertAlmostEqual(data["summary"]["jev_p95_seconds"], 1.5)
         self.assertIsNone(data["series"]["request_rate"][0]["points"][1][1])
@@ -268,11 +275,7 @@ class DashboardTests(unittest.TestCase):
     def test_tokens_lookup_zero_missing_invalid_and_cohorts(self):
         values = {'jev_requests_total': 3, 'jev_input_tokens_total': 0, 'jev_input_known_token_requests_total': 2,
                   'jev_input_unknown_token_requests_total': 1, 'jev_output_tokens_total': 'NaN',
-                  'jev_output_unknown_token_requests_total': 3,
-                  'claude_model_lookup_requests_total': 2, 'claude_model_lookup_read_attempts_total': 3,
-                  'claude_model_lookup_bytes_read_total': 1024, 'claude_model_lookup_duration_seconds_sum': .015,
-                  'claude_model_lookup_api_input_tokens_total': 0,
-                  'claude_model_lookup_api_output_tokens_total': 0, 'claude_model_lookup_cost_usd_total': 0}
+                  'jev_output_unknown_token_requests_total': 3}
         def respond(config, url, body=None):
             expression = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)['query'][0]
             if 'query_range' in url:
@@ -293,10 +296,8 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(s['jev_input_token_coverage'], 2 / 3)
         self.assertIsNone(s['jev_output_tokens'])
         self.assertEqual(s['jev_output_token_coverage'], 0)
-        self.assertEqual(s['claude_model_lookup_cost_usd'], 0)
-        self.assertEqual(s['claude_model_lookup_duration_seconds'], .015)
         self.assertIn('Jev input tokens · reported: 0', dashboard.format_summary(result))
-        self.assertIn('Claude model lookup · API spend</td><td>$0.000000', dashboard.html_document(result))
+        self.assertNotIn('Claude model lookup', dashboard.html_document(result))
         values['jev_input_known_token_requests_total'] = 'NaN'
         with mock.patch.object(dashboard, 'request', side_effect=respond):
             invalid = dashboard.query_stats(self.cfg, project='repo', user='dev', agent='claude')
@@ -304,7 +305,7 @@ class DashboardTests(unittest.TestCase):
         values.clear()
         with mock.patch.object(dashboard, 'request', side_effect=respond):
             empty = dashboard.query_stats(self.cfg, project='repo', user='dev', agent='claude')
-        for key in ('jev_input_tokens', 'jev_input_token_coverage', 'claude_model_lookup_cost_usd', 'claude_model_lookup_requests'):
+        for key in ('jev_input_tokens', 'jev_input_token_coverage'):
             self.assertIsNone(empty['summary'][key])
 
     def test_token_coverage_query_failure_is_unknown(self):

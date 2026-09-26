@@ -13,36 +13,21 @@ timeout_seconds = 3          # for the whole Jev request, one retry included (at
 # codex_bin = ""             # codex binary for the model catalog (absolute or ~/ path); the hook looks for
 #                            # the codex process that runs it, then codex_bin, then codex on PATH
 
-[thresholds]
-risky_max = 0.3
-review_max = 0.5
-light_min = 0.75
-standard_min = 0.7           # P(light) + P(standard)
-heavy_max = 0.3              # for standard: P(heavy) below this
+# claude_bin = ""            # native Claude binary; actual ancestor, this path, then absolute PATH
 
+# Removed settings (thresholds, tier model/effort tables, observe_transcript_model)
+# are ignored when migrating; check reports a warning. Delete them from your config.
 [claude]
-route_types = ["general-purpose"]   # subagent types to route; a call without subagent_type is general-purpose
-# Enable only with the user's authorization for this local transcript source and model-extraction purpose.
-# Local I/O only: no API tokens/cost; bytes/read attempts/time are observed separately from paid Jev usage.
-observe_transcript_model = false   # opt-in: exact Agent call model from bounded local transcript tail
-
-[claude.models]
-light = "haiku"
-standard = "sonnet"
-heavy = "inherit"            # inherit — the call is left alone, the subagent runs on the session model
+route_types = ["general-purpose"]
+allowed_models = []         # [] = supported Agent aliases present in native SDK model catalogue
+efforts = []                # [] = every level the native catalogue reports for each model
+# Supported aliases: haiku, sonnet, opus, fable. No-effort models retain effort=null.
+# check refreshes metadata without a model turn; Agent hooks read cache and refresh in background.
 
 [codex]
-route_agent_types = ["", "default", "worker"]   # roles to route; another role may set its own model
-
-[codex.models]
-light = "gpt-5.6-luna"
-standard = "gpt-5.6-terra"
-heavy = "inherit"
-
-[codex.effort]
-light = "low"
-standard = "medium"
-heavy = "inherit"
+route_agent_types = ["", "default", "worker"]
+allowed_models = []                 # optional allowlist; [] = every model in the actual binary's catalog
+# Every supported reasoning effort for each allowed model is offered directly to Jev.
 
 # Optional monitoring, shared by Claude Code and Codex. No telemetry network I/O in the hook.
 # With victoriametrics the JSONL journal is no longer appended; existing files are not deleted.

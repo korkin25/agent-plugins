@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import shlex
 import signal
 import socket
 import stat
@@ -19,6 +20,7 @@ import tempfile
 import time
 import tomllib
 import unittest
+import types
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
@@ -40,15 +42,12 @@ def _load_router():
 
 router = _load_router()
 from fake_jev import SCENARIOS, FakeJev, Reply, jev_body  # noqa: E402
+from fake_claude import MODELS as CLAUDE_MODELS
+import router_claude_catalog
 
 KEY = "tsk-TEST-0123456789abcdef-NOT-REAL"
 PROMPT = "Найди в репозитории все файлы README и перечисли их пути."
 CODEX_TASK = "TASK: Найти в каталоге проекта все файлы *.toml и вывести их пути списком.\nROLE: исследователь"
-JOURNAL_FIELDS = {"ts", "agent", "plugin_version", "host", "user", "agent_version", "session_id", "cwd", "subagent_type", "description", "state_sha256", "provider",
-                  "jev_model", "request_id", "latency_ms", "answers", "tier", "model", "effort", "session_model",
-                  "reason", "mode", "usage"}
-REVIEW_QUESTION = ("Is the task to check someone else's finished work (code, a change, or a document) against its "
-                   "requirements and to approve or reject it?")
 DROP = object()
 
 
@@ -57,12 +56,18 @@ def levels(*efforts):
 
 
 CATALOG = {"models": [
-    {"slug": "gpt-5.5", "visibility": "list", "supported_reasoning_levels": levels("low", "medium", "high", "xhigh")},
-    {"slug": "gpt-5.6-luna", "visibility": "list",
+    {"slug": "gpt-5.5", "visibility": "list", "description": "Synthetic general model purpose", "supported_reasoning_levels": levels("low", "medium", "high", "xhigh")},
+    {"slug": "gpt-5.6-luna", "visibility": "list", "description": "Synthetic fast model purpose",
      "supported_reasoning_levels": levels("low", "medium", "high", "xhigh", "max")},
-    {"slug": "gpt-5.6-terra", "visibility": "list",
+    {"slug": "gpt-5.6-terra", "visibility": "list", "description": "Synthetic capable model purpose",
      "supported_reasoning_levels": levels("low", "medium", "high", "xhigh", "max", "ultra")},
 ]}
+
+
+def described_catalog(models):
+    return router.ModelCatalog(models, {model: {"description": f"Synthetic native purpose: {model}",
+                                                "efforts": {effort: f"Synthetic native reasoning: {effort}" for effort in efforts}}
+                                        for model, efforts in models.items()})
 
 
 def agent_input(**extra):
@@ -126,8 +131,33 @@ class Sandbox(unittest.TestCase):
         self.codex_state.mkdir()
         self.fakebin = self.root / "bin"
         self.fake_codex = self.make_fake_codex(self.fakebin)
+        python_shim = self.fakebin / "python3"
+        python_shim.write_text("#!/bin/sh\nexport SMR_TEST_RUNNER=" + shlex.quote(self.isolated_runner()) +
+                               "\nexec " + shlex.quote(sys.executable) + ' -c "$SMR_TEST_RUNNER" "$@"\n')
+        python_shim.chmod(0o755)
         self.write_catalog(CATALOG)
         self.write_cache(CATALOG)  # прогретый кэш: хук каталог не ждёт, а берёт отсюда
+        self.claude_state = self.root / "claude-state"
+        self.claude_state.mkdir()
+        self.fake_claude = self.fakebin / "claude"
+        self.fake_claude.write_text(f'#!/bin/sh\nFAKE_CLAUDE_STATE="{self.claude_state}" exec "{sys.executable}" '
+                                   f'"{TESTS / "fake_claude.py"}" "$@"\n')
+        self.fake_claude.chmod(0o755)
+        self.claude_cache = self.cache.with_name("claude-models.json")
+        self.native_claude_catalog = router_claude_catalog.parse_models(CLAUDE_MODELS)
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            router_claude_catalog.save_catalog(str(self.fake_claude), self.native_claude_catalog)
+        self.claude_catalog_mock = mock.patch.object(router, "claude_catalog", return_value=(self.native_claude_catalog, None))
+        self.claude_catalog_mock.start()
+        self.addCleanup(self.claude_catalog_mock.stop)
+        self.price_stub = types.SimpleNamespace(ensure_prices=mock.Mock(), cached_prices=mock.Mock(return_value={}),
+                                               refresh_prices=mock.Mock(return_value={}))
+        price_patch = mock.patch.dict(sys.modules, {"router_model_prices": self.price_stub})
+        price_patch.start()
+        self.addCleanup(price_patch.stop)
+        refresh_patch = mock.patch.object(router, "request_catalog_refresh")
+        refresh_patch.start()
+        self.addCleanup(refresh_patch.stop)
         self.fake = None
         self.write_key()
 
@@ -152,7 +182,9 @@ class Sandbox(unittest.TestCase):
         """Кэш каталога в формате плагина: {реальный путь бинарника: {mtime_ns, ts, models}}."""
         real = os.path.realpath(binary or self.fake_codex)
         entries = json.loads(self.cache.read_text())["binaries"] if self.cache.exists() else {}
-        entries[real] = {"mtime_ns": os.stat(real).st_mtime_ns, "ts": time.time() - age,
+        entries[real] = {"mtime_ns": os.stat(real).st_mtime_ns, "ts": time.time() - age, "catalog_schema": 3, "source_fingerprint": None,
+                         "inventory": [m["slug"] for m in catalog["models"]], "missing_descriptions": [],
+                         "metadata": router.parse_catalog(json.dumps(catalog).encode()).metadata,
                          "models": {m["slug"]: [level["effort"] for level in m["supported_reasoning_levels"]]
                                     for m in catalog["models"]}}
         self.cache.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -167,9 +199,9 @@ class Sandbox(unittest.TestCase):
         pids = set()
         for log in self.root.rglob("calls.log"):
             pids |= {json.loads(line)["pid"] for line in log.read_text().splitlines() if line}
-        lock = self.cache.parent / "codex-models.lock"
-        if lock.exists() and lock.read_text().strip().isdigit():
-            pids.add(int(lock.read_text().strip()))
+        for lock in (self.cache.parent / "codex-models.lock", self.cache.parent / "claude-models.lock"):
+            if lock.exists() and lock.read_text().strip().isdigit():
+                pids.add(int(lock.read_text().strip()))
         live, marker = [], str(self.root).encode()
         for pid in pids:
             try:
@@ -177,8 +209,7 @@ class Sandbox(unittest.TestCase):
                 environ = Path(f"/proc/{pid}/environ").read_bytes()
             except OSError:
                 continue
-            if (b"refresh-catalog" in cmdline and marker in cmdline) or (b"fake_codex.py" in cmdline
-                                                                         and marker in environ):
+            if ((b"refresh-catalog" in cmdline or b"refresh-claude-catalog" in cmdline) and marker in cmdline) or ((b"fake_codex.py" in cmdline or b"fake_claude.py" in cmdline) and marker in environ):
                 live.append(pid)
         return live
 
@@ -215,7 +246,7 @@ class Sandbox(unittest.TestCase):
         self.key.chmod(mode)
 
     def write_config(self, **values):
-        base = {"key_file": str(self.key), "timeout_seconds": 8}  # предел конфига; на занятом CI 2 с не хватало
+        base = {"key_file": str(self.key), "timeout_seconds": 8, "codex_bin": str(self.fake_codex), "claude_bin": str(self.fake_claude)}  # предел конфига; на занятом CI 2 с не хватало
         if self.fake:
             base["endpoint"] = self.fake.url + "/v1/systemone"
         base.update(values)
@@ -231,10 +262,35 @@ class Sandbox(unittest.TestCase):
         env.update(extra)
         return env
 
+    @staticmethod
+    def isolated_runner():
+        return """import runpy,sys,os,types,subprocess
+sys.modules['router_model_prices']=types.SimpleNamespace(ensure_prices=lambda *a,**k:None,cached_prices=lambda *a,**k:{},refresh_prices=lambda *a,**k:True)
+target=sys.argv[1]
+original_popen=subprocess.Popen
+def isolated_popen(command,*args,**kwargs):
+    if isinstance(command,list) and len(command)>2 and command[1]==target and command[2] in ('refresh-catalog','refresh-claude-catalog'):
+        command=[sys.executable,'-c',os.environ['SMR_TEST_RUNNER'],*command[1:]]
+    return original_popen(command,*args,**kwargs)
+subprocess.Popen=isolated_popen
+scope=runpy.run_path(target,run_name='router_fixture')
+scope['main'].__globals__['parent_codex']=lambda *a,**k:None
+scope['main'].__globals__['parent_claude']=lambda *a,**k:None
+sys.argv=sys.argv[1:]
+result=scope['main']()
+sys.stdout.flush()
+os._exit(result or 0)
+"""
+
     def run_router(self, *args, stdin="", env=None, timeout=30):
         started = time.monotonic()
-        proc = subprocess.run([sys.executable, str(ROUTER), *args], input=stdin.encode("utf-8"),
-                              capture_output=True, env=env or self.env(), timeout=timeout, cwd=str(self.root))
+        # Production ancestry is tested separately; never let the host Codex
+        # supersede this fixture's fake binary or launch its catalog refresh.
+        runner = self.isolated_runner()
+        child_env = dict(env or self.env())
+        child_env["SMR_TEST_RUNNER"] = runner
+        proc = subprocess.run([sys.executable, "-c", runner, str(ROUTER), *args], input=stdin.encode("utf-8"),
+                              capture_output=True, env=child_env, timeout=timeout, cwd=str(self.root))
         elapsed = time.monotonic() - started
         return proc.returncode, proc.stdout.decode("utf-8"), proc.stderr.decode("utf-8"), elapsed
 
@@ -285,7 +341,7 @@ class SkipTests(Sandbox):
 
     def assert_not_excluded(self, result):
         rc, out, err, _ = result
-        self.assertEqual((rc, err, self.last_row()["reason"]), (0, "", "rule:light"))
+        self.assertEqual((rc, err, self.last_row()["reason"]), (0, "", "choice"))
         self.assertEqual(self.routed_model(out), "haiku")
 
     def test_not_agent_tool_is_silent_and_not_logged(self):
@@ -315,10 +371,10 @@ class SkipTests(Sandbox):
         self.serve()
         self.write_config(claude={"route_types": ["Explore"]})
         rc, out, _err, _ = self.hook(agent_input(subagent_type="Explore"))
-        self.assertEqual((rc, self.routed_model(out)), (0, "haiku"))
+        self.assertEqual((rc, out), (0, ""))
         rc, out, err, _ = self.hook(agent_input(subagent_type="general-purpose"))
         self.assertEqual((rc, out, err, self.last_row()["reason"]), (0, "", "", "type"))
-        self.assertEqual(len(self.fake.requests), 1)
+        self.assertEqual(len(self.fake.requests), 0)
 
     def test_excluded_prefix_sends_nothing(self):
         self.serve()
@@ -456,441 +512,14 @@ class SkipTests(Sandbox):
         for values in ({"mode": "loud"}, {"enable": False}, {"timeout_seconds": 0}, {"timeout_seconds": 30},
                        {"endpoint": "http://example.com/v1"}, {"exclude": ["relative/path"]},
                        {"route_types": ["general-purpose"]}, {"models": {"light": "haiku"}},
-                       {"claude": {"route_types": "general-purpose"}}, {"claude": {"models": {"light": ""}}},
-                       {"claude": {"models": {"fast": "haiku"}}}, {"codex": {"models": {"light": "bad model"}}},
-                       {"codex": {"effort": {"light": "Low"}}}, {"codex": {"bin": "/usr/bin/codex"}},
+                       {"claude": {"route_types": "general-purpose"}}, {"claude": {"allowed_models": [""]}},
+                       {"claude": {"models": {"fast": "haiku"}}}, {"codex": {"allowed_models": ["bad model"]}},
+                       {"claude": {"efforts": ["Low"]}}, {"codex": {"bin": "/usr/bin/codex"}},
                        {"codex_bin": "codex"}, {"codex_bin": "bin/codex"}, {"codex_bin": 5},
                        {"codex": {"route_agent_types": "worker"}}, {"codex": {"route_agent_types": [1]}}):
             with self.subTest(values=values):
                 self.write_config(**values)
                 self.assert_skipped(self.hook(), "error:config")
-
-
-class DecisionTests(Sandbox):
-    """Ответы Jev → модель или отсутствие вывода; форма вывода и запроса (Claude Code)."""
-
-    def decide(self, scenario, tool_input=None, **cfg):
-        body = SCENARIOS[scenario] if isinstance(scenario, str) else scenario
-        self.serve(Reply(body=body))
-        self.write_config(**cfg)
-        return self.hook(tool_input)
-
-    def assert_routed(self, result, model, tier):
-        rc, out, err, _ = result
-        self.assertEqual((rc, err), (0, ""))
-        self.assertEqual(self.routed_model(out), model)
-        row = self.last_row()
-        self.assertEqual((row["tier"], row["model"], row["reason"], row["mode"], row["agent"]),
-                         (tier, model, "rule:" + tier, "active", "claude"))
-
-    def assert_notice_only(self, result, tier, model, reason):
-        rc, out, err, _ = result
-        self.assertEqual((rc, err), (0, ""))
-        self.assertEqual(set(json.loads(out)), {"systemMessage"})
-        self.assertIn("model=unknown (unchanged)", json.loads(out)["systemMessage"])
-        row = self.last_row()
-        self.assertEqual((row["tier"], row["model"], row["reason"]), (tier, model, reason))
-
-    def test_light_goes_to_haiku(self):
-        self.assert_routed(self.decide("light"), "haiku", "light")
-
-    def test_standard_goes_to_sonnet(self):
-        self.assert_routed(self.decide("standard"), "sonnet", "standard")
-
-    def test_heavy_is_inherit_with_notice(self):
-        self.assert_notice_only(self.decide("heavy"), "heavy", "inherit", "rule:heavy")
-
-    def test_claude_inherited_notice_uses_host_model_when_supplied(self):
-        self.serve(Reply(body=SCENARIOS["heavy"]))
-        self.write_config()
-        event = {"tool_name": "Agent", "tool_input": agent_input(), "model": "claude-opus-4-6"}
-        rc, out, err, _ = self.run_event(event)
-        self.assertEqual((rc, err), (0, ""))
-        self.assertEqual(set(json.loads(out)), {"systemMessage"})
-        self.assertIn("model=claude-opus-4-6 (unchanged)", json.loads(out)["systemMessage"])
-
-    def test_claude_hook_effort_level_object_is_reported(self):
-        self.serve(Reply(body=SCENARIOS["heavy"]))
-        self.write_config()
-        event = {"tool_name": "Agent", "tool_input": agent_input(), "effort": {"level": "high"}}
-        rc, out, err, _ = self.run_event(event)
-        self.assertEqual((rc, err), (0, ""))
-        self.assertIn("effort=high (unchanged)", json.loads(out)["systemMessage"])
-        self.assertEqual(self.last_row()['session_effort'], 'high')
-
-    def test_uncertain_answer_goes_heavy(self):
-        self.assert_notice_only(self.decide("uncertain"), "heavy", "inherit", "rule:heavy")
-
-    def test_standard_needs_low_heavy_probability(self):
-        body = jev_body(0.40, 0.30, 0.30, 0.05, 0.05)
-        self.assert_notice_only(self.decide(body), "heavy", "inherit", "rule:heavy")
-
-    def test_risky_goes_heavy(self):
-        self.assert_notice_only(self.decide("risky"), "heavy", "inherit", "rule:risky")
-
-    def test_review_goes_heavy(self):
-        self.assert_notice_only(self.decide("review"), "heavy", "inherit", "rule:review")
-
-    def test_heavy_with_explicit_mapping(self):
-        rc, out, _err, _ = self.decide("heavy", claude={"models": {"heavy": "opus"}})
-        self.assertEqual((rc, self.routed_model(out)), (0, "opus"))
-
-    def test_thresholds_from_config(self):
-        rc, out, _err, _ = self.decide("standard", thresholds={"light_min": 0.25})
-        self.assertEqual(self.routed_model(out), "haiku")
-
-    def test_missing_subagent_type_means_general_purpose(self):
-        tool_input = agent_input(subagent_type=None)
-        rc, out, _err, _ = self.decide("light", tool_input)
-        updated = json.loads(out)["hookSpecificOutput"]["updatedInput"]
-        self.assertEqual(updated, dict(tool_input, model="haiku"))
-        self.assertNotIn("subagent_type", updated)
-
-    def test_updated_input_keeps_all_fields_without_permission_decision(self):
-        tool_input = agent_input(run_in_background=False, isolation="worktree", name="helper",
-                                 extra={"nested": [1, {"ключ": "значение"}]})
-        rc, out, err, _ = self.decide("light", tool_input)
-        self.assertEqual((rc, err), (0, ""))
-        output = json.loads(out)
-        self.assertEqual(set(output), {"hookSpecificOutput", "systemMessage"})
-        specific = output["hookSpecificOutput"]
-        self.assertEqual(set(specific), {"hookEventName", "updatedInput"})
-        self.assertEqual(specific["hookEventName"], "PreToolUse")
-        self.assertEqual(specific["updatedInput"], dict(tool_input, model="haiku"))
-        self.assertNotIn("permissionDecision", out)
-        self.assertEqual(output["systemMessage"],
-                         'subagent-model-router: "Найти README" — selected for launch: model=haiku; rule:light')
-
-    def test_shadow_logs_decision_with_notice_only(self):
-        rc, out, err, _ = self.decide("light", mode="shadow")
-        self.assertEqual((rc, err), (0, ""))
-        self.assertEqual(set(json.loads(out)), {"systemMessage"})
-        self.assertIn("shadow recommendation: model=haiku", json.loads(out)["systemMessage"])
-        self.assertIn("launch arguments unchanged", json.loads(out)["systemMessage"])
-        row = self.last_row()
-        self.assertEqual((row["tier"], row["model"], row["reason"], row["mode"]),
-                         ("light", "haiku", "rule:light", "shadow"))
-
-    def test_claude_branch_never_asks_codex(self):
-        self.assert_routed(self.decide("light"), "haiku", "light")
-        self.assertEqual(self.codex_calls(), [])
-
-    def test_notice_redacts_label_and_never_includes_task(self):
-        args = agent_input(description="helper\n\x1b[31m\u202e token=private-value " + "x" * 300,
-                           prompt="TASK: unique-task-not-for-display")
-        output = json.loads(self.decide("light", args)[1])
-        notice = output["systemMessage"]
-        self.assertNotIn("private-value", notice)
-        self.assertNotIn("unique-task-not-for-display", notice)
-        self.assertNotIn("\n", notice)
-        self.assertNotIn("\x1b", notice)
-        self.assertNotIn("\u202e", notice)
-        self.assertIn("[redacted]", notice)
-        self.assertLess(len(notice), 240)
-        self.assertEqual(output["hookSpecificOutput"]["updatedInput"], dict(args, model="haiku"))
-
-    def test_request_format_typesafe(self):
-        self.serve(Reply(body=SCENARIOS["light"], headers={"x-typesafe-request-id": "req-42"}))
-        self.write_config()
-        self.hook()
-        self.assertEqual(len(self.fake.requests), 1)
-        request = self.fake.requests[0]
-        self.assertEqual((request["method"], request["path"]), ("POST", "/v1/systemone"))
-        headers = {k.lower(): v for k, v in request["headers"].items()}
-        self.assertEqual(headers["authorization"], "Bearer " + KEY)
-        self.assertEqual(headers["content-type"], "application/json")
-        self.assertEqual(headers["user-agent"], "subagent-model-router/1")
-        body = json.loads(request["body"])
-        self.assertEqual(set(body), {"state", "model", "questions"})
-        self.assertEqual(body["model"], "jev-1.13.0")
-        self.assertEqual(body["state"], router.build_state("Найти README", PROMPT))
-        questions = body["questions"]
-        self.assertEqual(set(questions), {"tier", "risky", "review"})
-        self.assertEqual(questions["tier"]["type"], "choice")
-        self.assertEqual(questions["tier"]["instructions"],
-                         "How demanding is this task for the AI assistant that will do it?")
-        self.assertEqual(set(questions["tier"]["criteria"]), {"light", "standard", "heavy"})
-        self.assertTrue(questions["tier"]["criteria"]["light"].startswith("Simple, mechanical work"))
-        self.assertTrue(questions["tier"]["criteria"]["heavy"].endswith("any task where a mistake is costly."))
-        self.assertEqual(questions["risky"], {"type": "noul", "instructions": (
-            "Can a mistake in this task delete or corrupt data, publish or send something outside the machine, "
-            "change a shared system, or expose secrets?")})
-        self.assertEqual(questions["review"], {"type": "noul", "instructions": REVIEW_QUESTION})
-        row = self.last_row()
-        self.assertEqual(set(row), JOURNAL_FIELDS)
-        self.assertEqual((row["request_id"], row["jev_model"], row["provider"]), ("req-42", "jev-1.13.0",
-                                                                                  "typesafe"))
-        self.assertEqual((row["agent"], row["effort"], row["session_model"]), ("claude", None, None))
-        self.assertEqual(row["state_sha256"], router.state_digest(body["state"]))
-        self.assertEqual(row["answers"]["tier"], {"light": 0.9, "standard": 0.08, "heavy": 0.02})
-        self.assertIsInstance(row["latency_ms"], int)
-        self.assertEqual((row["session_id"], row["subagent_type"]), ("sess-1", "general-purpose"))
-        self.assertNotIn(PROMPT, self.journal.read_text(encoding="utf-8"))
-
-    def test_openrouter_provider_and_response_shape(self):
-        body = jev_body(0.9, 0.08, 0.02, 0.05, 0.02, model="typesafe/jev-1.13-20260917",
-                        id="gen-dec-1789738314-X5e5", provider="TypeSafe")
-        body["usage"]["cost"] = 0.00002
-        self.serve(Reply(body=body))
-        self.write_config(provider="openrouter", endpoint=self.fake.url + "/api/alpha/decisions")
-        rc, out, _err, _ = self.hook()
-        self.assertEqual(self.routed_model(out), "haiku")
-        request = self.fake.requests[0]
-        self.assertEqual(request["path"], "/api/alpha/decisions")
-        self.assertEqual(json.loads(request["body"])["model"], "typesafe/jev-1.13")
-        row = self.last_row()
-        self.assertEqual((row["provider"], row["request_id"], row["jev_model"]),
-                         ("openrouter", "gen-dec-1789738314-X5e5", "typesafe/jev-1.13-20260917"))
-
-    def test_default_endpoints_and_models(self):
-        cfg = router.normalize_config({})
-        self.assertEqual((cfg["endpoint"], cfg["model"]), ("https://api.typesafe.ai/v1/systemone", "jev-1.13.0"))
-        cfg = router.normalize_config({"provider": "openrouter"})
-        self.assertEqual((cfg["endpoint"], cfg["model"]),
-                         ("https://openrouter.ai/api/alpha/decisions", "typesafe/jev-1.13"))
-
-    def test_example_config_equals_defaults(self):
-        with open(PLUGIN / "config.example.toml", "rb") as fh:
-            self.assertEqual(router.normalize_config(tomllib.load(fh)), router.normalize_config({}))
-
-
-class CodexTests(Sandbox):
-    """Ветка Codex: v1 и v2, пропуски, model и effort из конфига, форма вывода."""
-
-    def decide(self, scenario="light", args=None, **cfg):
-        body = SCENARIOS[scenario] if isinstance(scenario, str) else scenario
-        self.serve(Reply(body=body))
-        self.write_config(**cfg)
-        return self.codex_hook(args)
-
-    def output(self, result):
-        rc, out, err, _ = result
-        self.assertEqual((rc, err), (0, ""))
-        return json.loads(out)
-
-    def assert_silent(self, result):
-        rc, out, err, _ = result
-        self.assertEqual((rc, out, err), (0, "", ""))
-        return self.last_row()
-
-    def test_light_gives_model_and_effort_with_allow(self):
-        args = v2_args(agent_type="worker")
-        output = self.output(self.decide("light", args))
-        self.assertEqual(output, {
-            "systemMessage": 'subagent-model-router: "list_toml" — selected for launch: '
-                             'model=gpt-5.6-luna, effort=low; rule:light',
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse", "permissionDecision": "allow",
-                "updatedInput": dict(args, model="gpt-5.6-luna", reasoning_effort="low")}})
-        row = self.last_row()
-        self.assertEqual(set(row), JOURNAL_FIELDS)
-        self.assertEqual((row["agent"], row["tier"], row["model"], row["effort"], row["reason"], row["mode"],
-                          row["session_model"], row["subagent_type"], row["description"]),
-                         ("codex", "light", "gpt-5.6-luna", "low", "rule:light", "active", "gpt-5.5", "worker",
-                          "list_toml"))
-
-    def test_standard_gives_model_and_effort(self):
-        output = self.output(self.decide("standard"))
-        updated = output["hookSpecificOutput"]["updatedInput"]
-        self.assertEqual((updated["model"], updated["reasoning_effort"]), ("gpt-5.6-terra", "medium"))
-
-    def test_notice_uses_safe_task_name_not_task_text(self):
-        args = v2_args(task_name="helper\n\x1b\u202e token=private-value " + "x" * 300)
-        output = self.output(self.decide("light", args))
-        notice = output["systemMessage"]
-        for value in ("private-value", CODEX_TASK, "\n", "\x1b", "\u202e"):
-            self.assertNotIn(value, notice)
-        self.assertIn("[redacted]", notice)
-        self.assertLess(len(notice), 260)
-        self.assertEqual(output["hookSpecificOutput"]["updatedInput"]["task_name"], args["task_name"])
-
-    def test_heavy_and_uncertain_notify_without_catalog(self):
-        for scenario in ("heavy", "uncertain", "risky", "review"):
-            with self.subTest(scenario=scenario):
-                output = self.output(self.decide(scenario))
-                self.assertEqual(set(output), {"systemMessage"})
-                self.assertIn("model=gpt-5.5 (unchanged), effort=unknown (unchanged)", output["systemMessage"])
-                row = self.last_row()
-                self.assertEqual((row["tier"], row["model"], row["effort"]), ("heavy", "inherit", "inherit"))
-        self.assertEqual(self.codex_calls(), [])
-
-    def test_updated_input_keeps_every_original_field_and_adds_nothing_else(self):
-        args = v2_args(agent_type="worker", extra_field={"nested": [1, {"ключ": "значение"}]})
-        output = self.output(self.decide("light", args))
-        specific = output["hookSpecificOutput"]
-        self.assertEqual(set(output), {"hookSpecificOutput", "systemMessage"})
-        self.assertEqual(set(specific), {"hookEventName", "permissionDecision", "updatedInput"})
-        self.assertEqual(specific["permissionDecision"], "allow")
-        updated = specific["updatedInput"]
-        self.assertEqual({k: v for k, v in updated.items() if k in args}, args)
-        self.assertEqual(set(updated) - set(args), {"model", "reasoning_effort"})
-
-    def test_v1_message(self):
-        self.serve()
-        self.write_config()
-        args = v1_args()
-        output = self.output(self.codex_hook(args, tool_name="spawn_agent"))
-        self.assertEqual(output["hookSpecificOutput"]["updatedInput"],
-                         dict(args, model="gpt-5.6-luna", reasoning_effort="low"))
-        self.assertEqual(self.sent_state(), router.build_state("worker", CODEX_TASK))
-
-    def test_v1_items_text_parts(self):
-        self.serve()
-        self.write_config()
-        args = {"items": [{"type": "text", "text": "TASK: Перечислить файлы *.toml"},
-                          {"type": "image", "image_url": "data:image/png;base64,AAAA"},
-                          {"type": "text", "text": "ROLE: исследователь\nREAD: /srv/notes"}]}
-        output = self.output(self.codex_hook(args, tool_name="spawn_agent"))
-        self.assertEqual(output["hookSpecificOutput"]["updatedInput"],
-                         dict(args, model="gpt-5.6-luna", reasoning_effort="low"))
-        self.assertEqual(self.sent_state(), router.build_state("",
-                         "TASK: Перечислить файлы *.toml\nROLE: исследователь\nREAD: /srv/notes"))
-
-    def test_agent_name_with_turn_id_is_ignored(self):
-        self.serve()
-        self.write_config()
-        rc, out, err, _ = self.codex_hook(v1_args(), tool_name="Agent")
-        self.assertEqual((rc, out, err), (0, "", ""))
-        self.assertFalse(self.journal.exists())
-        self.assertEqual(self.fake.requests, [])
-
-    def test_mcp_spawn_agent_is_ignored_in_both_products(self):
-        self.serve()
-        self.write_config()
-        args = {"message": "TASK: list", "fork_turns": "none"}
-        claude_like = {"session_id": "sess-1", "transcript_path": "/dev/null", "cwd": str(self.root / "proj"),
-                       "permission_mode": "default", "hook_event_name": "PreToolUse",
-                       "tool_name": "mcp__agents__spawn_agent", "tool_input": args, "tool_use_id": "toolu_1"}
-        events = [claude_like, dict(claude_like, tool_name="spawn_agent"),
-                  self.codex_event(args, tool_name="mcp__agents__spawn_agent"),
-                  self.codex_event(args, tool_name="agents__spawn_agent")]
-        for event in events:
-            with self.subTest(tool=event["tool_name"], codex="turn_id" in event):
-                self.assertEqual(self.run_event(event)[:3], (0, "", ""))
-        self.assertEqual(self.fake.requests, [])
-        self.assertFalse(self.journal.exists())
-
-    def test_v2_state_uses_task_name_and_full_task(self):
-        self.serve()
-        self.write_config()
-        self.codex_hook(v2_args(message=CODEX_TASK + "\nREAD: /srv/private/notes\nMUST_NOT: push"))
-        self.assertEqual(self.sent_state(), router.build_state("list_toml", CODEX_TASK + "\nREAD: /srv/private/notes\nMUST_NOT: push"))
-        self.assertIn("private/notes", self.server_file.read_text(encoding="utf-8"))
-
-    def test_forks_are_skipped(self):
-        self.serve()
-        self.write_config()
-        cases = ((v2_args(fork_turns=DROP), "collaborationspawn_agent"),
-                 (v2_args(fork_turns="all"), "collaborationspawn_agent"),
-                 (v2_args(fork_turns="3"), "collaborationspawn_agent"),
-                 (v2_args(fork_turns=3), "collaborationspawn_agent"),
-                 (v2_args(fork_turns=None), "collaborationspawn_agent"),
-                 ({"message": CODEX_TASK}, "collaborationspawn_agent"),
-                 (v1_args(fork_context=True), "spawn_agent"))
-        for args, tool_name in cases:
-            with self.subTest(args=args, tool=tool_name):
-                row = self.assert_silent(self.codex_hook(args, tool_name=tool_name))
-                self.assertEqual(row["reason"], "fork")
-        self.assertEqual(self.fake.requests, [])
-
-    def test_v1_without_fork_context_is_routed(self):
-        self.serve()
-        self.write_config()
-        for args in (v1_args(fork_context=False), v1_args()):
-            with self.subTest(args=args):
-                output = self.output(self.codex_hook(args, tool_name="spawn_agent"))
-                self.assertEqual(output["hookSpecificOutput"]["updatedInput"]["model"], "gpt-5.6-luna")
-
-    def test_explicit_model_or_effort_is_skipped(self):
-        self.serve()
-        self.write_config()
-        for extra in ({"model": "gpt-5.5"}, {"reasoning_effort": "high"}):
-            with self.subTest(extra=extra):
-                row = self.assert_silent(self.codex_hook(v2_args(**extra)))
-                self.assertEqual(row["reason"], "explicit")
-        self.assertEqual(self.fake.requests, [])
-
-    def test_null_model_and_effort_are_not_explicit(self):
-        args = v2_args(model=None, reasoning_effort=None)
-        output = self.output(self.decide("light", args))
-        self.assertEqual(output["hookSpecificOutput"]["updatedInput"],
-                         dict(args, model="gpt-5.6-luna", reasoning_effort="low"))
-
-    def test_input_without_task_is_error(self):
-        self.serve()
-        self.write_config()
-        cases = ((v2_args(message=123), "collaborationspawn_agent"),
-                 ({"items": [{"type": "image", "image_url": "x"}]}, "spawn_agent"),
-                 ({"agent_type": "worker"}, "spawn_agent"))
-        for args, tool_name in cases:
-            with self.subTest(args=args):
-                row = self.assert_silent(self.codex_hook(args, tool_name=tool_name))
-                self.assertEqual(row["reason"], "error:input")
-        row = self.assert_silent(self.run_event(dict(self.codex_event({}), tool_input="spawn")))
-        self.assertEqual(row["reason"], "error:input")
-        self.assertEqual(self.fake.requests, [])
-
-    def test_other_tools_are_silent_even_in_codex(self):
-        self.serve()
-        self.write_config()
-        for name in ("exec_command", "mcp__srv__Agent_tool", "Bash"):
-            with self.subTest(tool=name):
-                rc, out, err, _ = self.run_event(self.codex_event({"cmd": "ls"}, tool_name=name))
-                self.assertEqual((rc, out, err), (0, "", ""))
-        self.assertFalse(self.journal.exists())
-
-    def test_foreign_role_is_skipped_as_type(self):
-        self.serve()
-        self.write_config()
-        for role in ("explorer", "reviewer", 7):
-            with self.subTest(role=role):
-                row = self.assert_silent(self.codex_hook(v2_args(agent_type=role)))
-                self.assertEqual(row["reason"], "type")
-        self.assertEqual(self.fake.requests, [])
-
-    def test_default_roles_are_routed(self):
-        self.serve()
-        self.write_config()
-        for role in ("", "default", "worker", None, DROP):
-            with self.subTest(role=role):
-                output = self.output(self.codex_hook(v2_args(agent_type=role)))
-                self.assertEqual(output["hookSpecificOutput"]["updatedInput"]["model"], "gpt-5.6-luna")
-
-    def test_route_agent_types_from_config(self):
-        self.serve()
-        self.write_config(codex={"route_agent_types": ["explorer"]})
-        output = self.output(self.codex_hook(v2_args(agent_type="explorer")))
-        self.assertEqual(output["hookSpecificOutput"]["updatedInput"]["reasoning_effort"], "low")
-        row = self.assert_silent(self.codex_hook(v2_args(agent_type="worker")))
-        self.assertEqual(row["reason"], "type")
-        self.assertEqual(len(self.fake.requests), 1)
-
-    def test_shadow_logs_model_and_effort_with_notice_only(self):
-        output = self.output(self.decide("light", mode="shadow"))
-        self.assertEqual(set(output), {"systemMessage"})
-        self.assertIn("shadow recommendation: model=gpt-5.6-luna, effort=low", output["systemMessage"])
-        self.assertIn("launch arguments unchanged", output["systemMessage"])
-        row = self.last_row()
-        self.assertEqual((row["model"], row["effort"], row["reason"], row["mode"]),
-                         ("gpt-5.6-luna", "low", "rule:light", "shadow"))
-
-    def test_models_and_effort_from_config(self):
-        output = self.output(self.decide("light", codex={"models": {"light": "gpt-5.5"},
-                                                         "effort": {"light": "high"}}))
-        updated = output["hookSpecificOutput"]["updatedInput"]
-        self.assertEqual((updated["model"], updated["reasoning_effort"]), ("gpt-5.5", "high"))
-
-    def test_effort_only_when_model_is_inherit(self):
-        output = self.output(self.decide("light", codex={"models": {"light": "inherit"}}))
-        updated = output["hookSpecificOutput"]["updatedInput"]
-        self.assertNotIn("model", updated)
-        self.assertEqual(updated["reasoning_effort"], "low")
-        self.assertEqual((self.last_row()["model"], self.last_row()["effort"]), ("inherit", "low"))
-
-    def test_new_review_question_is_sent(self):
-        self.decide("light")
-        questions = json.loads(self.fake.requests[0]["body"])["questions"]
-        self.assertEqual(questions["review"], {"type": "noul", "instructions": REVIEW_QUESTION})
 
 
 class CatalogTests(Sandbox):
@@ -918,51 +547,11 @@ class CatalogTests(Sandbox):
         self.assertEqual(self.wait_background(), [], "после обновления остались процессы")
         self.assertEqual(count(), calls)
 
-    def test_model_missing_from_catalog_keeps_effort_checked_by_session_model(self):
-        self.write_cache(self.NO_LUNA)
-        result = self.decide()
-        updated = self.updated(result)
-        notice = json.loads(result[1])["systemMessage"]
-        self.assertIn("model=gpt-5.5 (unchanged), effort=low", notice)
-        self.assertIn("model_not_in_catalog", notice)
-        self.assertNotIn("gpt-5.6-luna", notice)
-        self.assertNotIn("model", updated)
-        self.assertEqual(updated["reasoning_effort"], "low")
-        row = self.last_row()
-        self.assertEqual((row["model"], row["effort"], row["reason"]),
-                         (None, "low", "rule:light;model_not_in_catalog"))
-
-    def test_model_missing_and_session_model_unknown_does_not_rewrite(self):
-        self.write_cache(self.NO_LUNA)
-        self.assertIsNone(self.updated(self.decide(session_model="gpt-unknown")))
-        row = self.last_row()
-        self.assertEqual((row["model"], row["effort"], row["reason"]),
-                         (None, None, "rule:light;model_not_in_catalog;effort_not_supported"))
-
-    def test_effort_not_supported_by_model_is_not_set(self):
-        catalog = json.loads(json.dumps(CATALOG))
-        catalog["models"][1]["supported_reasoning_levels"] = levels("medium", "high")
-        self.write_cache(catalog)
-        result = self.decide()
-        updated = self.updated(result)
-        notice = json.loads(result[1])["systemMessage"]
-        self.assertIn("model=gpt-5.6-luna, effort=unknown (unchanged)", notice)
-        self.assertIn("effort_not_supported", notice)
-        self.assertEqual(updated["model"], "gpt-5.6-luna")
-        self.assertNotIn("reasoning_effort", updated)
-        self.assertEqual(self.last_row()["reason"], "rule:light;effort_not_supported")
-
-    def test_effort_for_inherit_model_is_checked_by_session_model(self):
-        cfg = {"codex": {"models": {"light": "inherit"}, "effort": {"light": "max"}}}
-        self.assertIsNone(self.updated(self.decide(session_model="gpt-5.5", **cfg)))
-        self.assertEqual(self.last_row()["reason"], "rule:light;effort_not_supported")
-        updated = self.updated(self.decide(session_model="gpt-5.6-terra", **cfg))
-        self.assertEqual(updated, dict(v2_args(), reasoning_effort="max"))
 
     def test_fresh_cache_is_used_without_refresh(self):
         self.write_cache(age=23 * 3600)
-        self.assertEqual(self.updated(self.decide())["model"], "gpt-5.6-luna")
-        self.assertEqual(self.last_row()["reason"], "rule:light")
+        self.assertEqual(self.updated(self.decide())["model"], "gpt-5.5")
+        self.assertEqual(self.last_row()["reason"], "choice")
         self.assertEqual(self.wait_background(), [])
         self.assertEqual(self.codex_calls(), [])
 
@@ -972,18 +561,16 @@ class CatalogTests(Sandbox):
         started = time.monotonic()
         result = self.decide()
         self.assertIsNone(self.updated(result))
-        output = json.loads(result[1])
-        self.assertEqual(set(output), {"systemMessage"})
-        self.assertIn("model=gpt-5.5 (unchanged), effort=unknown (unchanged)", output["systemMessage"])
-        self.assertIn("no_catalog;refreshing", output["systemMessage"])
+        self.assertEqual(result[1], "")
+        self.assertEqual(self.fake.requests, [])
         self.assertLess(time.monotonic() - started, 2)  # каталог отвечает 4 с, хук его не ждёт
         row = self.last_row()
         self.assertEqual((row["model"], row["effort"], row["reason"]),
-                         (None, None, "rule:light;no_catalog;refreshing"))
+                         (None, None, "error:no_catalog;refreshing"))
         self.refreshed()
         self.assertLess(self.cached_age(), 60)
         self.assertEqual((mode_of(self.cache), mode_of(self.cache.parent)), (0o600, 0o700))
-        self.assertEqual(self.updated(self.decide())["model"], "gpt-5.6-luna")  # следующий хук — с моделью
+        self.assertEqual(self.updated(self.decide())["model"], "gpt-5.5")  # следующий хук — с моделью
         self.assertEqual(len(self.codex_calls("debug", "models")), 1)
 
     def test_one_background_refresh_at_a_time(self):
@@ -991,9 +578,9 @@ class CatalogTests(Sandbox):
         self.write_catalog(CATALOG, mode="slow:3")
         for _ in range(3):
             self.assertIsNone(self.updated(self.decide()))
-            self.assertEqual(self.last_row()["reason"], "rule:light;no_catalog;refreshing")
+            self.assertEqual(self.last_row()["reason"], "error:no_catalog;refreshing")
         self.refreshed(calls=1)
-        self.assertEqual(self.updated(self.decide())["model"], "gpt-5.6-luna")
+        self.assertEqual(self.updated(self.decide())["model"], "gpt-5.5")
 
     def test_lock_held_elsewhere_starts_no_refresh(self):
         import fcntl
@@ -1002,26 +589,20 @@ class CatalogTests(Sandbox):
         self.addCleanup(os.close, lock)
         fcntl.flock(lock, fcntl.LOCK_EX)
         self.assertIsNone(self.updated(self.decide()))
-        self.assertEqual(self.last_row()["reason"], "rule:light;no_catalog;refreshing")
+        self.assertEqual(self.last_row()["reason"], "error:no_catalog;refreshing")
         self.assertEqual(self.wait_background(), [])
         self.assertEqual(self.codex_calls(), [])
         fcntl.flock(lock, fcntl.LOCK_UN)
         self.assertIsNone(self.updated(self.decide()))
         self.refreshed(calls=1)
 
-    def test_stale_cache_up_to_seven_days_is_used_and_refreshed(self):
-        self.write_cache(age=6 * 24 * 3600)
-        self.assertEqual(self.updated(self.decide())["model"], "gpt-5.6-luna")
-        self.assertEqual(self.last_row()["reason"], "rule:light")
-        self.refreshed(calls=1)
-        self.assertLess(self.cached_age(), 60)
-
-    def test_cache_older_than_seven_days_is_not_used(self):
-        self.write_cache(age=8 * 24 * 3600)
-        self.assertIsNone(self.updated(self.decide()))
-        self.assertEqual(self.last_row()["reason"], "rule:light;no_catalog;refreshing")
-        self.refreshed(calls=1)
-        self.assertEqual(self.updated(self.decide())["model"], "gpt-5.6-luna")
+    def test_purpose_cache_is_reused_without_age_refresh(self):
+        for days in (6, 8, 400):
+            self.write_cache(age=days * 24 * 3600)
+            self.assertEqual(self.updated(self.decide())["model"], "gpt-5.5")
+            self.assertEqual(self.last_row()["reason"], "choice")
+            self.assertEqual(self.codex_calls(), [])
+            self.assertGreaterEqual(self.cached_age(), days * 24 * 3600)
 
     def test_catalog_not_obtained_substitutes_nothing(self):
         for index, mode in enumerate(("fail", "garbage"), start=1):
@@ -1030,8 +611,8 @@ class CatalogTests(Sandbox):
                 self.write_catalog(CATALOG, mode=mode)
                 self.assertIsNone(self.updated(self.decide()))
                 row = self.last_row()
-                self.assertEqual((row["tier"], row["model"], row["effort"], row["reason"]),
-                                 ("light", None, None, "rule:light;no_catalog;refreshing"))
+                self.assertEqual((row["model"], row["effort"], row["reason"]),
+                                 (None, None, "error:no_catalog;refreshing"))
                 self.refreshed(calls=index)
                 self.assertFalse(self.cache.exists())
 
@@ -1062,17 +643,17 @@ class CatalogTests(Sandbox):
         other, state = self.other_codex(self.NO_LUNA)
         stamp = os.stat(self.fake_codex)
         os.utime(other, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))  # различает только путь бинарника
-        self.assertEqual(self.updated(self.decide())["model"], "gpt-5.6-luna")
+        self.assertEqual(self.updated(self.decide())["model"], "gpt-5.5")
         self.assertIsNone(self.updated(self.decide(codex_bin=str(other))))
-        self.assertEqual(self.last_row()["reason"], "rule:light;no_catalog;refreshing")
+        self.assertEqual(self.last_row()["reason"], "error:no_catalog;refreshing")
         self.refreshed(calls=1, state=state)
-        self.assertNotIn("model", self.updated(self.decide(codex_bin=str(other))))
-        self.assertEqual(self.last_row()["reason"], "rule:light;model_not_in_catalog")
-        self.assertEqual(self.updated(self.decide())["model"], "gpt-5.6-luna")
+        self.assertEqual(self.updated(self.decide(codex_bin=str(other)))["model"], "gpt-5.5")
+        self.assertEqual(self.last_row()["reason"], "choice")
+        self.assertEqual(self.updated(self.decide())["model"], "gpt-5.5")
         self.assertEqual(self.codex_calls(), [])
         os.utime(self.fake_codex, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 10 ** 9))
         self.assertIsNone(self.updated(self.decide()))
-        self.assertEqual(self.last_row()["reason"], "rule:light;no_catalog;refreshing")
+        self.assertEqual(self.last_row()["reason"], "error:no_catalog;refreshing")
         self.refreshed(calls=1)
         cached = json.loads(self.cache.read_text())["binaries"]
         self.assertEqual(set(cached), {os.path.realpath(self.fake_codex), os.path.realpath(other)})
@@ -1083,16 +664,16 @@ class CatalogTests(Sandbox):
         evil.write_text(f"#!/bin/sh\necho EVIL-RAN > '{marker}'\n")
         evil.chmod(0o755)
         self.cache.unlink()
-        self.decide(env=self.env(PATH="/usr/bin:/bin:"))
-        self.decide(env=self.env(PATH=".:bin"))
+        self.decide(codex_bin="", env=self.env(PATH="/usr/bin:/bin:"))
+        self.decide(codex_bin="", env=self.env(PATH=".:bin"))
         self.assertEqual(self.wait_background(), [])
         self.assertFalse(marker.exists())
 
     def test_codex_bin_from_config_comes_first(self):
         other, state = self.other_codex(self.NO_LUNA)
         self.write_cache(self.NO_LUNA, binary=other)
-        self.assertNotIn("model", self.updated(self.decide(codex_bin=str(other))))
-        self.assertEqual(self.last_row()["reason"], "rule:light;model_not_in_catalog")
+        self.assertEqual(self.updated(self.decide(codex_bin=str(other)))["model"], "gpt-5.5")
+        self.assertEqual(self.last_row()["reason"], "choice")
         self.assertEqual(self.wait_background(), [])
         self.assertEqual((self.codex_calls(), (state / "calls.log").exists()), ([], False))
 
@@ -1185,42 +766,12 @@ class FindCodexTests(unittest.TestCase):
                     router.normalize_config({"codex_bin": value})
 
 
-class VerifyTests(unittest.TestCase):
-    """verify_codex без процессов: что подставляется при данном каталоге."""
-
-    CAT = {"gpt-5.5": ["low", "medium"], "gpt-5.6-luna": ["low"]}
-
-    def verify(self, model, effort, session="gpt-5.5", catalog=CAT, problem=None):
-        calls = []
-
-        def get():
-            calls.append(1)
-            return (catalog, None) if catalog is not None else (None, problem)
-        return router.verify_codex(model, effort, session, get), calls
-
-    def test_cases(self):
-        self.assertEqual(self.verify("gpt-5.6-luna", "low")[0], ("gpt-5.6-luna", "low", []))
-        self.assertEqual(self.verify("gpt-x", "medium")[0], (None, "medium", ["model_not_in_catalog"]))
-        self.assertEqual(self.verify("gpt-5.6-luna", "medium")[0], ("gpt-5.6-luna", None, ["effort_not_supported"]))
-        self.assertEqual(self.verify("inherit", "medium")[0], ("inherit", "medium", []))
-        self.assertEqual(self.verify("inherit", "medium", session=None)[0],
-                         ("inherit", None, ["effort_not_supported"]))
-        self.assertEqual(self.verify("gpt-5.6-luna", "inherit")[0], ("gpt-5.6-luna", "inherit", []))
-        self.assertEqual(self.verify("gpt-5.6-luna", "low", catalog=None, problem="no_codex")[0],
-                         (None, None, ["no_codex"]))
-
-    def test_nothing_to_set_does_not_touch_catalog(self):
-        result, calls = self.verify("inherit", "inherit")
-        self.assertEqual((result, calls), (("inherit", "inherit", []), []))
-
-
 class HooksJsonTests(Sandbox):
     """hooks/hooks.json: matcher как regex и сама команда хука."""
 
     def hooks(self):
         hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8"))
-        self.assertEqual(set(hooks["hooks"]), {"PreToolUse", "SessionStart", "UserPromptSubmit",
-                                              "PostModelSwitch", "SessionEnd"})
+        self.assertEqual(set(hooks["hooks"]), {"PreToolUse", "SessionStart", "UserPromptSubmit"})
         return hooks["hooks"]
 
     def entry(self):
@@ -1245,8 +796,8 @@ class HooksJsonTests(Sandbox):
                               capture_output=True, env=env, timeout=30)
         self.assertEqual((proc.returncode, proc.stdout, proc.stderr), (0, b"", b""))
 
-    def test_claude_lifecycle_hooks_track_model_silently(self):
-        for event in ("SessionStart", "PostModelSwitch", "SessionEnd"):
+    def test_session_start_initializes_metadata_silently(self):
+        for event in ("SessionStart",):
             [entry] = self.hooks()[event]
             handler = entry["hooks"][0]
             self.assertEqual(handler, {"type": "command", "timeout": 5, "command":
@@ -1679,31 +1230,6 @@ class FailureTests(Sandbox):
     def test_non_json_answer(self):
         self.fail_case(Reply(200, body=b"<html>oops</html>"), reason="error:json")
 
-    def test_missing_answer(self):
-        body = jev_body(0.9, 0.08, 0.02, 0.05, 0.02)
-        del body["answers"]["review"]
-        self.fail_case(Reply(body=body), reason="error:answers")
-
-    def test_extra_answer(self):
-        body = jev_body(0.9, 0.08, 0.02, 0.05, 0.02)
-        body["answers"]["bonus"] = {"type": "noul", "noul": 0.5}
-        self.fail_case(Reply(body=body), reason="error:answers")
-
-    def test_probabilities_do_not_sum_to_one(self):
-        self.fail_case(Reply(body=jev_body(0.5, 0.2, 0.1, 0.05, 0.02)), reason="error:sum")
-
-    def test_noul_out_of_range(self):
-        self.fail_case(Reply(body=jev_body(0.9, 0.08, 0.02, 1.5, 0.02)), reason="error:range")
-
-    def test_answer_type_mismatch(self):
-        body = jev_body(0.9, 0.08, 0.02, 0.05, 0.02)
-        body["answers"]["risky"]["type"] = "score"
-        self.fail_case(Reply(body=body), reason="error:type")
-
-    def test_choice_without_all_options(self):
-        body = jev_body(0.9, 0.1, 0.0, 0.05, 0.02)
-        del body["answers"]["tier"]["probabilities"]["heavy"]
-        self.fail_case(Reply(body=body), reason="error:options")
 
     def test_answer_slower_than_budget(self):
         self.fail_case(Reply(body=SCENARIOS["light"], delay=5), reason="error:timeout", short=True)
@@ -1924,7 +1450,7 @@ class PrivacyTests(Sandbox):
             else:
                 rc, out, err, _ = self.run_router(*args, stdin=stdin)
             streams += [out, err]
-        self.assertEqual([r["reason"] for r in self.journal_rows()], ["rule:light", "error:http_500"])
+        self.assertEqual([r["reason"] for r in self.journal_rows()], ["choice", "error:http_500"])
         for text in streams + [self.journal.read_text(encoding="utf-8")]:
             self.assertNotIn(KEY, text)
         auth = {r["headers"].get("Authorization") for r in self.fake.requests}
@@ -1954,36 +1480,6 @@ class PrivacyTests(Sandbox):
 class CommandTests(Sandbox):
     """explain, stats, check."""
 
-    def test_explain_shows_answers_bands_and_models_without_journal(self):
-        self.serve()
-        self.write_config()
-        rc, out, err, _ = self.run_router("explain", "TASK: перечисли файлы\nROLE: исполнитель\nREAD: /x")
-        self.assertEqual((rc, err), (0, ""))
-        for fragment in ("tier: light 0.90", "risky: 0.05", "Bands:", "Result: light (rule light)",
-                         "Claude Code → model haiku; a subagent without an explicit model gets model=haiku",
-                         "Codex → model gpt-5.6-luna, effort low; set after checking the `codex debug models` "
-                         "catalog"):
-            self.assertIn(fragment, out)
-        self.assertNotIn("hookSpecificOutput", out)
-        self.assertFalse(self.journal.exists())
-        self.assertEqual(self.sent_state()["task"], "TASK: перечисли файлы\nROLE: исполнитель\nREAD: /x")
-        self.assertEqual(self.codex_calls(), [])
-
-    def test_explain_review_and_shadow(self):
-        self.serve(Reply(body=SCENARIOS["review"]))
-        self.write_config(mode="shadow")
-        rc, out, _err, _ = self.run_router("explain", "TASK: review\nROLE: reviewer")
-        self.assertEqual(rc, 0)
-        self.assertIn("review ≥ 0.5 → heavy: yes", out)
-        self.assertIn("Result: heavy (rule review)", out)
-        self.assertIn("Codex → model inherit, effort inherit; shadow mode", out)
-
-    def test_explain_reads_stdin(self):
-        self.serve()
-        self.write_config()
-        rc, out, _err, _ = self.run_router("explain", stdin="list the files")
-        self.assertEqual(rc, 0)
-        self.assertEqual(self.sent_state(), router.build_state("", "list the files"))
 
     def test_preview_requires_neither_config_nor_key_and_never_calls_jev(self):
         self.serve()
@@ -2010,35 +1506,9 @@ class CommandTests(Sandbox):
         self.assertIn("config.example.toml", err)
         self.assertNotIn("Traceback", err)
 
-    def test_check_reports_settings_key_and_catalog(self):
-        self.serve()
-        self.write_config(mode="shadow")
-        rc, out, err, _ = self.run_router("check")
-        self.assertEqual((rc, err), (0, ""))
-        for fragment in (f"Config: {self.config} (present)", "Mode: shadow", "Provider: typesafe",
-                         f"Endpoint: {self.fake.url}/v1/systemone", "Jev model: jev-1.13.0",
-                         f"Key: {self.key} — present, permissions OK",
-                         "Claude Code models: light → haiku, standard → sonnet, heavy → inherit",
-                         "Codex models: light → gpt-5.6-luna, standard → gpt-5.6-terra, heavy → inherit",
-                         "Codex effort: light → low, standard → medium, heavy → inherit",
-                         'Codex agent types routed: ["", "default", "worker"]',
-                         f"codex binary for the catalog: {self.fake_codex} (PATH)",
-                         "Codex model catalog: 3 models",
-                         "light: model gpt-5.6-luna — in the catalog; effort low — supported",
-                         "heavy: model inherit — session model"):
-            self.assertIn(fragment, out)
-        self.assertNotIn(KEY, out)
-        self.assertEqual(self.fake.requests, [])
-
-    def test_check_reports_missing_model_in_catalog(self):
-        self.write_catalog({"models": [CATALOG["models"][0]]})
-        self.write_config()
-        rc, out, _err, _ = self.run_router("check")
-        self.assertEqual(rc, 0)
-        self.assertIn("light: model gpt-5.6-luna — not in the catalog, will not be set", out)
 
     def test_check_without_codex(self):
-        self.write_config()
+        self.write_config(codex_bin="")
         empty = self.root / "empty-bin"
         empty.mkdir()
         rc, out, _err, _ = self.run_router("check", env=self.env(PATH=str(empty)))
@@ -2058,7 +1528,7 @@ class CommandTests(Sandbox):
         self.assertIsNotNone(found, out)
         self.assertGreaterEqual(float(found.group(1)), 3.9)
         self.assertLess(self.cached_age(), 60)
-        self.assertIn("light: model gpt-5.6-luna — in the catalog; effort low — supported", out)
+        self.assertIn("gpt-5.6-luna: low, medium, high, xhigh, max", out)
 
     def test_check_without_a_fresh_catalog_reports_the_time_and_the_cache(self):
         self.write_config()
@@ -2085,7 +1555,7 @@ class CommandTests(Sandbox):
         rc, out, _err, _ = self.run_router("check", "--live")
         self.assertEqual(rc, 0)
         self.assertEqual(len(self.fake.requests), 1)
-        self.assertIn("tier light → Claude Code haiku, Codex gpt-5.6-luna/low", out)
+        self.assertIn("Codex model=gpt-5.5, effort=high", out)
 
     def test_check_without_config(self):
         rc, out, _err, _ = self.run_router("check")
@@ -2106,57 +1576,6 @@ class CommandTests(Sandbox):
         self.assertEqual(rc, 1)
         self.assertIn(f"the config directory {self.cfg_dir} is writable by group or others", out)
 
-    def test_stats(self):
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        rows = [
-            {"ts": now, "reason": "rule:light", "model": "haiku", "mode": "active", "latency_ms": 100,
-             "state_sha256": "a"},
-            {"ts": now, "reason": "rule:light", "model": "haiku", "mode": "shadow", "latency_ms": 300,
-             "state_sha256": "b"},
-            {"ts": now, "reason": "rule:standard", "model": "sonnet", "mode": "active", "latency_ms": 200,
-             "state_sha256": "c"},
-            {"ts": now, "reason": "rule:heavy", "model": "inherit", "mode": "active", "latency_ms": 400,
-             "state_sha256": "d"},
-            {"ts": now, "reason": "error:timeout", "model": None, "mode": "active", "latency_ms": 3000,
-             "state_sha256": "e"},
-            {"ts": now, "reason": "explicit", "model": None, "mode": "active", "latency_ms": None,
-             "state_sha256": None},
-            {"ts": now, "reason": "type", "model": None, "mode": "active", "latency_ms": None,
-             "state_sha256": None},
-            {"ts": "2020-01-01T00:00:00Z", "reason": "rule:light", "model": "haiku", "mode": "active",
-             "latency_ms": 100, "state_sha256": "f"},
-        ]
-        self.journal.parent.mkdir(parents=True)
-        self.journal.write_text("".join(json.dumps(r) + "\n" for r in rows) + "broken line\n")
-        rc, out, _err, _ = self.run_router("stats")
-        self.assertEqual(rc, 0)
-        for fragment in ("Subagent calls: 8 (Claude Code 8, Codex 0)", "Jev decisions: 5",
-                         "haiku: 3 (applied 2, shadow 1)", "sonnet: 1 (applied 1)",
-                         "inherit: 1 (call unchanged)", "error:timeout: 1",
-                         "Failures: 1 of 6 Jev requests (16.7 %)", "Average latency: 220 ms"):
-            self.assertIn(fragment, out)
-        rc, out, _err, _ = self.run_router("stats", "--days", "1")
-        for fragment in ("Subagent calls: 7", "haiku: 2 (applied 1, shadow 1)",
-                         "Failures: 1 of 5 Jev requests (20.0 %)", "Average latency: 250 ms"):
-            self.assertIn(fragment, out)
-
-    def test_stats_with_codex_rows(self):
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        base = {"ts": now, "agent": "codex", "mode": "active", "latency_ms": 100, "state_sha256": "a"}
-        rows = [dict(base, reason="rule:light", model="gpt-5.6-luna", effort="low"),
-                dict(base, reason="rule:light", model="gpt-5.6-luna", effort="low"),
-                dict(base, reason="rule:light;model_not_in_catalog", model=None, effort="low"),
-                dict(base, reason="rule:light;no_catalog", model=None, effort=None),
-                dict(base, reason="fork", state_sha256=None, latency_ms=None)]
-        self.journal.parent.mkdir(parents=True)
-        self.journal.write_text("".join(json.dumps(r) + "\n" for r in rows))
-        rc, out, _err, _ = self.run_router("stats")
-        self.assertEqual(rc, 0)
-        for fragment in ("Subagent calls: 5 (Claude Code 0, Codex 5)", "Jev decisions: 4",
-                         "Codex gpt-5.6-luna, effort low: 2 (applied 2)",
-                         "Codex —, effort low: 1 (applied 1)", "Codex —, effort —: 1 (call unchanged)",
-                         "rule:light;no_catalog: 1", "fork: 1"):
-            self.assertIn(fragment, out)
 
     def test_stats_without_journal(self):
         rc, out, _err, _ = self.run_router("stats")
@@ -2171,26 +1590,9 @@ class CommandTests(Sandbox):
 
 
 class UnitTests(unittest.TestCase):
+    REDACT_LIMIT = 0.5  # CPU seconds; preserve the original linear-redaction regression bound.
     """Чистые функции: правила, исключения, ключ, признаки Codex."""
 
-    TH = router.DEFAULTS["thresholds"]
-
-    def probs(self, light, standard, heavy, risky=0.0, review=0.0):
-        return {"tier": {"light": light, "standard": standard, "heavy": heavy}, "risky": risky, "review": review}
-
-    def test_choose_tier_rules(self):
-        cases = [
-            (self.probs(0.9, 0.1, 0.0, risky=0.3), ("heavy", "risky")),
-            (self.probs(0.9, 0.1, 0.0, risky=0.29), ("light", "light")),
-            (self.probs(0.9, 0.1, 0.0, review=0.5), ("heavy", "review")),
-            (self.probs(0.75, 0.2, 0.05), ("light", "light")),
-            (self.probs(0.5, 0.25, 0.25), ("standard", "standard")),
-            (self.probs(0.4, 0.29, 0.31), ("heavy", "heavy")),
-            (self.probs(0.1, 0.5, 0.4), ("heavy", "heavy")),
-        ]
-        for probs, expected in cases:
-            with self.subTest(probs=probs):
-                self.assertEqual(router.choose_tier(probs, self.TH), expected)
 
     def test_is_excluded(self):
         self.assertTrue(router.is_excluded("/srv/secret/app", ["/srv/secret"]))
@@ -2224,7 +1626,6 @@ class UnitTests(unittest.TestCase):
                 with self.assertRaisesRegex(router.ConfigError, "the config file is not owned by the current user"):
                     router.load_config(str(path))
 
-    REDACT_LIMIT = 0.5  # секунды процессора: линейный разбор — сотые доли, квадратичный на этих входах — от секунды
 
     def test_redact_is_linear_on_adversarial_input(self):
         for text in ("token" * 20000, "secret" * 17000, "Bearer " * 15000, "-----BEGIN " + "A" * 100000,
@@ -2281,6 +1682,275 @@ class UnitTests(unittest.TestCase):
         self.assertFalse(router.codex_is_fork(2, {"fork_turns": "none"}))
         self.assertTrue(router.codex_is_fork(1, {"fork_context": True}))
         self.assertFalse(router.codex_is_fork(1, {"fork_context": None}))
+
+
+class DirectChoiceTests(Sandbox):
+    def test_codex_complete_catalog_and_full_task_single_question(self):
+        self.serve()
+        self.write_config()
+        task = 'TASK: ' + 'evidence ' * 2000 + '\nREAD: /never/open/me\nCUSTOM: last evidence'
+        args = v2_args(message=task, arbitrary={'nested': [1, None]}, items=[{'type': 'text', 'text': 'retained'}])
+        rc, out, err, _ = self.codex_hook(args)
+        self.assertEqual((rc, err), (0, ''))
+        updated = json.loads(out)['hookSpecificOutput']['updatedInput']
+        selected_model = updated.pop('model')
+        selected_effort = updated.pop('reasoning_effort')
+        self.assertEqual(updated, args)
+        self.assertIn(selected_effort, router.parse_catalog(json.dumps(CATALOG).encode())[selected_model])
+        sent = json.loads(self.fake.requests[0]['body'])
+        self.assertEqual(sent['state']['task'], task)
+        self.assertEqual(set(sent['questions']), {'selection'})
+        self.assertEqual(len(sent['questions']['selection']['criteria']), 15)
+        row = self.last_row()
+        self.assertEqual((row['reason'], row['model'], row['effort']), ('choice', selected_model, selected_effort))
+        self.assertNotIn('tier', row)
+        self.assertNotIn('session_model', row)
+        self.assertNotIn('session_effort', row)
+        self.assertEqual(row['usage']['input_tokens'], 300)
+        self.assertEqual(set(row['answers']), {'selection'})
+
+    def test_codex_each_catalog_pair_can_be_selected_including_strongest(self):
+        cfg = router.normalize_config({})
+        catalog = {'future-fast': ['low'], 'future-strong': ['high', 'ultra']}
+        with mock.patch.object(router, 'codex_catalog', return_value=(described_catalog(catalog), None)):
+            options = router.selection_options(cfg, 'codex')
+        self.assertEqual({(v['model'], v['effort']) for v in options.values()},
+                         {('future-fast', 'low'), ('future-strong', 'high'), ('future-strong', 'ultra')})
+        questions = router.selection_questions(options, 'codex')
+        for key, selected in options.items():
+            parsed = router.parse_response(json.dumps(jev_body(key, {k: float(k == key) for k in options})).encode(), questions)
+            args = v2_args(extra=['keep', 2])
+            output, record = router.apply_selection(cfg, 'codex', args, options[parsed['choice']], {})
+            self.assertEqual(output['hookSpecificOutput']['updatedInput'], dict(args, model=selected['model'], reasoning_effort=selected['effort']))
+            self.assertEqual(record['reason'], 'choice')
+
+    def test_ids_stable_when_catalog_order_changes(self):
+        cfg = router.normalize_config({})
+        with mock.patch.object(router, 'codex_catalog', return_value=(described_catalog({'b': ['high', 'low'], 'a': ['medium']}), None)):
+            one = router.selection_options(cfg, 'codex')
+        with mock.patch.object(router, 'codex_catalog', return_value=(described_catalog({'a': ['medium'], 'b': ['low', 'high']}), None)):
+            two = router.selection_options(cfg, 'codex')
+        self.assertEqual(one, two)
+
+    def test_allowlist_and_unsupported_effort_never_fabricate_candidates(self):
+        cfg = router.normalize_config({'codex': {'allowed_models': ['available']}})
+        with mock.patch.object(router, 'codex_catalog', return_value=(described_catalog({'available': ['high'], 'other': ['low']}), None)):
+            self.assertEqual([(value['model'], value['effort']) for value in router.selection_options(cfg, 'codex').values()], [('available', 'high')])
+        for catalog in ({'foreign': ['high']}, {'available': []}, {'available': ['inherit']}):
+            with mock.patch.object(router, 'codex_catalog', return_value=(catalog, None)), self.assertRaises(router.JevError):
+                router.selection_options(cfg, 'codex')
+
+    def test_declared_choice_wins_a_probability_tie_without_inventing_selection(self):
+        cfg = router.normalize_config({})
+        options = router.selection_options(cfg, "claude")
+        keys = list(options)
+        choice = keys[-1]
+        questions = router.selection_questions(options, "claude")
+        body = jev_body(choice, {key: 1 / len(keys) for key in keys})
+        result = router.parse_response(json.dumps(body).encode(), questions)
+        self.assertEqual(result["choice"], choice)
+        self.assertEqual(options[result["choice"]], options[choice])
+
+    def test_invalid_responses_are_silent_fail_open(self):
+        cfg = router.normalize_config({})
+        options = router.selection_options(cfg, 'claude')
+        keys = list(options)
+        base = jev_body(keys[0], {k: float(k == keys[0]) for k in keys})
+        mutations = [
+            ('choice', lambda a: a.update(choice='foreign')),
+            ('choice', lambda a: a.pop('choice')),
+            ('choice', lambda a: a.update(choice=keys[1])),
+            ('range', lambda a: a['probabilities'].update({keys[0]: True})),
+            ('range', lambda a: a['probabilities'].update({keys[0]: float('nan')})),
+            ('sum', lambda a: a['probabilities'].update({keys[0]: .7})),
+            ('options', lambda a: a['probabilities'].update(foreign=0)),
+            ('options', lambda a: a['probabilities'].pop(keys[-1])),
+            ('type', lambda a: a.update(type='noul')),
+        ]
+        self.serve()
+        self.write_config()
+        for reason, mutate in mutations:
+            with self.subTest(reason=reason, mutate=mutate):
+                body = json.loads(json.dumps(base))
+                mutate(body['answers']['selection'])
+                self.fake.replies = [Reply(body=body)]
+                self.assertEqual(self.hook()[:3], (0, '', ''))
+                self.assertEqual(self.last_row()['reason'], 'error:' + reason)
+
+    def test_shadow_records_concrete_choice_without_argument_rewrite(self):
+        self.serve()
+        self.write_config(mode='shadow')
+        for run in (self.hook, self.codex_hook):
+            out = json.loads(run()[1])
+            self.assertEqual(set(out), {'systemMessage'})
+            self.assertIn('shadow recommendation', out['systemMessage'])
+            self.assertEqual(self.last_row()['reason'], 'choice')
+            self.assertNotIn(self.last_row()['model'], (None, 'inherit'))
+
+    def test_codex_explicit_fork_custom_skips_without_request(self):
+        self.serve()
+        self.write_config()
+        for args, reason in ((v2_args(model='chosen'), 'explicit'), (v2_args(reasoning_effort='high'), 'explicit'),
+                             (v2_args(fork_turns='all'), 'fork'), (v2_args(fork_turns=DROP), 'fork'),
+                             (v1_args(fork_context=True), 'fork'), (v2_args(agent_type='custom'), 'type')):
+            self.assertEqual(self.codex_hook(args)[:3], (0, '', ''))
+            self.assertEqual(self.last_row()['reason'], reason)
+        self.assertEqual(self.fake.requests, [])
+
+    def test_openrouter_wire_protocol_and_request_id_usage(self):
+        cfg = router.normalize_config({"provider": "openrouter", "claude": {"allowed_models": ["haiku"]}})
+        options = router.selection_options(cfg, "claude")
+        choice = next(iter(options))
+        self.serve(Reply(body=jev_body(choice, model="typesafe/jev-1.13", id="provider-request-7",
+                                      provider="typesafe", usage={"input_tokens": 14, "output_tokens": 2, "cost": .003})))
+        self.write_config(provider="openrouter", claude={"allowed_models": ["haiku"]})
+        self.assertEqual(self.routed_model(self.hook()[1]), "haiku")
+        request = self.fake.requests[0]
+        body = json.loads(request["body"])
+        self.assertEqual(body["model"], "typesafe/jev-1.13")
+        self.assertEqual(set(body["questions"]), {"selection"})
+        self.assertEqual(request["headers"]["Authorization"], "Bearer " + KEY)
+        self.assertEqual(self.last_row()["request_id"], "provider-request-7")
+        self.assertEqual(self.last_row()["usage"]["cost"], .003)
+        self.assertEqual(self.last_row()["jev_outcome"], "success")
+
+    def test_codex_v1_items_and_nullable_explicit_arguments(self):
+        self.serve()
+        self.write_config()
+        variants = (v1_args(), v1_args(message=DROP, items=[{"type": "text", "text": "first"},
+                     {"type": "image", "url": "opaque"}, {"type": "text", "text": "second"}]),
+                    v2_args(model=None, reasoning_effort=None))
+        for args in variants:
+            name = "spawn_agent" if "fork_turns" not in args else "collaborationspawn_agent"
+            output = json.loads(self.codex_hook(args, tool_name=name)[1])["hookSpecificOutput"]["updatedInput"]
+            self.assertEqual(output, dict(args, model="gpt-5.5", reasoning_effort="high"))
+        self.assertEqual(self.sent_state(1)["task"], "first\nsecond")
+
+    def test_agent_specific_explain(self):
+        self.serve()
+        self.write_config()
+        for agent in ('claude', 'codex'):
+            rc, out, err, _ = self.run_router('explain', '--agent', agent, 'complete task')
+            self.assertEqual((rc, err), (0, ''))
+            self.assertIn('Agent: ' + agent, out)
+            self.assertIn('Jev selected model=', out)
+        self.assertFalse(self.journal.exists())
+
+    def test_known_legacy_config_ignored_with_warning_not_routing_influence(self):
+        legacy = {'thresholds': {'risky_max': 0}, 'claude': {'models': {'light': 'inherit'}, 'observe_transcript_model': True},
+                  'codex': {'models': {'heavy': 'invented'}, 'effort': {'light': 'invented'}}}
+        cfg = router.normalize_config(legacy)
+        self.assertIn('Ignored removed settings', cfg['_migration_warning'])
+        self.assertEqual(cfg['claude'], router.DEFAULT_RULES['claude'])
+        self.assertEqual(cfg['codex'], router.DEFAULT_RULES['codex'])
+        with self.assertRaises(router.ConfigError):
+            router.normalize_config({'thresholds': {'unexpected': 1}})
+
+    def test_example_config_equals_defaults(self):
+        example = router.normalize_config(tomllib.loads((PLUGIN / 'config.example.toml').read_text()))
+        self.assertEqual(example, router.DEFAULT_RULES)
+
+
+class NativeCatalogEvidenceTests(Sandbox):
+    def test_visible_candidates_keep_native_descriptions_across_cache(self):
+        raw = {'models': [
+            {'slug': 'public-model', 'visibility': 'list', 'description': 'Native model description',
+             'supported_reasoning_levels': [{'effort': 'high', 'description': 'Native high description'}]},
+            {'slug': 'internal-review', 'visibility': 'hide', 'supported_reasoning_levels': levels('high')},
+            {'slug': 'unknown-visibility', 'supported_reasoning_levels': levels('high')},
+        ]}
+        catalog = router.parse_catalog(json.dumps(raw).encode())
+        self.assertEqual(dict(catalog), {'public-model': ['high']})
+        with mock.patch.dict(os.environ, self.env(), clear=True):
+            router.save_catalog(str(self.fake_codex), catalog)
+            cached, _ = router.load_cached_catalog(str(self.fake_codex))
+        self.assertEqual(cached.metadata, catalog.metadata)
+        with mock.patch.object(router, 'codex_catalog', return_value=(cached, None)):
+            options = router.selection_options(router.normalize_config({}), 'codex')
+        question = router.selection_questions(options, 'codex')['selection']
+        criterion = question['instructions'] + str(question['criteria'])
+        self.assertIn('Native model description', criterion)
+        self.assertIn('Native high description', criterion)
+        self.assertNotIn('internal-review', criterion)
+
+    def test_legacy_catalog_without_visibility_evidence_is_not_used(self):
+        data = json.loads(self.cache.read_text())
+        for entry in data['binaries'].values():
+            entry.pop('catalog_schema')
+        self.cache.write_text(json.dumps(data))
+        with mock.patch.dict(os.environ, self.env(), clear=True):
+            self.assertEqual(router.load_cached_catalog(str(self.fake_codex)), (None, None))
+
+
+class DecisionAccountingTests(Sandbox):
+    def test_local_active_and_shadow_snapshot_submitted_args_only(self):
+        self.serve()
+        for mode in ("active", "shadow"):
+            self.write_config(mode=mode)
+            self.codex_hook()
+            record = self.last_row()
+            self.assertTrue(record["jev_attempted"])
+            self.assertEqual(record["jev_outcome"], "success")
+            self.assertEqual(record["applied"], mode == "active")
+            if mode == "active":
+                self.assertEqual((record["actual_model"], record["actual_effort"]),
+                                 (record["model"], record["effort"]))
+                self.assertEqual((record["model_source"], record["effort_source"]),
+                                 ("updated_input", "updated_input"))
+            else:
+                self.assertIsNone(record["actual_model"])
+                self.assertIsNone(record["actual_effort"])
+                self.assertEqual(record["model_source"], "unknown")
+
+    def test_catalog_failure_does_not_count_as_provider_attempt(self):
+        self.serve()
+        self.write_config()
+        with mock.patch.dict(os.environ, self.env(), clear=True), \
+                mock.patch.object(router, "codex_catalog", return_value=(None, "no_catalog")):
+            output, record = router.handle_event(self.codex_event(v2_args()), "codex")
+        self.assertIsNone(output)
+        self.assertEqual(record["reason"], "error:no_catalog")
+        self.assertIsNotNone(record["state_sha256"])
+        self.assertFalse(record["jev_attempted"])
+        self.assertIsNone(record["jev_outcome"])
+        self.assertEqual(self.fake.requests, [])
+
+    def test_invalid_choice_retains_paid_usage_but_counts_provider_failure(self):
+        cfg = router.normalize_config({})
+        options = router.selection_options(cfg, "claude")
+        keys = list(options)
+        self.serve(Reply(body=jev_body("foreign", {key: float(key == keys[0]) for key in keys},
+                                      usage={"input_tokens": 90, "output_tokens": 4, "cost": .0002})))
+        self.write_config()
+        self.assertEqual(self.hook()[:3], (0, "", ""))
+        record = self.last_row()
+        self.assertTrue(record["jev_attempted"])
+        self.assertEqual(record["jev_outcome"], "error:choice")
+        self.assertEqual(record["usage"], {"input_tokens": 90, "output_tokens": 4, "cost": .0002})
+        self.assertFalse(record["applied"])
+        self.assertIsNone(record["actual_model"])
+
+    def test_apply_failure_after_valid_choice_keeps_successful_provider_outcome(self):
+        self.serve()
+        self.write_config(claude={"allowed_models": ["sonnet"], "efforts": ["high"]})
+        with mock.patch.dict(os.environ, self.env(), clear=True), \
+                mock.patch.object(router, "claude_effort_definition", side_effect=["subagent-model-router:effort-high", None]):
+            output, record = router.handle_event({"tool_input": agent_input()}, "claude")
+        self.assertIsNone(output)
+        self.assertEqual(record["reason"], "error:claude_effort_definition")
+        self.assertEqual(record["jev_outcome"], "success")
+        self.assertTrue(record["jev_attempted"])
+        self.assertEqual(record["usage"]["input_tokens"], 300)
+
+    def test_explicit_skip_keeps_argument_evidence_without_provider_attempt(self):
+        args = v2_args(model="chosen-model", reasoning_effort="high")
+        event = self.codex_event(args)
+        output, record = router.handle_event(event, "codex")
+        record = router.enrich_launch_record(event, output, record)
+        self.assertEqual((record["actual_model"], record["actual_effort"]), ("chosen-model", "high"))
+        self.assertEqual((record["model_source"], record["effort_source"]), ("specified", "specified"))
+        self.assertFalse(record["applied"])
+        self.assertFalse(record["jev_attempted"])
 
 
 if __name__ == "__main__":

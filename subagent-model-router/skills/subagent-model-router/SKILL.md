@@ -1,13 +1,13 @@
 ---
 name: subagent-model-router
-description: Jev (TypeSafe AI) picks the model for every subagent from the text of its task, in Claude Code and in Codex, while the main session keeps the model chosen by hand. Use when the user asks which models subagents were given, why a task got a particular model, to turn model routing on or off, to switch it to observe-only (shadow) mode, to set up or check the TypeSafe or OpenRouter key, to exclude directories, to trust the hook in Codex, or to configure VictoriaMetrics monitoring and show router statistics/dashboards. Also triggers on «какие модели выбирались субагентам», «почему субагенту такая модель», «включи выбор модели», «выключи выбор модели», «режим наблюдения», «настрой ключ», «доверь хук в Codex».
+description: Jev (TypeSafe AI) directly picks a model and effort for eligible subagents from the text of its task, in Claude Code and in Codex, while the main session keeps the model chosen by hand. Use when the user asks which models subagents were given, why a task got a particular model, to turn model routing on or off, to switch it to observe-only (shadow) mode, to set up or check the TypeSafe or OpenRouter key, to exclude directories, to trust the hook in Codex, or to configure VictoriaMetrics monitoring and show router statistics/dashboards. Also triggers on «какие модели выбирались субагентам», «почему субагенту такая модель», «включи выбор модели», «выключи выбор модели», «режим наблюдения», «настрой ключ», «доверь хук в Codex».
 ---
 
 # Subagent Model Router
 
 A `PreToolUse` hook on the tool that starts a subagent — `Agent` in Claude Code, `spawn_agent` in Codex.
-Before the subagent starts, the hook asks Jev three questions about its task and sets the subagent's model
-(in Codex also its reasoning effort). The main session is never touched.
+Version 0.5.0 asks Jev for one choice from concrete model/effort candidates for the task. It submits that
+choice as native launch parameters. The main session is never touched.
 
 ## User interaction
 
@@ -23,65 +23,102 @@ host's plugin manager. Claude Code: run `claude plugin marketplace add korkin25/
 Preserve existing settings. Both terminal and VS Code use the account's plugin storage; if the Codex CLI is
 not on PATH, use the installed extension's binary. Run per-user commands from that user's home.
 
-## What it changes and what it leaves alone
+## Direct selection and native launch parameters
+
+Jev chooses one offered model/effort pair. No tier/risk/review classifier, thresholds, parent model
+inheritance or transcript lookup participates in routing. Do not inspect conversation history to fill
+missing model labels. Skips and missing evidence remain distinct from a successful choice.
+Model-purpose and price metadata are shared once per model; candidates carry the applicable effort
+explanation without repeating the complete model description and tariff for every effort level.
+The script constructs and submits the Jev request and applies its choice; do not add parent-model work
+to build JSON, research model descriptions or calculate consumption estimates. Jev's own API usage still
+incurs provider tokens and any applicable charges.
 
 Claude Code:
-- Only `Agent` calls without an explicit `model`, and only of the types in `[claude] route_types`
-  (default `general-purpose`; a call without `subagent_type` counts as `general-purpose`). `Explore`, `Plan`,
-  custom agents and forks are left alone.
-- `light` → `haiku`, `standard` → `sonnet`, `heavy` → `inherit` (the call is left alone and the subagent runs
-  on the session model). Effort is not chosen: the `Agent` call has no effort parameter.
-- No `permissionDecision`: permissions work as before. `updatedInput` carries every original field plus `model`.
+- Route generic `Agent` calls only, respecting `claude.route_types` (default `general-purpose`). Preserve
+  specialized agents, explicit choices and forks rather than replacing their prompts or tool permissions.
+- Claude candidates use the native SDK model catalog's purpose descriptions and effort support.
+  `claude.allowed_models = []` includes every supported Agent alias found there (`haiku`, `sonnet`, `opus`,
+  `fable`); `claude.efforts = []` includes every reported supported effort. Nonempty lists narrow candidates.
+  A native no-effort model uses null effort. Never infer support or purpose from a model's name alone.
+- Effort-purpose descriptions come from the official Claude effort-level table; availability comes from
+  the native catalog. Descriptions guide Jev directly, without tiers or a second research-model call.
+- Set `updatedInput.model` to the selected alias. For supported effort set `subagent_type` to
+  `subagent-model-router:effort-<level>`. Bundled definitions set frontmatter `effort` and omit `model`.
+  Copy every other input field. There is no direct `Agent.effort` parameter and no `permissionDecision`.
+- Native model/effort environment overrides, including custom `ANTHROPIC_DEFAULT_*_MODEL` pins, cause
+  a skip with a recorded reason because the isolated catalog cannot describe that custom mapping. Policy caps, aliases
+  resolving to particular versions and subsequent execution can still affect the actual result.
 
 Codex:
-- `spawn_agent` (multi-agent v1) and `collaborationspawn_agent` (v2).
-- Left alone: a call that already sets `model` or `reasoning_effort`; a full fork — v2 without `fork_turns` or
-  with anything but `"none"` (the default is `all`), v1 with `fork_context: true`; a role (`agent_type`) not
-  in `[codex] route_agent_types` (default: no role, `default`, `worker`) — reason `type`.
-- `light` → `gpt-5.6-luna` / `low`, `standard` → `gpt-5.6-terra` / `medium`, `heavy` → `inherit`.
-- Model and effort are checked against the catalog from `codex debug models` of the codex binary that runs the
-  session — the `codex` process that started the hook, then `codex_bin`, then `codex` on `PATH` (absolute
-  entries only). A model the catalog lacks is not set; an effort the resulting model does not support is not
-  set; no catalog, nothing set.
-- The hook never waits for that catalog: it reads it from its cache (per binary path and modification time;
-  fresh for 24 hours, used up to 7 days old) and starts a background refresh when the cache is missing or older
-  than 24 hours — one at a time, at most 30 s. With no usable cache nothing is set and the journal says
-  `no_catalog;refreshing`. `check` fetches the catalog synchronously (up to 30 s) and fills the cache.
-- The output is `permissionDecision: "allow"` with `updatedInput` — Codex rewrites arguments only that way.
-- A routed role whose file sets its own model overrides the choice.
+- Route `spawn_agent` and `collaborationspawn_agent`; preserve explicit `model`/`reasoning_effort`, full
+  forks (`fork_turns` other than `"none"`, including its omitted default, or `fork_context: true`) and
+  roles outside `codex.route_agent_types` (default no role, `default`, `worker`).
+- Build candidates from visible entries in the cached actual-client model catalog, each model's native
+  purpose description, and every supported effort with its native description. `codex.allowed_models = []` offers all supported models; a nonempty list narrows them.
+- Resolve the actual invoking binary first, then configured `codex_bin`, then absolute PATH entries.
+  Each launch checks binary identity and file metadata of `CODEX_HOME/models_cache.json`; a changed
+  fingerprint triggers a background native probe, bounded to 30 seconds. A missing allowlist model also
+  requests a probe. With no usable catalog, skip the Jev call and rewrite. `check` fills the cache now.
+- Set the chosen `model` and `reasoning_effort` with `permissionDecision: "allow"` and complete
+  `updatedInput`, as required by the Codex hook contract. A role's own model may override these parameters.
 
-Both: any failure — no config or key, network, timeout, an odd answer — means exit 0 without output. The
-subagent starts as usual and the reason goes to the journal.
+Catalog refresh for Claude:
+- Resolve the invoking native executable first, then `claude_bin`, then absolute PATH entries. Cache entries
+  use real path/mtime. Check binary identity per launch and run asynchronous SDK discovery on every
+  `SessionStart`; do not start a synchronous Claude process for each Agent call. A missing allowlist model
+  also requests a probe. An upstream change within an unchanged binary/session can remain unseen until
+  the next session or explicit `check`. Without a usable catalog, preserve the original launch.
+- Send only SDK `initialize` in a private temporary HOME/CLAUDE_CONFIG_DIR with `--bare`, no user/model turn,
+  no inherited credential environment, and strict empty MCP configuration. Cache only allowlisted model
+  descriptions, resolved IDs and effort capabilities; discard account fields. This does not read the user's
+  conversation or settings. Do not equate no model turn with no native metadata network activity.
+- Prefer exact alias rows. Unambiguous variant rows such as `opus[1m]` may describe alias `opus`; conflicting
+  rows are excluded. `model_catalog_value`, `model_catalog_resolved_id` and `model_catalog_source` record
+  descriptive provenance. The submitted alias does not guarantee that revision or context size.
+
+Reuse model-purpose descriptions without a time expiry while available model identities are known.
+New identities or missing descriptions trigger metadata refresh and official price refresh for the entire
+available inventory. Keep inventory IDs even when a row cannot yet supply purpose text; do not offer an
+undescribed candidate or infer its capabilities from the model name.
+
+Price references:
+- Candidates carry official standard API rates in USD per million tokens, with source and freshness.
+  Match exact provider IDs; a Claude launch alias alone cannot establish a price. Unknown prices do not
+  exclude candidates and must not become zero, estimated rates, or a different model's price.
+- Keep input, output, cache reads, cache writes and short/long context bands distinct. Claude cache writes
+  have separate five-minute and one-hour rates. These are API references, not subscription billing,
+  actual child spend or realized savings.
+- Refresh all prices for the current client's catalog in the background after 24 hours and when new
+  model metadata is needed. On failure, retain prior rates as stale. Purpose reuse and price freshness
+  are separate: published prices can change while model IDs remain the same.
+
+The shared Jev context also includes visible-task token estimates and each model's estimated uncached
+input cost. The default is `ceil(UTF-8 bytes / 4)` over filtered task/description text, marked approximate.
+It is not a verified local GPT-6/Claude tokenizer or a count of the full child prompt: host instructions,
+tools, prior context and future output are unavailable. Keep standard and long-context cost alternatives,
+unknown prices and stale-price provenance explicit. Do not replace Jev's actual usage with this estimate
+or make an extra API/model call to compute it.
+
+Any missing config/key, invalid answer, network error or timeout leaves the original launch unchanged.
+Shadow mode records Jev's choice without rewriting. Routing errors do not block the user's subagent.
+
+Sources: [Claude frontmatter](https://code.claude.com/docs/en/sub-agents#supported-frontmatter-fields),
+[model precedence](https://code.claude.com/docs/en/sub-agents#choose-a-model),
+[effort support and overrides](https://code.claude.com/docs/en/model-config#adjust-effort-level),
+[hook updatedInput](https://code.claude.com/docs/en/hooks#pretooluse-decision-control).
+Plugin effort frontmatter is supported from Claude Code 2.1.78; the current model precedence is from
+2.1.251. The native Agent contract and definition-based effort were inspected on 2.1.280.
 
 ## Prelaunch notice
 
-After each successful Jev decision, the hook emits a top-level `systemMessage` for the user in both Claude
-Code and Codex: the subagent label, selected model, Codex reasoning effort and decision reason. This is emitted
-by synchronous `PreToolUse`, before the launch tool runs. `additionalContext` is not a user-facing notice.
-Inherited models show the session model supplied by the host plus `(unchanged)`. Claude also uses exact-session
-metadata collected from `SessionStart.model` and `PostModelSwitch.to_model` without opening transcripts.
-Resume without a model and session end invalidate prior evidence. Nested/custom agents and subagent model
-environment overrides do not use this fallback. Checkpoints expire after 24 hours and occupy at most 256
-private slots (collisions lose evidence). Without evidence, `unknown (unchanged)` is used. After updating,
-start or resume a Claude session to collect these events; old metrics are not repaired. Claude 2.1.280 can
-omit its startup model even with `--model`. Optional `[claude] observe_transcript_model = true` resolves the
-exact initiating `Agent` message by session UUID and tool-use ID when lifecycle evidence is absent. Before
-enabling it, obtain authorization to read the bounded tail of the current session's JSONL transcript under
-`CLAUDE_CONFIG_DIR/projects` (default `~/.claude/projects`) for model extraction. It reads at most two 1 MiB
-tails and retries once after 100 ms for asynchronous writes. Only model/source and bounded I/O accounting are retained; no dialogue
-is sent to Jev, metrics or chat. Ambiguous/missing evidence stays unknown. Config defaults
-are never treated as runtime evidence. For Codex same-model active
-inheritance, the hook may read the matching session's bounded rollout tail, selecting only `turn_context`
-metadata for the exact `session_id`, `turn_id` and model. Supported runtime effort is explicitly passed to
-the child, preventing a child-default override; source is `turn_context`. No transcript content enters Jev,
-metrics or log output. Skips, custom roles, forks, shadow and changed-model calls do not use this lookup.
-Effort uses effective launch arguments or the host-provided level (Claude effort.level for inherited models); absent evidence
-is shown as unknown (unchanged), never guessed from defaults; catalog-rejected choices are not shown as selected. Shadow
-mode explicitly labels its recommendation and says launch arguments are unchanged. No extra request is made.
-Skipped calls and failed Jev requests remain silent. Labels are redacted, stripped of control characters and
-bounded; task text is never included. The notice is a selection, not proof of a successful launch or a
-role's final model. Client rendering varies: Codex uses a UI/event-stream warning; do not promise a separate
-chat message or identical presentation in every client. Tests verify hook output, not client rendering.
+A successful choice emits a top-level `systemMessage` with a bounded, redacted task label and the chosen
+model/effort, reason `choice`. It is emitted before the launch tool runs. Shadow notices say recommendation
+and launch arguments unchanged. Skips and failed requests remain silent; their reason is recorded.
+
+These are submitted launch parameters, not observed runtime execution. Do not describe a choice as a
+verified child model or completed launch. No parent model/effort is inferred. `additionalContext` is not
+used as a user-facing notice. Rendering varies by client: Codex may use a UI/event-stream warning.
 
 ## Installed updates and running versions
 
@@ -105,6 +142,7 @@ Sources: [Claude plugins](https://code.claude.com/docs/en/discover-plugins),
 
 When reporting versions, distinguish the plugin's `plugin_version`, the executing host client's
 `agent_version`, and the selected model. Use runtime evidence, not an arbitrary `claude`/`codex` on PATH.
+The retained `claude-session` command initializes client versions only; it does not track session models.
 The actual native client is probed once during `SessionStart` (Linux, two-second bound); ordinary hooks
 read only its private exact-session cache, with no version subprocess or `/proc` scan. Unavailable/expired
 client metadata remains unknown. Last-seen data records actual hook observations, not worker
@@ -136,7 +174,7 @@ several installations must be selected by freshest successful snapshot per alias
 
 ## Setup (agent performs these steps)
 
-1. Config (the plugin reads nothing until it exists):
+1. Create the private config only for a new installation; edit an existing config without replacing it:
    ```bash
    install -d -m 700 ~/.config/subagent-model-router
    install -m 600 "<plugin root>/config.example.toml" ~/.config/subagent-model-router/config.toml
@@ -149,26 +187,26 @@ several installations must be selected by freshest successful snapshot per alias
 3. Codex only: a hook runs there only once it is trusted. Run `subagent-model-router codex-trust` (add
    `--codex <path>` when `codex` is not on `PATH`, e.g. the binary of the VS Code extension; `--dry-run` shows
    what would be trusted). The manual fallback is the `/hooks` screen in Codex. Then run `check` once to fill
-   the model catalog cache. Installing for another account with `sudo -u`, run `codex plugin …` from that
+   both native model catalog caches. Installing for another account with `sudo -u`, run `codex plugin …` from that
    account's home directory: Codex reads `.codex/config.toml` of the current directory as a project layer.
 
 ## Commands
 
-- `check [--live]` — config path, mode, provider, endpoint, Jev model, models for both products, the codex
-  binary and model catalog (fetched now, up to 30 s, with the time it took; this fills the cache the hook
+- `check [--live]` — config path, mode, provider, endpoint, Jev model, allowed candidates for both products,
+  binaries and their native model catalogs (up to 30 s per refresh; this fills the caches the hook
   reads), whether the key exists with the right permissions (never its content). `--live` makes one small
   request to Jev.
 - `preview [TEXT] [-d DESCRIPTION]` — exact filtered Jev state without network access; use only when asked.
-- `explain [TEXT]` (or the text on stdin, `-d DESCRIPTION`) — ask Jev about a task and show the answers, the
-  threshold bands and the result for Claude Code and for Codex. It is a real request: warn the user that the
-  text goes to TypeSafe or OpenRouter. It does not write the journal.
+- `explain --agent codex|claude [TEXT]` (or text on stdin, `-d DESCRIPTION`) — offer that client's
+  candidates to Jev and show the direct choice. This makes a real provider request with the task text; use
+  it within the user's requested diagnostic scope. It does not write the journal.
 - `stats [--days N] [--project NAME] [--user NAME] [--agent codex|claude] [--terminal] [--browser|--open] [--json]` — queries the configured storage. VM mode returns bounded
   summary/graphs; local mode retains the journal summary. `--source local` explicitly reads old history.
 - `telemetry-status` — local delivery health without a network call.
 - `codex-trust [--codex PATH] [--dry-run]` — mark this plugin's hooks trusted in Codex through `codex
   app-server`, the same way `/hooks` does. Only hooks Codex lists for the plugin `subagent-model-router` whose
   command is exactly `…/bin/subagent-model-router hook`, `… telemetry-kick`, `… claude-session` or `… update-notice` count;
-  all other hooks are never touched. The Claude lifecycle handler ignores Codex rollout paths.
+  all other hooks are never touched. `claude-session` initializes version metadata only.
 
 ## Config
 
@@ -177,9 +215,10 @@ overrides the path). Every key and default is in `config.example.toml`. An unkno
 config error (`error:config`) and the hook stays silent — as it does when the file or its directory belongs to
 someone else or is writable by group or others; `check` names the problem.
 
-Rules: `risky ≥ risky_max` or `review ≥ review_max` → heavy; otherwise `P(light) ≥ light_min` → light;
-otherwise `P(light) + P(standard) ≥ standard_min` and `P(heavy) < heavy_max` → standard; otherwise heavy.
-`timeout_seconds` (3 s, at most 8 s) is the budget for the whole request including one retry on 429/5xx.
+Known legacy tier tables, thresholds and transcript-observation fields are accepted but ignored;
+`check` reports migration warnings. Remove these fields when updating an existing config without changing
+provider, key-file, exclusions or telemetry settings. Unknown keys still fail validation.
+`timeout_seconds` (3 s, at most 8 s) bounds the whole request including one retry on 429/5xx.
 
 ## Monitoring
 
@@ -187,9 +226,8 @@ For VictoriaMetrics setup, delivery guarantees, Grafana import and report comman
 [references/monitoring.md](references/monitoring.md). Collection and rendering are Python code shared by both
 hosts: never schedule an agent, poll with an LLM, read raw history or call Jev to collect monitoring data. For money, separate reported router spend from
 whole-account/key usage; show cost coverage, separate input/output token coverage, and balance age/probe status.
-Keep `claude_model_lookup` I/O counts/time separate from Jev usage. Observed local lookups use zero API tokens
-and API dollars; do not turn file bytes into token estimates or missing observations into zero. They still
-consume local CPU/I/O, and Jev classification remains a separate paid request.
+Historical classifier and local-lookup metrics are preserved but removed from the main dashboard.
+They do not describe current routing, and missing observations must not be presented as zero.
 When asked for statistics, run the resolved executable with `stats --days N --terminal` (default: 7 days).
 Use `--project`, `--user`, `--agent codex|claude` when requested. Local journal rows lacking a requested cohort do not match; do not infer it from paths.
 Copy the resulting dashboard into the **final response**, preserving the tables/bars/trend gaps. Tool output
@@ -213,20 +251,21 @@ Detailed command/API choices belong to the agent; user-facing instructions are o
 ## Journal (local backend)
 
 `~/.local/state/subagent-model-router/decisions.jsonl` (`SUBAGENT_MODEL_ROUTER_LOG` overrides): one JSON line
-per subagent call with `ts`, `agent` (`claude`/`codex`), `session_id`, `cwd`, `subagent_type`, `description`,
-`state_sha256`, `provider`, `jev_model`, `request_id`, `latency_ms`, `answers`, `tier`, `model`, `effort`,
-`session_model`, `reason`, `mode`. The task text is never written, the key never.
+per subagent call with client/task metadata, provider/request metadata, selected `model` and `effort`,
+`reason`, `mode`, and observed client/plugin versions. The task text and key are never written.
+A valid Jev decision has `reason="choice"`; `model` and `effort` are the chosen candidate, including in
+shadow mode. Native no-effort candidates have null effort. Submitted parameters are not runtime proof. Claude effort passed through
+an agent definition is marked `effort_source="agent_definition"` in telemetry.
 
-Reasons: `explicit`, `fork`, `type`, `excluded`, `off`, `no_key`, `error:<kind>`; Jev decisions are
-`rule:light|standard|heavy|risky|review`. In Codex a decision may carry notes after `;`: `no_codex` (no codex
-binary found), `no_catalog` (followed by `;refreshing` while a background refresh runs), `model_not_in_catalog`,
-`effort_not_supported`; `model`/`effort` are then `null`.
+Skip/error reasons include explicit selection, forks, unsupported type, exclusions, disabled routing,
+missing key/catalog, native environment overrides and `error:<kind>`. Use the recorded reason rather than
+inventing a fallback choice. Legacy journal entries are not rewritten into the new schema.
 
 ## How to answer requests
 
 - "Which models did subagents get" — `stats` (`--days N` if asked), using the configured backend.
   Read individual journal entries only in local mode when details are needed; VM stores aggregates.
-- "Why this model" / "what would it pick" — `explain` with the task text, after warning where the text goes.
+- "Why this model" / "what would it pick" — `explain --agent codex|claude` with the task text for the requested client.
 - "Turn it off" / "turn it on" — `enabled = false` / `true` in the config. Removing the plugin (`/plugin` in
   Claude Code, `codex plugin remove`) only on a direct request.
 - "Observe only" — `mode = "shadow"`; back with `mode = "active"`.

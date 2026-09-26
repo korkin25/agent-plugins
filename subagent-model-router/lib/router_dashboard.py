@@ -187,13 +187,13 @@ def query_stats(cfg, days=7, project=None, user=None, agent=None, account=None):
     def inc(metric, span=window):
         return "increase(" + metric + selector + "[" + span + "])"
     queries = {
-        "calls": (False, "sum by (host,plugin_version,agent_version,user,project,agent,mode,reason,tier,model,effort,applied) (" + inc("smr_calls_total") + ")"),
+        "calls": (False, "sum by (host,plugin_version,agent_version,user,project,agent,mode,reason,model,effort,recommended_model,recommended_effort,model_source,effort_source,record_schema,applied) (" + inc("smr_calls_total") + ")"),
         "hook_versions": (False, "max by (instance,host,user,agent,plugin_version,agent_version) (last_over_time(smr_hook_version_last_seen_timestamp_seconds" + version_selector + "[" + window + "]))"),
         "requests": (False, "sum by (outcome) (" + inc("smr_jev_requests_total") + ")"),
         "jev_buckets": (False, "sum by (le) (" + inc("smr_jev_request_duration_seconds_bucket") + ")"),
         "hook_buckets": (False, "sum by (le) (" + inc("smr_hook_duration_seconds_bucket") + ")"),
         "request_rate": (True, "sum by (outcome) (rate(smr_jev_requests_total" + selector + "[" + lookback + "]))"),
-        "model_rate": (True, "sum by (model) (rate(smr_calls_total" + selector[:-1] + ',reason=~"rule:.*"}[' + lookback + "]))"),
+        "model_rate": (True, "sum by (recommended_model,recommended_effort) (rate(smr_calls_total" + selector[:-1] + ',reason="choice",record_schema="direct"}[' + lookback + "]))"),
         "latency_p95": (True, "histogram_quantile(0.95, sum by (le) (rate(smr_jev_request_duration_seconds_bucket" + selector + "[" + lookback + "])))"),
         "pending_events": (False, "sum(last_over_time(smr_telemetry_pending_events" + health_selector + "[" + window + "]))"),
         "coalesced_events": (False, "sum(last_over_time(smr_telemetry_coalesced_events_total" + health_selector + "[" + window + "]))"),
@@ -207,9 +207,6 @@ def query_stats(cfg, days=7, project=None, user=None, agent=None, account=None):
     }
     observation_metrics = ["jev_" + direction + suffix for direction in ("input", "output")
                            for suffix in ("_tokens", "_known_token_requests", "_unknown_token_requests")]
-    observation_metrics += ["claude_model_lookup_" + suffix for suffix in
-                            ("requests", "read_attempts", "bytes_read", "duration_seconds",
-                             "api_input_tokens", "api_output_tokens", "cost_usd")]
     for name in observation_metrics:
         metric = "smr_" + name + ("_sum" if name.endswith("duration_seconds") else "_total")
         queries[name] = (False, "sum(" + inc(metric) + ")")
@@ -318,10 +315,12 @@ def query_stats(cfg, days=7, project=None, user=None, agent=None, account=None):
             stamp = values.get(scope + "_last_success_timestamp_seconds")
             values[scope + "_age_seconds"] = max(0, end - stamp) if stamp else None
     summary["accounts"] = accounts
-    for label in ("model", "tier", "reason", "project", "user", "agent"):
+    for label in ("recommended_model", "recommended_effort", "model", "effort", "reason", "project", "user", "agent"):
         counts = {}
         for row in data["calls"]:
-            if label in ("model", "tier") and not row["labels"].get("reason", "").startswith("rule:"):
+            if label.startswith("recommended_") and not _is_direct_choice(row["labels"]):
+                continue
+            if label in ("model", "effort") and row["labels"].get("record_schema") != "direct":
                 continue
             value = _value(row)
             if value is not None:
@@ -365,7 +364,7 @@ def format_summary(data):
             _fmt(data["summary"][key + "_p" + str(q) + "_seconds"], "ms") for q in (50, 95, 99)))
     if data["errors"]:
         lines.append("Failed queries: " + ", ".join(sorted(data["errors"])))
-    for title, key in (("Calls by user", "by_user"), ("Calls by project", "by_project"), ("Model selections", "by_model"), ("Routing reasons", "by_reason")):
+    for title, key in (("Calls by user", "by_user"), ("Calls by project", "by_project"), ("Jev selected models", "by_recommended_model"), ("Submitted launch models", "by_model"), ("Routing reasons", "by_reason")):
         counts = data["summary"][key]
         lines.append(title + ": " + (", ".join(name + " " + _fmt(count) for name, count in
                      sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:8]) if counts else "No data"))
@@ -397,11 +396,6 @@ def money_rows(summary):
         rows.extend([("Jev " + direction + " tokens · reported", _fmt(summary.get(prefix + "_tokens"))),
                      ("Jev " + direction + " token coverage", _fmt(summary.get(prefix + "_token_coverage"), "%")),
                      ("Jev requests without " + direction + " tokens", _fmt(summary.get(prefix + "_unknown_token_requests")))])
-    for title, key, unit in (("observations", "requests", ""), ("local read attempts", "read_attempts", ""),
-                             ("local bytes read", "bytes_read", ""), ("local duration · total", "duration_seconds", "ms"),
-                             ("API input tokens", "api_input_tokens", ""), ("API output tokens", "api_output_tokens", ""),
-                             ("API spend", "cost_usd", "usd")):
-        rows.append(("Claude model lookup · " + title, _fmt(summary.get("claude_model_lookup_" + key), unit)))
     accounts = summary.get("accounts") or {}
     if not accounts:
         rows.append(("OpenRouter account / key snapshots", "No data"))
@@ -458,10 +452,16 @@ def _chart(rows, start, end, step):
     return "".join(parts) + '</svg><div class="legend">' + "".join(legend) + "</div>"
 
 
-def _breakdown(rows, label, decisions_only=False):
+def _is_direct_choice(labels):
+    return labels.get("reason") == "choice" and labels.get("record_schema") == "direct"
+
+
+def _breakdown(rows, label, decisions_only=False, current_only=False):
     totals = {}
     for row in rows:
-        if decisions_only and not row["labels"].get("reason", "").startswith("rule:"):
+        if decisions_only and not _is_direct_choice(row["labels"]):
+            continue
+        if current_only and row["labels"].get("record_schema") != "direct":
             continue
         value = _value(row)
         if value is not None:
@@ -490,10 +490,10 @@ def html_document(data):
     panels = []
     for title, key, unit in (("Jev requests", "request_rate", "requests / second"),
                              ("Jev latency · p95", "latency_p95", "seconds · all outcomes"),
-                             ("Model selections", "model_rate", "selections / second"),
+                             ("Jev selected model + effort", "model_rate", "selections / second"),
                              ("Jev reported spend", "jev_cost_rate", "USD / hour · known costs only")):
         panels.append('<section><h2>' + title + '</h2><small>' + unit + '</small>' + _chart(series.get(key, []), data["start"], data["end"], data["step"]) + '</section>')
-    panels.append('<section><h2>Reported costs and account snapshots</h2><p>Unpriced requests are not free. Token coverage is separate for input and output. Claude model lookup runs in local Python without an API call; API zeros apply only to recorded observations. Bytes are not tokens. Account and key totals include other tools; key limit remaining is not wallet credit. The freshest successful snapshot is selected across installations; values may be stale. Missing key limits can mean unlimited or unavailable.</p><table><tbody>' + ''.join('<tr><td>' + esc(title) + '</td><td>' + esc(value) + '</td></tr>' for title, value in money_rows(summary)) + '</tbody></table></section>')
+    panels.append('<section><h2>Reported costs and account snapshots</h2><p>Unpriced requests are not free. Token coverage is separate for input and output. Account and key totals include other tools; key limit remaining is not wallet credit. The freshest successful snapshot is selected across installations; values may be stale. Missing key limits can mean unlimited or unavailable.</p><table><tbody>' + ''.join('<tr><td>' + esc(title) + '</td><td>' + esc(value) + '</td></tr>' for title, value in money_rows(summary)) + '</tbody></table></section>')
     version_rows = []
     for row in summary.get("hook_versions", []):
         values = [row[key] for key in ("instance", "host", "user", "agent", "plugin_version", "agent_version")]
@@ -504,8 +504,8 @@ def html_document(data):
                   _fmt(summary.get("hook_version_metadata_gaps")) + '</p><table><thead><tr>' +
                   ''.join('<th>' + title + '</th>' for title in ("Instance", "Host", "User", "Client", "Plugin version", "Client version", "Last hook age", "Observation")) +
                   '</tr></thead><tbody>' + (''.join(version_rows) or '<tr><td colspan="8">No version observations</td></tr>') + '</tbody></table></section>')
-    for title, label, decisions in (("Calls by user", "user", False), ("Calls by project", "project", False), ("Selection share by model", "model", True), ("Selection share by tier", "tier", True), ("Routing reasons", "reason", False)):
-        panels.append('<section><h2>' + title + '</h2>' + _breakdown(series["calls"], label, decisions) + '</section>')
+    for title, label, decisions, current in (("Calls by user", "user", False, False), ("Calls by project", "project", False, False), ("Jev selected model", "recommended_model", True, True), ("Jev selected effort", "recommended_effort", True, True), ("Submitted launch model", "model", False, True), ("Submitted launch effort", "effort", False, True), ("Routing reasons", "reason", False, False)):
+        panels.append('<section><h2>' + title + '</h2>' + _breakdown(series["calls"], label, decisions, current) + '</section>')
     health_html = '<section style="margin-top:18px"><h2>Telemetry delivery · last received snapshot</h2><p>Workers exit after five minutes per run; later calls restart them. Snapshot age alone does not prove a failure.</p><table><tbody>'
     for title, key, unit in (("Pending events", "pending_events", ""), ("Coalesced timing · lifetime", "coalesced_events", ""), ("Dropped events · lifetime", "dropped_events", ""), ("Last acknowledged delivery age", "last_delivery_age_seconds", "s")):
         health_html += '<tr><td>' + title + '</td><td>' + _fmt(summary[key], unit) + '</td></tr>'

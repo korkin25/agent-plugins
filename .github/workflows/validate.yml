@@ -29,7 +29,7 @@ jobs:
           TMPDIR: ${{ runner.temp }}
         run: >-
           python3 -B subagent-model-router/tests/run_parallel.py -j 4
-          DecisionTests CodexTests ContextTests TelemetryTests DashboardTests TelemetryIntegrationTests TerminalTests BrowserTests RuntimeTests RuntimeIntegrationTests ClaudeStateTests ClaudeStateIntegrationTests ClaudeModelTests
+          DirectChoiceTests NativeCatalogEvidenceTests DecisionAccountingTests PurposeAndPriceIntegrationTests PriceTests TokenBudgetTests RequestBudgetIntegrationTests ContextTests TelemetryTests DashboardTests TelemetryIntegrationTests TerminalTests BrowserTests RuntimeTests RuntimeIntegrationTests ClaudeStateTests ClaudeStateIntegrationTests ClaudeModelTests
 
   validate:
     # Own pushes run on the owner's self-hosted runner; pull requests and anything else run on

@@ -30,6 +30,63 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(data['summary']['jev_p99_seconds'], 1)
         self.assertEqual(data['end'], now.timestamp())
 
+    def test_local_selection_and_submitted_pairs_do_not_use_parent(self):
+        now = dt.datetime(2026, 1, 10, tzinfo=dt.timezone.utc)
+        selected = dict(ts='2026-01-09T00:00:00Z', agent='codex', reason='choice',
+                        model='gpt-6-astra', effort='high', actual_model=None, actual_effort=None,
+                        session_model='gpt-5.6-luna', session_effort='low', mode='shadow', applied=False,
+                        jev_attempted=True, jev_outcome='success')
+        data = t.local_data([selected], now=now)
+        self.assertEqual(data['summary']['by_recommended_model'], {'gpt-6-astra': 1})
+        self.assertEqual(data['summary']['by_model'], {'unknown': 1})
+        self.assertNotIn('gpt-5.6-luna', t.format_terminal(data))
+        from router_dashboard import html_document
+        self.assertIn('gpt-6-astra', html_document(data))
+
+    def test_local_no_effort_uses_direct_launch_evidence(self):
+        now = dt.datetime(2026, 1, 10, tzinfo=dt.timezone.utc)
+        active = dict(ts='2026-01-09T00:00:00Z', agent='claude', reason='choice', model='fable', effort=None,
+                      actual_model='fable', actual_effort=None, mode='active', applied=True,
+                      jev_attempted=True, jev_outcome='success', selected_effort_supported=False)
+        data = t.local_data([active], now=now)
+        self.assertEqual(data['summary']['by_recommended_effort'], {'not_supported': 1})
+        self.assertEqual(data['summary']['by_effort'], {'not_supported': 1})
+        shadow = dict(active, actual_model=None, mode='shadow', applied=False)
+        data = t.local_data([shadow], now=now)
+        self.assertEqual(data['summary']['by_effort'], {'not_set': 1})
+        explicit = dict(active, reason='explicit', jev_attempted=False, jev_outcome=None)
+        data = t.local_data([explicit], now=now)
+        self.assertEqual(data['summary']['by_effort'], {'not_set': 1})
+
+    def test_local_capability_and_dynamic_model_evidence_match_export(self):
+        now = dt.datetime(2026, 1, 10, tzinfo=dt.timezone.utc)
+        active = dict(ts='2026-01-09T00:00:00Z', reason='choice', model='future/vendor@2027', effort=None,
+                      actual_model='future/vendor@2027', actual_effort=None, mode='active', applied=True,
+                      jev_attempted=True, jev_outcome='success')
+        data = t.local_data([active], now=now)
+        self.assertEqual(data['summary']['by_recommended_model'], {'future/vendor@2027': 1})
+        self.assertEqual(data['summary']['by_model'], {'future/vendor@2027': 1})
+        self.assertEqual(data['summary']['by_recommended_effort'], {'unknown': 1})
+        self.assertEqual(data['summary']['by_effort'], {'not_set': 1})
+        unsupported = dict(active, selected_effort_supported=False)
+        data = t.local_data([unsupported], now=now)
+        self.assertEqual(data['summary']['by_recommended_effort'], {'not_supported': 1})
+        self.assertEqual(data['summary']['by_effort'], {'not_supported': 1})
+        explicit = dict(active, reason='explicit', jev_attempted=False, jev_outcome=None)
+        data = t.local_data([explicit], now=now)
+        self.assertEqual(data['summary']['by_recommended_model'], {})
+        self.assertEqual(data['summary']['by_model'], {'unknown': 1})
+
+    def test_local_new_records_use_explicit_jev_attempt_evidence(self):
+        now = dt.datetime(2026, 1, 10, tzinfo=dt.timezone.utc)
+        preflight = dict(ts='2026-01-09T00:00:00Z', reason='error:no_catalog', latency_ms=1,
+                         state_sha256='digest', jev_attempted=False, jev_outcome=None)
+        launch_failure = dict(ts='2026-01-09T00:00:01Z', reason='error:claude_effort_definition', latency_ms=1,
+                              jev_attempted=True, jev_outcome='success')
+        data = t.local_data([preflight, launch_failure], now=now)
+        self.assertEqual(data['summary']['jev_requests'], 1)
+        self.assertEqual(data['summary']['jev_errors'], 0)
+
     def test_unknown_empty_values_and_control_characters(self):
         data = t.local_data([])
         self.assertIsNone(data['summary']['error_share'])
@@ -46,8 +103,8 @@ class TerminalTests(unittest.TestCase):
         self.assertIn('·', output)
         self.assertIn('·', t._spark([[i, None if i == 12 else 1] for i in range(64)]))
     def test_escape(self):
-        out = t.format_terminal(t.local_data([{'ts':'2026-01-01T00:00:00Z','agent':'codex','model':'bad`\n|x','reason':'rule:x','latency_ms':10}]))
-        self.assertIn("bad' ¦x", out); self.assertNotIn('```', out); self.assertNotIn('\x1b', out); self.assertIn('█', out)
+        out = t.format_terminal(t.local_data([{'ts':'2026-01-01T00:00:00Z','agent':'codex','model':'x','actual_model':'bad`\n|x','reason':'choice','latency_ms':10,'jev_attempted':True,'jev_outcome':'success'}]))
+        self.assertNotIn('bad', out); self.assertNotIn('```', out); self.assertNotIn('\x1b', out); self.assertIn('█', out)
     def test_empty(self):
         out = t.format_terminal(t.local_data([])); self.assertIn('no_data', out); self.assertIn('нет данных', out)
     def test_reported_cost_missing_zero_and_subcent_precision(self):
@@ -90,9 +147,9 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(s['claude_model_lookup_duration_seconds'], .015)
         self.assertEqual(s['claude_model_lookup_cost_usd'], 0)
         self.assertEqual(s['claude_model_lookup_api_input_tokens'], 0)
-        self.assertIn('API-токены вход / выход: 0 / 0', t.format_terminal(data))
+        self.assertNotIn('Чтение модели Claude', t.format_terminal(data))
         self.assertIn('Jev input token coverage</td><td>40.0%', html_document(data))
-        self.assertIn('Claude model lookup · local bytes read: 1,024', format_summary(data))
+        self.assertNotIn('Claude model lookup', format_summary(data))
         zero = t.local_data([dict(base, usage={'input_tokens': 0})], now=now)['summary']
         self.assertEqual(zero['jev_input_tokens'], 0)
         self.assertEqual(zero['jev_input_token_coverage'], 1)
@@ -166,6 +223,6 @@ class TerminalTests(unittest.TestCase):
         self.assertIn('·', t.format_terminal(data))
     def test_cohorts_latency(self):
         data=t.local_data([{'ts':'2026-01-01T00:00:00Z','agent':'claude','model':'m1','reason':'rule:a','latency_ms':10},{'ts':'2026-01-01T00:01:00Z','agent':'codex','model':'m2','reason':'error:x'}])
-        self.assertEqual(data['summary']['by_agent'], {'claude':1,'codex':1}); self.assertEqual(data['summary']['by_model'], {'m1':1}); self.assertEqual(data['summary']['jev_p50_seconds'], .01); self.assertIsNone(data['summary']['hook_p50_seconds'])
+        self.assertEqual(data['summary']['by_agent'], {'claude':1,'codex':1}); self.assertEqual(data['summary']['by_model'], {}); self.assertEqual(data['summary']['jev_p50_seconds'], .01); self.assertIsNone(data['summary']['hook_p50_seconds'])
 
 if __name__ == '__main__': unittest.main()

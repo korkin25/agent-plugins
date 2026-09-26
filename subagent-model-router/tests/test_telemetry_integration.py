@@ -34,7 +34,7 @@ class TelemetryIntegrationTests(Sandbox):
             "query_url": "http://127.0.0.1:8428", "instance": "test"}})
         event = {"tool_name": "Agent", "tool_input": agent_input(), "model": "claude-opus-4-6"}
         record = router.base_record(event, "claude")
-        record.update(reason="rule:light", model="haiku", tier="light", mode="active")
+        record.update(reason="choice", model="haiku", effort=None, mode="active")
         expected = {"systemMessage": "selection"}
         stdin = io.TextIOWrapper(io.BytesIO(json.dumps(event).encode()))
         stdout = io.StringIO()
@@ -51,12 +51,15 @@ class TelemetryIntegrationTests(Sandbox):
             journal.assert_not_called()
             self.assertEqual(enqueue.call_args.args[0], cfg["telemetry"])
             exported = enqueue.call_args.args[1]
-            self.assertEqual({k: v for k, v in exported.items() if k not in ("project", "user", "actual_model", "model_source", "actual_effort", "effort_source")},
-                             {k: v for k, v in dict(record, applied=False).items() if k != "user"})
+            self.assertEqual(exported["reason"], "choice")
+            self.assertEqual(exported["model"], "haiku")
+            self.assertIsNone(exported["effort"])
             self.assertTrue(exported["project"])
             self.assertEqual(exported["user"], router_telemetry.resolve_user(cfg["telemetry"]))
-            self.assertEqual(exported["actual_model"], "claude-opus-4-6")
-            self.assertEqual(exported["model_source"], "session")
+            self.assertIsNone(exported["actual_model"])
+            self.assertEqual(exported["model_source"], "unknown")
+            self.assertIsNone(exported["actual_effort"])
+            self.assertEqual(exported["effort_source"], "unknown")
             self.assertGreaterEqual(enqueue.call_args.args[2], 0)
             self.assertEqual(enqueue.call_args.kwargs["worker_command"][-1], "telemetry-worker")
         finally:

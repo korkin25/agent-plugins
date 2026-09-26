@@ -12,31 +12,17 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-def jev_body(light, standard, heavy, risky, review, model="jev-1.13.0", **extra):
-    """Ответ в форме TypeSafe (extra — поля OpenRouter: id, provider)."""
-    tier = {"light": light, "standard": standard, "heavy": heavy}
-    body = {
-        "model": model,
-        "answers": {
-            "tier": {"type": "choice", "choice": max(tier, key=tier.get), "probabilities": tier,
-                     "confidence": 0.8},
-            "risky": {"type": "noul", "noul": risky},
-            "review": {"type": "noul", "noul": review},
-        },
-        "usage": {"input_tokens": 300, "output_tokens": 20},
-    }
+def jev_body(choice, probabilities=None, model="jev-1.13.0", **extra):
+    body = {"model": model, "answers": {"selection": {"type": "choice", "choice": choice,
+            "probabilities": probabilities or {choice: 1.0}}},
+            "usage": {"input_tokens": 300, "output_tokens": 20}}
     body.update(extra)
     return body
 
 
-SCENARIOS = {
-    "light": jev_body(0.90, 0.08, 0.02, 0.05, 0.02),
-    "standard": jev_body(0.30, 0.60, 0.10, 0.10, 0.10),
-    "heavy": jev_body(0.05, 0.15, 0.80, 0.10, 0.10),
-    "uncertain": jev_body(0.45, 0.20, 0.35, 0.10, 0.10),
-    "risky": jev_body(0.90, 0.08, 0.02, 0.60, 0.02),
-    "review": jev_body(0.90, 0.08, 0.02, 0.05, 0.80),
-}
+# Dynamic fixtures choose an actual offered option; no invented model identifiers.
+SCENARIOS = {name: {"_fixture_choice_index": index} for name, index in
+             (("light", 0), ("standard", 1), ("heavy", -1), ("uncertain", -1), ("risky", -1), ("review", -1))}
 
 
 class Reply:
@@ -75,18 +61,27 @@ class FakeJev:
                 reply = owner._next()
                 if reply.delay:
                     time.sleep(reply.delay)
+                response_body = reply.body
+                try:
+                    fixture = json.loads(response_body)
+                    if "_fixture_choice_index" in fixture:
+                        offered = list(json.loads(body)["questions"]["selection"]["criteria"])
+                        choice = offered[fixture["_fixture_choice_index"]]
+                        response_body = json.dumps(jev_body(choice, {option: float(option == choice) for option in offered})).encode()
+                except (ValueError, KeyError, TypeError, IndexError):
+                    pass
                 try:
                     self.send_response(reply.status)
                     self.send_header("Content-Type", "application/json")
-                    self.send_header("Content-Length", str(len(reply.body)))
+                    self.send_header("Content-Length", str(len(response_body)))
                     for name, value in reply.headers.items():
                         self.send_header(name, value)
                     self.end_headers()
                     if not reply.trickle:
-                        self.wfile.write(reply.body)
+                        self.wfile.write(response_body)
                         return
-                    for index in range(len(reply.body)):
-                        self.wfile.write(reply.body[index:index + 1])
+                    for index in range(len(response_body)):
+                        self.wfile.write(response_body[index:index + 1])
                         self.wfile.flush()
                         time.sleep(reply.trickle)
                 except (BrokenPipeError, ConnectionResetError):

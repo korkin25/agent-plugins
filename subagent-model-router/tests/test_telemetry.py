@@ -91,29 +91,103 @@ class TelemetryTests(unittest.TestCase):
         send.assert_called_once()
         self.assertEqual(send.call_args.kwargs["timeout"], .1)
 
-    def test_effective_effort_and_unknown_are_not_inheritance_sentinels(self):
-        for changes, expected in [({'effort': 'inherit', 'session_effort': 'high'}, 'high'),
-                                  ({'effort': 'low', 'mode': 'shadow', 'session_effort': 'max'}, 'max'),
-                                  ({'effort': 'low', 'actual_effort': None}, 'unknown'),
-                                  ({'effort': 'inherit'}, 'unknown')]:
+    def test_submitted_effort_never_uses_parent_and_distinguishes_empty_evidence(self):
+        for changes, expected in [({'effort': 'low', 'session_effort': 'high'}, 'unknown'),
+                                  ({'effort': 'low', 'mode': 'shadow', 'session_effort': 'max'}, 'unknown'),
+                                  ({'effort': 'low', 'actual_effort': None}, 'not_set'),
+                                  ({'effort': 'low', 'actual_effort': 'low'}, 'low')]:
             call = next(k for k in telemetry._points(self.cfg, dict(self.record, **changes), .1)
                         if k.startswith('smr_calls_total{'))
             self.assertIn('effort="' + expected + '"', call)
-            self.assertNotIn('effort="inherit"', call)
-            self.assertNotIn('effort="unchanged"', call)
-    def test_real_model_for_inherited_and_shadow_calls(self):
-        for selected, mode, expected in [('inherit', 'active', 'gpt-6-astra'),
-                                         ('gpt-5.6-luna', 'shadow', 'gpt-6-astra'),
-                                         ('gpt-5.6-luna', 'active', 'gpt-5.6-luna')]:
-            row = dict(self.record, model=selected, mode=mode, session_model='gpt-6-astra')
+            self.assertNotIn('effort="high"', call)
+
+    def test_selected_and_submitted_pairs_are_separate_without_parent_lookup(self):
+        for mode, submitted, expected in [('active', 'gpt-5.6-luna', 'gpt-5.6-luna'),
+                                          ('shadow', None, 'unknown')]:
+            row = dict(self.record, reason='choice', mode=mode, model='gpt-5.6-luna', effort='low',
+                       actual_model=submitted, actual_effort='low' if submitted else None,
+                       session_model='gpt-6-astra', session_effort='high', jev_attempted=True, jev_outcome='success')
             call = next(k for k in telemetry._points(self.cfg, row, .1) if k.startswith('smr_calls_total{'))
             self.assertIn('model="' + expected + '"', call)
-            self.assertNotIn('model="inherit"', call)
-            if mode == 'shadow':
-                self.assertIn('recommended_model="gpt-5.6-luna"', call)
-        call = next(k for k in telemetry._points(self.cfg, dict(self.record, model='inherit'), .1)
-                    if k.startswith('smr_calls_total{'))
+            self.assertIn('recommended_model="gpt-5.6-luna"', call)
+            self.assertIn('recommended_effort="low"', call)
+            self.assertNotIn('gpt-6-astra', call)
+            self.assertNotIn('effort="high"', call)
+
+    def test_claude_haiku_no_effort_is_explicitly_not_supported(self):
+        row = dict(self.record, agent='claude', reason='choice', model='haiku', effort=None,
+                   actual_model='haiku', actual_effort=None, mode='active', applied=True,
+                   model_source='agent_definition', effort_source='agent_definition', jev_attempted=True, jev_outcome='success',
+                   selected_effort_supported=False)
+        call = next(k for k in telemetry._points(self.cfg, row, .1) if k.startswith('smr_calls_total{'))
+        self.assertIn('recommended_effort="not_supported"', call)
+        self.assertIn('effort="not_supported"', call)
+        self.assertIn('effort_source="agent_definition"', call)
+
+    def test_no_effort_capability_uses_direct_choice_evidence_not_alias_name(self):
+        active = dict(self.record, agent='claude', reason='choice', model='fable', effort=None,
+                      actual_model='fable', actual_effort=None, mode='active', applied=True,
+                      jev_attempted=True, jev_outcome='success', selected_effort_supported=False)
+        call = next(k for k in telemetry._points(self.cfg, active, .1) if k.startswith('smr_calls_total{'))
+        self.assertIn('recommended_effort="not_supported"', call)
+        self.assertIn('effort="not_supported"', call)
+        shadow = dict(active, actual_model=None, actual_effort=None, mode='shadow', applied=False)
+        call = next(k for k in telemetry._points(self.cfg, shadow, .1) if k.startswith('smr_calls_total{'))
+        self.assertIn('recommended_effort="not_supported"', call)
+        self.assertIn('effort="not_set"', call)
+        explicit = dict(active, reason='explicit', jev_attempted=False, jev_outcome=None)
+        call = next(k for k in telemetry._points(self.cfg, explicit, .1) if k.startswith('smr_calls_total{'))
+        self.assertIn('effort="not_set"', call)
+        self.assertNotIn('effort="not_supported"', call)
+
+    def test_none_effort_requires_explicit_capability_evidence(self):
+        row = dict(self.record, reason='choice', model='fable', effort=None, actual_model='fable', actual_effort=None,
+                   mode='active', applied=True, jev_attempted=True, jev_outcome='success')
+        call = next(k for k in telemetry._points(self.cfg, row, .1) if k.startswith('smr_calls_total{'))
+        self.assertIn('recommended_effort="unknown"', call)
+        self.assertIn('effort="not_set"', call)
+        self.assertNotIn('not_supported', call)
+
+    def test_dynamic_model_requires_successful_direct_exact_submission(self):
+        direct = dict(self.record, reason='choice', model='future/vendor-model@2027', effort='high',
+                      actual_model='future/vendor-model@2027', actual_effort='high', mode='active', applied=True,
+                      jev_attempted=True, jev_outcome='success')
+        call = next(k for k in telemetry._points(self.cfg, direct, .1) if k.startswith('smr_calls_total{'))
+        self.assertIn('recommended_model="future/vendor-model@2027"', call)
+        self.assertIn('model="future/vendor-model@2027"', call)
+        explicit = dict(direct, reason='explicit', jev_attempted=False, jev_outcome=None)
+        call = next(k for k in telemetry._points(self.cfg, explicit, .1) if k.startswith('smr_calls_total{'))
+        self.assertIn('recommended_model="unknown"', call)
         self.assertIn('model="unknown"', call)
+
+    def test_claude_fable_selected_and_submitted_pair_is_preserved(self):
+        row = dict(self.record, agent='claude', reason='choice', model='fable', effort='high',
+                   actual_model='fable', actual_effort='high', mode='active', applied=True,
+                   model_source='updated_input', effort_source='agent_definition',
+                   jev_attempted=True, jev_outcome='success')
+        call = next(k for k in telemetry._points(self.cfg, row, .1) if k.startswith('smr_calls_total{'))
+        for label in ('model="fable"', 'recommended_model="fable"', 'effort="high"',
+                      'recommended_effort="high"', 'record_schema="direct"'):
+            self.assertIn(label, call)
+
+    def test_current_preflight_and_launch_evidence_do_not_misstate_jev_outcome(self):
+        preflight = dict(self.record, reason='error:no_catalog', latency_ms=1,
+                         jev_attempted=False, jev_outcome=None)
+        points = telemetry._points(self.cfg, preflight, .1)
+        self.assertFalse(any(name.startswith('smr_jev_requests_total{') for name in points))
+        launch_failure = dict(self.record, reason='error:claude_effort_definition', latency_ms=1,
+                              jev_attempted=True, jev_outcome='success')
+        points = telemetry._points(self.cfg, launch_failure, .1)
+        request = next(name for name in points if name.startswith('smr_jev_requests_total{'))
+        self.assertIn('outcome="success"', request)
+
+    def test_legacy_rule_identity_is_not_promoted_to_direct_choice(self):
+        row = dict(self.record, reason='rule:heavy', model='gpt-6-astra', effort='high',
+                   session_model='gpt-5.6-luna', session_effort='low')
+        call = next(name for name in telemetry._points(self.cfg, row, .1) if name.startswith('smr_calls_total{'))
+        self.assertIn('record_schema="legacy"', call)
+        self.assertIn('recommended_model="unknown"', call)
+        self.assertNotIn('gpt-5.6-luna', call)
 
     def test_old_model_counters_not_reexported_or_relabelled(self):
         self.enqueue()

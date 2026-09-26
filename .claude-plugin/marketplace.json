@@ -26,8 +26,8 @@
     {
       "name": "subagent-model-router",
       "source": "./subagent-model-router",
-      "description": "Picks the model for every subagent from a Jev (TypeSafe AI) judgement of its task — in Claude Code and Codex — while your main session keeps the model you chose.",
-      "version": "0.4.8"
+      "description": "Jev directly selects a model and reasoning effort for each subagent task in Claude Code and Codex, with statistics for the selected and submitted parameters.",
+      "version": "0.5.0"
     }
   ]
 }

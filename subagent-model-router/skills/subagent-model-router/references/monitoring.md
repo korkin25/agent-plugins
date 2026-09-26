@@ -103,8 +103,8 @@ For Grafana, the agent imports `../../../grafana/subagent-model-router.json` whe
 Prometheus-compatible VM datasource. It has instance/project/user/agent filters. Credentials belong in the
 Grafana datasource. The browser report is a snapshot; Grafana queries current data.
 
-Metrics describe call outcomes, selected models/tiers/effort, active/shadow application, Jev request errors,
-Jev and hook latency histograms, and Jev decision probabilities. Jev timing includes its internal retry;
+Metrics describe call outcomes, selected model/effort candidates, active/shadow application, Jev request errors,
+Jev and hook latency histograms, and direct Jev choices. Jev timing includes its internal retry;
 one logical routing request can involve two HTTP attempts. No task text, descriptions, cwd, session IDs,
 request IDs, task hashes or credentials are exported. Host names, project basenames and OS login names (or configured
 aliases), client kind and observed versions are exported as cohort labels. Model selection is not proof of final execution:
@@ -145,28 +145,18 @@ worker exits, polling resumes on the next session start, user prompt or subagent
 monitor. The agent can use `stats --account ALIAS --terminal` to show the snapshot in the answer.
 
 
-## Local lookup accounting (0.4.8+)
+## Usage coverage and historical data
 
-When the explicitly authorized Claude transcript fallback actually runs, the local journal records
-`claude_model_lookup`: `read_attempts`, `bytes_read`, `duration_ms`, `outcome`, `api_input_tokens`,
-`api_output_tokens`, and `cost_usd`. Outcomes are `resolved`, `not_found`, or `rejected`. Attempts count
-calls to the file reader, including a failed open; bytes count actual bytes read before discarding a partial
-first line. Elapsed monotonic time includes the optional 100 ms retry. Bounds remain two attempts and 2 MiB.
-
-VM exports `smr_claude_model_lookup_requests_total` with an `outcome` label,
-`smr_claude_model_lookup_read_attempts_total`, `smr_claude_model_lookup_bytes_read_total`, and
-`smr_claude_model_lookup_duration_seconds_sum`, plus `smr_claude_model_lookup_api_input_tokens_total`,
-`smr_claude_model_lookup_api_output_tokens_total`, and `smr_claude_model_lookup_cost_usd_total`.
-The last three are zero only for recorded observations: the lookup performs local Python I/O, without a
-model API call. Missing/historical observations remain unavailable. Bytes are not API tokens, and no
-bytes-to-tokens cost estimate is made. Telemetry does not export dialogue or transcript paths.
-
-Paid Jev usage stays separate: `smr_jev_input_tokens_total` and `smr_jev_output_tokens_total` each have
+Paid Jev usage includes `smr_jev_input_tokens_total` and `smr_jev_output_tokens_total`, each with
 `smr_jev_<input|output>_known_token_requests_total` and
 `smr_jev_<input|output>_unknown_token_requests_total` coverage counters. Input coverage, output coverage
-and price coverage are independent; one available field cannot fill in another. Local journal, terminal,
-HTML and Grafana reports preserve these distinctions. Forced Claude plugin reload can invalidate its
-conversation cache; that host conversation cost is outside observed Jev usage and is not estimated here.
+and price coverage are independent; one field cannot fill in another. Forced Claude plugin reload may
+invalidate its conversation cache; that host conversation cost is outside observed Jev usage.
+
+Version 0.5.0 does not look up parent models or efforts in transcripts or lifecycle checkpoints.
+The main terminal, HTML and Grafana dashboards omit obsolete tier/risk/review/probability and local-lookup
+panels. Existing journal entries and VM history are preserved, not deleted or retrospectively relabelled.
+Historical lookup counters describe old local I/O, not current routing or provider token usage.
 
 ## Observed runtime versions (0.4.8+)
 
@@ -194,70 +184,53 @@ reporting follows instance/user/client filters independently of project filters.
 is shown separately; older samples are not retrospectively labelled. No fresh samples can mean idle
 sessions, delivery gaps or uninstrumented old code: these data cannot prove all hosts are upgraded.
 
-## Effective model labels (0.4.2+)
+## Selection and submitted launch labels (0.5.0+)
 
-`smr_calls_total.model` holds the selected launch model, resolving inherited choices from the host event's
-session model. `model_source=session|specified|session_start|post_model_switch|transcript_tool_use|unknown` explains the origin;
-`recommended_model` keeps Jev's
-mapped recommendation separately, including in shadow mode. No model label contains `inherit` or `unchanged`.
-If a host omits its session model or a custom role overrides it without observable evidence, it is `unknown`.
-This remains a prelaunch observation, not proof of successful subagent execution. Claude aliases supplied
-by the host remain aliases; the plugin does not invent a concrete model revision.
+A successful direct Jev decision records `reason="choice"`. `recommended_model` and `recommended_effort`
+are the selected candidate, also in shadow mode. They are not a tier mapping. A native catalog candidate without effort support has null effort,
+represented as unavailable or `not_supported` where the evidence supports that label.
 
-Old SQLite call counters without model_source are retired from new exports, including pending payloads;
-other metrics/retries are retained. Existing VM history is not deleted or retrospectively relabelled.
-Old `inherit` values can remain visible when the selected Grafana window includes older samples.
+`smr_calls_total.model` and `effort` describe submitted launch parameters. Source labels such as
+`specified`, `original`, and `updated_input` distinguish explicit launch provenance; unknown parameters
+remain `unknown`. Claude effort supplied through a bundled agent definition has
+`effort_source=agent_definition`; Codex reasoning effort is a specified tool argument. `applied` separates
+active rewrites from shadow recommendations. Shadow, skipped or failed calls have no inferred parent model
+or effort; missing submitted parameters remain unknown. Original explicit parameters may still be observed.
 
+A submitted alias is not a guaranteed Claude model revision, and submitted parameters do not prove the
+child executed or used those values. Native policy, environment overrides, a role definition or a launch
+failure can affect execution. Do not label these metrics actual runtime model/effort or realized savings.
 
-Since0.4.3 model-share groups by `(model, effort)`. `effort_source` distinguishes specified, session and
-unknown values. Codex launch reasoning_effort is observed from effective tool arguments; inherited effort
-uses host event data only when supplied. Claude2.1.280 supplies parent-turn `effort.level` but omits the model
-from PreToolUse. For inherited general-purpose launches, the effort can be retained; for a changed child
-model it is not evidence of child effort. Custom roles and absent evidence remain unknown. Config defaults
-or ANTHROPIC_MODEL/CLAUDE_CODE_EFFORT_LEVEL are not substituted for current runtime observations. Old samples
-are not retroactively repaired and retired call-series are no longer replayed by upgraded workers.
+The silent `claude-session` handler remains as a compatibility command name and initializes client-version
+metadata at `SessionStart`, which also requests background native catalog discovery. It no longer tracks
+model switches, session models or transcript paths. Version detection is independent of routing and retains
+the bounded metadata-only probe described above.
 
+Old samples can contain `inherit`, session-derived model sources, tier labels or lookup counters.
+Upgrading does not turn those into direct selections, repair missing fields or delete remote history.
 
-## Claude session model (0.4.7+)
+Native candidate metadata is distinct from version observations and submitted parameters. Codex supplies
+visible model descriptions and effort descriptions from its native catalog. Claude supplies model-purpose
+and capability fields from isolated SDK initialization; official effort guidance explains the reported
+levels. `model_catalog_value`, `model_catalog_resolved_id` and `model_catalog_source` in local records are
+catalog provenance, not child runtime observations. In particular, describing `opus` using an `opus[1m]`
+row does not prove a launched child used that revision or context size. Catalog refresh is ordinary client
+metadata work, without a user/model turn, an LLM research job or a Jev classification request.
 
-The silent `claude-session` handler observes `SessionStart.model` and `PostModelSwitch.to_model`, then
-invalidates on `SessionEnd`. It needs an existing router config, but no provider key or network request.
-`SessionStart` always replaces previous evidence, including on resume without a model. Missing/invalid
-config invalidates existing evidence without creating new state. A conflicting
-`from_model`, missing/invalid metadata, corrupt state or expired checkpoint yields unknown.
+Purpose descriptions are reused without a time expiry. Native discovery is driven by binary/catalog
+file changes in Codex, binary changes and session starts in Claude, or a missing allowlist entry.
+A new model identity or missing description refreshes metadata and prices for the full available
+inventory. Catalog provenance therefore describes the latest discovery, not continuous observation of
+the provider's current model availability.
 
-For inherited general-purpose launches and shadow observations, the selection hook can use this evidence
-for the exact session UUID and transcript-path hash. It does not open transcripts or infer models from
-settings. Nested/custom agents, explicit launches, changed-model active routes and subagent model
-environment overrides do not use the fallback. The journal retains `session_model_source`; VM exports
-`model_source=session_start|post_model_switch`. This is selected parent-model evidence, not proof of final
-child execution. Parent effort is not attributed to a different selected child model in notices.
+Candidate model prices are separate from the Jev request-cost metrics above. They are official standard
+API references in USD per million tokens, joined by exact provider model ID and accompanied by source
+and freshness. An unknown price does not mean free usage; a stale price remains a previous observation.
+Neither proves subscription charges, child execution costs or savings. Cache-read, cache-write and
+context-band rates are separate categories and must not be collapsed into one token rate.
 
-State is private (0700/0600), under `XDG_STATE_HOME/subagent-model-router/claude-sessions` or the usual
-`~/.local/state` default. At most 256 slots of 2048 bytes are kept, with a 24-hour TTL. Slot collisions lose
-evidence. Locks never wait; contention or failed writes invalidate when the filesystem permits it.
-Start or resume Claude after upgrading so it emits the lifecycle observations. Old VM samples are unchanged.
-
-Claude 2.1.280 can omit `SessionStart.model` even when launched with `--model`. With explicit authorization,
-enable `[claude] observe_transcript_model = true` to recover only the current initiating Agent call's
-`message.model`. This fallback reads a bounded tail of the event's exact transcript under
-`CLAUDE_CONFIG_DIR/projects`, checks `sessionId` and the `Agent` block's `tool_use_id`, and rejects
-conflicting evidence. It never opens another session or uses a previous assistant message. At most two 1 MiB
-reads and one 100 ms retry cover asynchronous writes without waiting indefinitely. The exported source is
-`transcript_tool_use`; conversation text is not retained or exported. Lifecycle evidence takes precedence.
-
-## Codex runtime effort (0.4.5+)
-
-For active same-model `inherit` decisions with built-in roles, the router resolves the exact parent
-`turn_context` by session UUID, turn UUID and model. It searches only the UUIDv7 session-date directories
-(with one day timezone margin), rejects ambiguous/foreign/symlink files and reads at most a 2MiB tail.
-Owner-created group-writable rollout files are accepted: they are observations, not executable policy.
-Only model/effort metadata is retained; conversation contents are never sent or logged by this lookup.
-No matching metadata means unknown, not a fallback to another turn or user config.
-
-When the cached catalog supports the observed effort, the hook pins it in `updatedInput.reasoning_effort`.
-This explicitly selects the current-turn level over subagent defaults for this same-model launch, leaving
-routing model/tier unchanged. Metric `effort_source=turn_context` distinguishes this from an original explicit
-argument. `applied` becomes true for such effort-only rewrites. Shadow, custom roles, explicit arguments,
-full forks, changed-model routes, and failures are unchanged. No app-server RPC is used inside the hook.
-The evidence proves selected launch parameters, not completion or later changes in the child.
+Local records may include `visible_task_estimate` and the selected model's `task_input_cost_estimate`.
+They describe filtered task/description text using the coarse `utf8_bytes_div4_heuristic`, with explicit
+approximate status. The full native child prompt is unknown; standard and long-context uncached input
+costs are alternatives. These fields do not count the Jev request itself and do not replace its reported
+input/output usage or cost metrics.

@@ -40,6 +40,7 @@ _SEMVER_RE = re.compile(
 _VERSION_GAUGE_PREFIX = "smr_hook_version_last_seen_timestamp_seconds{"
 LATENCY_BUCKETS = (.01, .025, .05, .1, .25, .5, 1, 2, 4, 8, 16, 30)
 PROBABILITY_BUCKETS = (.1, .25, .5, .7, .75, .9, .95, 1)
+_MODEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,199}\Z")
 _DB_OPEN_LOCK = threading.Lock()
 
 
@@ -385,14 +386,21 @@ def _enum(value, allowed, fallback="unknown"):
 
 def _reason(value):
     base = str(value or "").split(";", 1)[0]
-    allowed = {"explicit", "fork", "type", "excluded", "off", "no_key"}
+    allowed = {"choice", "override", "explicit", "fork", "type", "excluded", "off", "no_key"}
     allowed.update("rule:" + rule for rule in ("light", "standard", "heavy", "risky", "review"))
-    allowed.update("error:" + kind for kind in ("input", "input_size", "config", "timeout", "network", "size", "internal", "json", "answers", "type", "range", "options", "sum"))
+    allowed.update("error:" + kind for kind in ("input", "input_size", "config", "timeout", "network", "size", "internal", "json", "answers", "type", "range", "options", "sum", "choice", "no_options", "catalog", "claude_effort_definition", "model_not_in_catalog", "model_catalog_override", "no_catalog", "no_codex", "no_claude", "no_claude_catalog"))
     if base in allowed:
         return base
     if re.fullmatch(r"error:http_[1-5][0-9]{2}", base):
         return base
     return "unknown"
+
+
+def _jev_outcome(value):
+    if value == "success":
+        return "success"
+    reason = _reason(value)
+    return reason.removeprefix("error:") if reason.startswith("error:") else "unknown"
 
 
 def _metric(name, labels):
@@ -444,40 +452,53 @@ def _points(cfg, record, duration):
     provider = _enum(record.get("provider"), {"typesafe", "openrouter"})
     reason = _reason(record.get("reason"))
     def model_name(value):
-        if isinstance(value, str) and re.fullmatch(r"(?:gpt-[a-z0-9.-]{1,48}|claude-[a-z0-9.-]{1,48}|haiku|sonnet|opus)", value):
-            return value
-        return "unknown"
+        return value if isinstance(value, str) and _MODEL_ID_RE.fullmatch(value) else "unknown"
 
-    if "actual_model" in record:
-        actual = record["actual_model"]
-    elif record.get("mode") == "shadow" or record.get("model") in (None, "inherit"):
-        actual = record.get("session_model")
-    else:
-        actual = record.get("model")
-    recommendation = record.get("model")
-    if recommendation == "inherit":
-        recommendation = record.get("session_model")
-    source = record.get("model_source") or ("session" if record.get("mode") == "shadow" or record.get("model") in (None, "inherit") else "specified")
+    # Jev's choice and the launch payload are separate evidence. Never infer
+    # either from a parent/session model: shadow and skipped hooks did not
+    # submit a changed launch argument.
+    agent = _enum(record.get("agent"), {"claude", "codex"})
+    current_schema = isinstance(record.get("jev_attempted"), bool)
+    successful_choice = (reason == "choice" and record.get("jev_attempted") is True
+                         and record.get("jev_outcome") == "success")
+    selected_model = record.get("model") if successful_choice else None
+    selected_effort = record.get("effort") if successful_choice else None
+    submitted_model = record.get("actual_model")
+    submitted_effort = record.get("actual_effort")
+    selected_no_effort = successful_choice and record.get("selected_effort_supported") is False
+    submitted_exact_choice = (successful_choice and record.get("applied") is True
+                              and isinstance(selected_model, str) and submitted_model == selected_model)
     efforts = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
-    if "actual_effort" in record:
-        effort = record["actual_effort"]
-    elif record.get("mode") == "shadow" or record.get("effort") in (None, "inherit"):
-        effort = record.get("session_effort")
-    else:
-        effort = record.get("effort")
-    effort_source = record.get("effort_source") or ("specified" if record.get("mode") != "shadow" and _enum(record.get("effort"), efforts) != "unknown" else "session")
-    effort = _enum(effort, efforts)
-    call = dict(labels, provider=provider, reason=reason, model=model_name(actual),
+    effort_labels = efforts | {"not_set", "not_supported"}
+    def effort_name(value, *, selected=False):
+        name = _enum(value, effort_labels)
+        if name != "unknown":
+            return name
+        if selected and selected_no_effort and value is None:
+            return "not_supported"
+        if not selected and selected_no_effort and submitted_exact_choice and value is None:
+            return "not_supported"
+        if not selected and "actual_effort" in record and value is None:
+            return "not_set"
+        return "unknown"
+    model_source = record.get("model_source")
+    effort_source = record.get("effort_source")
+    selected_model_name = model_name(selected_model)
+    submitted_model_name = model_name(submitted_model) if submitted_exact_choice else "unknown"
+    call = dict(labels, provider=provider, reason=reason, model=submitted_model_name,
                 plugin_version=_plugin_version(record.get("plugin_version")),
                 agent_version=_plugin_version(record.get("agent_version")), host=_host(record.get("host")),
-                model_source=source if model_name(actual) != "unknown" and source in
-                ("specified", "session", "session_start", "post_model_switch", "transcript_tool_use") else "unknown",
-                recommended_model=model_name(recommendation) if reason.startswith("rule:") else "unknown",
+                model_source=model_source if submitted_model_name != "unknown" and model_source in
+                ("specified", "original", "updated_input", "agent_definition") else "unknown",
+                recommended_model=selected_model_name,
                 mode=_enum(record.get("mode"), {"active", "shadow"}),
                 tier=_enum(record.get("tier"), {"light", "standard", "heavy"}, "none"),
-                effort=_enum(effort, efforts),
-                effort_source=effort_source if effort in efforts and effort_source in ("specified", "session", "turn_context") else "unknown",
-                applied="true" if record.get("applied") is True else "false")
+                effort=effort_name(submitted_effort),
+                recommended_effort=effort_name(selected_effort, selected=True),
+                effort_source=effort_source if effort_name(submitted_effort) in effort_labels and effort_source in
+                ("specified", "original", "updated_input", "agent_definition") else "unknown",
+                applied="true" if record.get("applied") is True else "false",
+                record_schema="direct" if current_schema else "legacy")
     points = {_metric("calls_total", call): 1.0}
 
     def histogram(name, value, dimensions, buckets):
@@ -506,11 +527,14 @@ def _points(cfg, record, duration):
             points[_metric(prefix + field + "_total", labels)] = float(lookup[field])
         points[_metric(prefix + "duration_seconds_sum", labels)] = lookup["duration_ms"] / 1000
     latency = record.get("latency_ms")
-    if _number(latency):
-        outcome = reason.removeprefix("error:") if reason.startswith("error:") else "success"
+    attempted = record.get("jev_attempted") is True if current_schema else _number(latency)
+    if attempted:
+        outcome = _jev_outcome(record.get("jev_outcome")) if current_schema else (
+            reason.removeprefix("error:") if reason.startswith("error:") else "success")
         attempt = dict(labels, provider=provider, outcome=outcome)
         points[_metric("jev_requests_total", attempt)] = 1.0
-        histogram("jev_request_duration_seconds", latency / 1000, attempt, LATENCY_BUCKETS)
+        if _number(latency):
+            histogram("jev_request_duration_seconds", latency / 1000, attempt, LATENCY_BUCKETS)
         financial = dict(labels, provider=provider)
         usage = record.get("usage")
         usage = usage if isinstance(usage, dict) else {}

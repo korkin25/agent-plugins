@@ -1,199 +1,95 @@
-"""Claude lifecycle -> routing -> telemetry; only isolated state and fake Jev."""
+"""Claude direct selection uses only task and bundled definitions, never parent state."""
 import io
 import json
 import os
-from pathlib import Path
 import sys
-import uuid
 from unittest import mock
-
 from test_router import Sandbox, agent_input, router
 import router_claude_state
+import router_claude_model
+import router_client_version
 import router_telemetry
 
 
 class ClaudeStateIntegrationTests(Sandbox):
-    def setUp(self):
-        # Only lifecycle fixtures need every ancestor to meet the private-state
-        # boundary; runner TMPDIR can be shared. Resolve macOS /var's symlink.
-        with mock.patch("test_router.tempfile.tempdir", str(Path("/var/tmp").resolve())):
-            super().setUp()
-        self.home.chmod(0o700)
-        self.session = str(uuid.uuid4())
-        self.identity = {"session_id": self.session,
-                         "transcript_path": str(self.root / (self.session + ".jsonl"))}
-
-    def lifecycle(self, kind, **fields):
-        result = self.run_router("claude-session", stdin=json.dumps(
-            dict(self.identity, hook_event_name=kind, **fields)))
-        self.assertEqual(result[:3], (0, "", ""))
-
     def event(self, **fields):
-        return dict(self.identity, hook_event_name="PreToolUse", tool_name="Agent",
-                    tool_input=agent_input(), effort={"level": "medium"}, **fields)
+        return dict(hook_event_name='PreToolUse', tool_name='Agent', tool_input=agent_input(),
+                    model='parent-never-selected', effort={'level': 'ultra'}, transcript_path='/must/not/open', **fields)
 
-    def decision(self, event=None, mode="active", model="inherit", env=None, observe=False):
-        cfg = router.normalize_config({"mode": mode, "claude": {"models": {"heavy": model},
-                                                                "observe_transcript_model": observe}})
-        event = event or self.event()
-        record = router.base_record(event, "claude")
-        record.update(mode=mode, tier="heavy")
-        with mock.patch.dict(os.environ, env or self.env(), clear=True):
-            return router._claude_decision(cfg, event, event["tool_input"], "heavy", "risky", record)
-
-    def test_start_switch_resume_end_flow_preserves_routing(self):
-        self.write_config()
-        self.lifecycle("SessionStart", source="startup", model="claude-opus-4-6")
-        output, record = self.decision()
-        self.assertIsNone(output)
-        self.assertEqual(record["session_model"], "claude-opus-4-6")
-        self.assertEqual(record["session_model_source"], "session_start")
-        self.assertIn("model=claude-opus-4-6 (unchanged), effort=medium", router.decision_notice(record))
-        self.lifecycle("PostModelSwitch", source="command", from_model="claude-opus-4-6",
-                       to_model="claude-sonnet-4-6")
-        _, record = self.decision()
-        self.assertEqual(record["session_model"], "claude-sonnet-4-6")
-        self.assertEqual(record["session_model_source"], "post_model_switch")
-        self.lifecycle("SessionStart", source="resume")
-        self.assertIsNone(self.decision()[1]["session_model"])
-        self.lifecycle("SessionStart", source="resume", model="claude-opus-4-6")
-        self.lifecycle("SessionEnd", reason="prompt_input_exit")
-        self.assertIsNone(self.decision()[1]["session_model"])
-
-    def test_no_config_does_not_create_checkpoint(self):
-        self.lifecycle("SessionStart", source="startup", model="claude-opus-4-6")
-        self.assertFalse((self.home / ".local/state/subagent-model-router/claude-sessions").exists())
-
-    def test_base_record_uses_executed_plugin_version_and_safe_host(self):
-        import router_client_version
-        with mock.patch.object(router, "plugin_version", return_value="1.2.3"), \
-                mock.patch.object(router.socket, "gethostname", return_value="router-host"), \
-                mock.patch.object(router_client_version, "resolve_client_version", return_value="2.1.280") as resolve:
-            record = router.base_record(self.event(), "claude")
-        self.assertEqual(record["plugin_version"], "1.2.3")
-        self.assertEqual(record["host"], "router-host")
-        self.assertEqual(record["agent_version"], "2.1.280")
-        self.assertEqual(resolve.call_args.args[:2], ("claude", self.event()))
-        with mock.patch.object(router.socket, "gethostname", return_value="/private/path"):
-            self.assertEqual(router.base_record(self.event(), "claude")["host"], "unknown")
-
-    def test_config_missing_or_broken_during_resume_clears_old_model(self):
-        for broken in (False, True):
-            with self.subTest(broken=broken):
-                self.write_config()
-                self.lifecycle("SessionStart", source="startup", model="claude-opus-4-6")
-                if broken:
-                    self.config.write_text("invalid = [")
-                else:
-                    self.config.unlink()
-                self.lifecycle("SessionStart", source="resume")
-                self.write_config()
-                self.assertIsNone(self.decision()[1]["session_model"])
-
-    def test_event_model_wins_and_changed_model_custom_or_overrides_do_not_read_cache(self):
-        with mock.patch.object(router_claude_state, "resolve_session") as resolve:
-            _, record = self.decision(self.event(model="claude-sonnet-4-6"))
-            self.assertEqual(record["session_model"], "claude-sonnet-4-6")
-            self.decision(model="haiku")
-            self.decision(dict(self.event(), tool_input=agent_input(subagent_type="custom")))
-            for key in ("CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"):
-                self.decision(env=self.env(**{key: "sonnet"}))
-            resolve.assert_not_called()
-
-    def test_nested_agent_and_foreign_session_stay_unknown(self):
-        self.write_config()
-        self.lifecycle("SessionStart", source="startup", model="claude-opus-4-6")
-        self.assertIsNone(self.decision(self.event(agent_id="child"))[1]["session_model"])
-        self.assertIsNone(self.decision(dict(self.event(), session_id=str(uuid.uuid4())))[1]["session_model"])
-
-    def test_shadow_uses_session_for_actual_model_but_keeps_recommendation(self):
-        self.write_config()
-        self.lifecycle("SessionStart", source="startup", model="claude-opus-4-6")
-        output, record = self.decision(mode="shadow", model="haiku")
-        self.assertIsNone(output)
-        self.assertEqual(record["model"], "haiku")
-        self.assertEqual(record["session_model"], "claude-opus-4-6")
-
-    def test_changed_model_notice_does_not_attribute_parent_effort(self):
-        _, record = self.decision(model="haiku")
-        notice = router.decision_notice(record)
-        self.assertIn("model=haiku", notice)
-        self.assertNotIn("effort=medium", notice)
-
-    def test_transcript_lookup_requires_opt_in_and_never_overrides_lifecycle(self):
-        import router_claude_model
-        observation = {"model": "claude-sonnet-4-6", "source": "transcript_tool_use"}
-        with mock.patch.object(router_claude_model, "resolve_tool_model", return_value=observation) as read:
-            self.decision()
-            read.assert_not_called()
-            _, record = self.decision(observe=True)
-            self.assertEqual(record["session_model_source"], "transcript_tool_use")
-            self.assertEqual(record["session_model"], "claude-sonnet-4-6")
-            read.reset_mock()
-            self.write_config()
-            self.lifecycle("SessionStart", source="startup", model="claude-opus-4-6")
-            _, record = self.decision(observe=True)
-            self.assertEqual(record["session_model"], "claude-opus-4-6")
-            self.assertNotIn("claude_model_lookup", record)
-            read.assert_not_called()
-
-    def test_startup_without_model_resolves_exact_current_agent_record(self):
-        self.write_config()
-        self.lifecycle("SessionStart", source="startup")
-        transcript = self.home / ".claude/projects/synthetic" / (self.session + ".jsonl")
-        transcript.parent.mkdir(parents=True, mode=0o700)
-        transcript.write_text(json.dumps({"type": "assistant", "sessionId": self.session,
-            "message": {"model": "claude-opus-4-6", "content": [
-                {"type": "tool_use", "name": "Agent", "id": "toolu_current", "input": {"prompt": "synthetic"}}]}}) + "\n")
-        event = dict(self.event(), transcript_path=str(transcript), tool_use_id="toolu_current")
-        output, record = self.decision(event, observe=True)
-        self.assertIsNone(output)
-        self.assertEqual(record["session_model"], "claude-opus-4-6")
-        self.assertEqual(record["session_model_source"], "transcript_tool_use")
-        accounting = record["claude_model_lookup"]
-        self.assertEqual(accounting["read_attempts"], 1)
-        self.assertEqual(accounting["bytes_read"], transcript.stat().st_size)
-        self.assertEqual(accounting["outcome"], "resolved")
-        self.assertEqual(accounting["api_input_tokens"], 0)
-        self.assertEqual(accounting["api_output_tokens"], 0)
-        self.assertEqual(accounting["cost_usd"], 0)
-        self.assertIn("model=claude-opus-4-6 (unchanged), effort=medium", router.decision_notice(record))
-        self.assertNotIn("synthetic", json.dumps(record))
-
-    def test_transcript_opt_in_must_be_boolean(self):
-        with self.assertRaises(router.ConfigError):
-            router.normalize_config({"claude": {"observe_transcript_model": "true"}})
-
-    def test_hook_exports_lifecycle_model_source_and_observed_effort(self):
-        self.write_config()
-        self.lifecycle("SessionStart", source="startup", model="claude-opus-4-6")
-        cfg = router.normalize_config({"telemetry": {
-            "backend": "victoriametrics", "write_url": "http://127.0.0.1:8428/api/v1/import/prometheus",
-            "query_url": "http://127.0.0.1:8428", "instance": "test"}})
-        stdin = io.TextIOWrapper(io.BytesIO(json.dumps(self.event()).encode()))
-        stdout = io.StringIO()
-        try:
+    def test_parent_and_transcript_readers_never_called_active_or_shadow(self):
+        self.serve()
+        for mode in ('active', 'shadow'):
+            self.write_config(mode=mode)
             with mock.patch.dict(os.environ, self.env(), clear=True), \
-                    mock.patch.object(sys, "stdin", stdin), mock.patch.object(sys, "stdout", stdout), \
-                    mock.patch.object(sys, "stderr", io.StringIO()), \
-                    mock.patch.object(router, "load_config", return_value=cfg), \
-                    mock.patch.object(router, "read_key", return_value=("fake", None)), \
-                    mock.patch.object(router, "ask_jev", return_value={"probs": {}, "jev_model": "fake",
-                                                                       "request_id": "fake", "latency_ms": 1}), \
-                    mock.patch.object(router, "choose_tier", return_value=("heavy", "risky")), \
-                    mock.patch.object(router, "rounded_answers", return_value={}), \
-                    mock.patch.object(router_telemetry, "enqueue", return_value=True) as enqueue:
+                    mock.patch.object(router_claude_state, 'resolve_session', side_effect=AssertionError('parent read')), \
+                    mock.patch.object(router_claude_model, 'resolve_tool_model', side_effect=AssertionError('transcript read')):
+                output, record = router.handle_event(self.event(), 'claude')
+            self.assertEqual(record['reason'], 'choice')
+            self.assertEqual(record['model'], 'haiku')
+            self.assertIsNone(record['effort'])
+            self.assertNotIn('session_model', record)
+            self.assertNotIn('session_effort', record)
+
+    def test_sonnet_effort_uses_definition_never_unsupported_agent_argument(self):
+        self.serve()
+        self.write_config(claude={'allowed_models': ['sonnet'], 'efforts': ['high']})
+        args = agent_input(extra={'keep': True}, run_in_background=True)
+        output = json.loads(self.hook(args)[1])['hookSpecificOutput']['updatedInput']
+        self.assertEqual(output, dict(args, model='sonnet', subagent_type='subagent-model-router:effort-high'))
+        self.assertNotIn('effort', output)
+        self.assertEqual(self.last_row()['effort'], 'high')
+
+    def test_custom_types_cannot_be_routed_even_if_legacy_config_allows(self):
+        self.serve()
+        self.write_config(claude={'route_types': ['custom']})
+        self.assertEqual(self.hook(agent_input(subagent_type='custom'))[:3], (0, '', ''))
+        self.assertEqual(self.last_row()['reason'], 'type')
+        self.assertEqual(self.fake.requests, [])
+
+    def test_environment_overrides_skip_without_request(self):
+        self.serve()
+        self.write_config()
+        for key in ('CLAUDE_CODE_SUBAGENT_MODEL_FORCE', 'CLAUDE_CODE_EFFORT_LEVEL',
+                    'CLAUDE_CODE_COORDINATOR_FORCE_WORKER_INHERIT_MODEL'):
+            self.assertEqual(self.hook(env=self.env(**{key: 'high'}))[:3], (0, '', ''))
+            self.assertEqual(self.last_row()['reason'], 'override')
+        self.assertEqual(self.fake.requests, [])
+
+    def test_lifecycle_initializes_versions_but_never_model_state(self):
+        self.write_config()
+        for kind in ('SessionStart', 'PostModelSwitch', 'SessionEnd'):
+            event = {'hook_event_name': kind, 'model': 'parent-never-selected'}
+            stdin = io.TextIOWrapper(io.BytesIO(json.dumps(event).encode()))
+            with mock.patch.dict(os.environ, self.env(), clear=True), mock.patch.object(sys, 'stdin', stdin), \
+                    mock.patch.object(router_claude_state, 'update_session', side_effect=AssertionError('model state')), \
+                    mock.patch.object(router_claude_state, 'invalidate_session', side_effect=AssertionError('model state')), \
+                    mock.patch.object(router_client_version, 'initialize_client_version') as initialize:
+                self.assertEqual(router.session_main(), 0)
+                self.assertEqual(initialize.call_count, 2 if kind == 'SessionStart' else 0)
+            stdin.close()
+
+    def test_telemetry_contains_only_submitted_model_and_definition_effort(self):
+        self.serve()
+        self.write_config(claude={'allowed_models': ['opus'], 'efforts': ['max']}, telemetry={
+            'backend': 'victoriametrics', 'write_url': 'http://127.0.0.1:8428/api/v1/import/prometheus',
+            'query_url': 'http://127.0.0.1:8428', 'instance': 'test'})
+        for mode in ('active', 'shadow'):
+            with mock.patch.dict(os.environ, self.env(), clear=True):
+                cfg = router.load_config()
+            cfg['mode'] = mode
+            stdin, stdout = io.TextIOWrapper(io.BytesIO(json.dumps(self.event()).encode())), io.StringIO()
+            with mock.patch.dict(os.environ, self.env(), clear=True), mock.patch.object(sys, 'stdin', stdin), \
+                    mock.patch.object(sys, 'stdout', stdout), mock.patch.object(sys, 'stderr', io.StringIO()), \
+                    mock.patch.object(router, 'load_config', return_value=cfg), \
+                    mock.patch.object(router_telemetry, 'enqueue', return_value=True) as enqueue:
                 self.assertEqual(router.hook_main(), 0)
                 sys.stderr.close()
-            record = enqueue.call_args.args[1]
-            self.assertEqual(record["actual_model"], "claude-opus-4-6")
-            self.assertEqual(record["actual_effort"], "medium")
-            self.assertEqual(record["model_source"], "session_start")
-            points = router_telemetry._points(cfg["telemetry"], record, .01)
-            call = next(p for p in points if p.startswith("smr_calls_total{"))
-            self.assertIn('model="claude-opus-4-6"', call)
-            self.assertIn('model_source="session_start"', call)
-            self.assertIn('effort="medium"', call)
-            self.assertIn("model=claude-opus-4-6 (unchanged)", json.loads(stdout.getvalue())["systemMessage"])
-        finally:
+            row = enqueue.call_args.args[1]
+            if mode == 'active':
+                self.assertEqual((row['actual_model'], row['actual_effort']), ('opus', 'max'))
+                self.assertEqual(row['effort_source'], 'agent_definition')
+                self.assertEqual(row['model_source'], 'updated_input')
+            else:
+                self.assertIsNone(row['actual_model'])
+                self.assertIsNone(row['actual_effort'])
             stdin.close()
