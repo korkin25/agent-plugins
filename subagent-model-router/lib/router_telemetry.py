@@ -40,6 +40,11 @@ _SEMVER_RE = re.compile(
 _VERSION_GAUGE_PREFIX = "smr_hook_version_last_seen_timestamp_seconds{"
 LATENCY_BUCKETS = (.01, .025, .05, .1, .25, .5, 1, 2, 4, 8, 16, 30)
 PROBABILITY_BUCKETS = (.1, .25, .5, .7, .75, .9, .95, 1)
+PRICE_RATIO_BUCKETS = (1, 1.25, 1.5, 2, 2.5, 3, 5, 10, 20)
+POLICY_ADJUSTMENTS = ("impact_floor", "frontier_scope", "review_floor", "verified_discount", "prior_failure_raise",
+                      "confidence_raise_reasoning", "confidence_raise_impact", "confidence_raise_scope",
+                      "confidence_raise_review_depth")
+POLICY_FACTORS = ("reasoning", "spec", "verification", "scope", "impact", "review_depth")
 _MODEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,199}\Z")
 _DB_OPEN_LOCK = threading.Lock()
 
@@ -386,7 +391,7 @@ def _enum(value, allowed, fallback="unknown"):
 
 def _reason(value):
     base = str(value or "").split(";", 1)[0]
-    allowed = {"choice", "override", "explicit", "fork", "type", "excluded", "off", "no_key"}
+    allowed = {"choice", "policy", "override", "explicit", "fork", "type", "excluded", "off", "no_key"}
     allowed.update("rule:" + rule for rule in ("light", "standard", "heavy", "risky", "review"))
     allowed.update("error:" + kind for kind in ("input", "input_size", "config", "timeout", "network", "size", "internal", "json", "answers", "type", "range", "options", "sum", "choice", "no_options", "catalog", "claude_effort_definition", "model_not_in_catalog", "model_catalog_override", "no_catalog", "no_codex", "no_claude", "no_claude_catalog"))
     if base in allowed:
@@ -435,8 +440,10 @@ def _version_gauge(cfg, record):
     if agent == "unknown" or version == "unknown":
         return None
     user = record.get("user")
+    project = record.get("project")
     labels = dict(instance=cfg["instance"], host=_host(record.get("host")),
                   user=user if isinstance(user, str) and _HOST_RE.fullmatch(user) else "unknown",
+                  project=project if isinstance(project, str) and _HOST_RE.fullmatch(project) else "unknown",
                   agent=agent, plugin_version=version, agent_version=_plugin_version(record.get("agent_version")))
     return _metric("hook_version_last_seen_timestamp_seconds", labels), _hook_observation_time(record)
 
@@ -459,10 +466,12 @@ def _points(cfg, record, duration):
     # submit a changed launch argument.
     agent = _enum(record.get("agent"), {"claude", "codex"})
     current_schema = isinstance(record.get("jev_attempted"), bool)
-    successful_choice = (reason == "choice" and record.get("jev_attempted") is True
+    successful_choice = (reason in ("choice", "policy") and record.get("jev_attempted") is True
                          and record.get("jev_outcome") == "success")
-    selected_model = record.get("model") if successful_choice else None
-    selected_effort = record.get("effort") if successful_choice else None
+    # recommended_* is always Jev's direct Choice, also when the factor policy launched something else.
+    by_policy = reason == "policy"
+    selected_model = (record.get("choice_model") if by_policy else record.get("model")) if successful_choice else None
+    selected_effort = (record.get("choice_effort") if by_policy else record.get("effort")) if successful_choice else None
     submitted_model = record.get("actual_model")
     submitted_effort = record.get("actual_effort")
     selected_no_effort = successful_choice and record.get("selected_effort_supported") is False
@@ -484,7 +493,12 @@ def _points(cfg, record, duration):
     model_source = record.get("model_source")
     effort_source = record.get("effort_source")
     selected_model_name = model_name(selected_model)
-    submitted_model_name = model_name(submitted_model) if submitted_exact_choice else "unknown"
+    submitted_exact_choice = submitted_exact_choice or (
+        reason == "policy" and record.get("jev_outcome") == "success" and record.get("applied") is True
+        and isinstance(record.get("model"), str) and submitted_model == record.get("model"))
+    # A model the parent named explicitly is still the launched model of that project.
+    explicit_model = reason == "explicit" and model_source == "specified"
+    submitted_model_name = model_name(submitted_model) if submitted_exact_choice or explicit_model else "unknown"
     call = dict(labels, provider=provider, reason=reason, model=submitted_model_name,
                 plugin_version=_plugin_version(record.get("plugin_version")),
                 agent_version=_plugin_version(record.get("agent_version")), host=_host(record.get("host")),
@@ -552,6 +566,50 @@ def _points(cfg, record, duration):
                 points[_metric("jev_" + direction + "_known_token_requests_total", financial)] = 1.0
             else:
                 points[_metric("jev_" + direction + "_unknown_token_requests_total", financial)] = 1.0
+    for source in ("choice", "policy", "selected"):
+        if source == "policy":
+            info = record.get("policy") if isinstance(record.get("policy"), dict) else {}
+            ratio, rate, rated_model = info.get("price_ratio"), info.get("output_rate"), info.get("model")
+        else:
+            ratio, rate = record.get(source + "_price_ratio"), record.get(source + "_output_rate")
+            rated_model = record.get("choice_model" if source == "choice" else "model")
+        dims = dict(labels, source=source)
+        histogram("selection_price_ratio", ratio, dims, PRICE_RATIO_BUCKETS)
+        if _number(rate):
+            priced = dict(dims, model=model_name(rated_model))
+            points[_metric("selection_output_rate_usd_per_mtok_total", priced)] = float(rate)
+            points[_metric("selection_priced_total", priced)] = 1.0
+    policy = record.get("policy")
+    if isinstance(policy, dict) and attempted:
+        outcome = policy.get("outcome")
+        outcome = "success" if outcome == "success" else _enum(str(outcome).removeprefix("error:"),
+                                                              {"answers", "range", "options", "sum"})
+        success = outcome == "success"
+        level = policy.get("level") if success else None
+        effort = policy.get("effort")
+        points[_metric("policy_decisions_total", dict(
+            labels, provider=provider, policy=_enum(policy.get("policy"), {"factors_v1"}),
+            policy_mode=_enum(policy.get("mode"), {"shadow", "active"}), outcome=outcome,
+            level=str(level) if level in (1, 2, 3, 4) else "none",
+            model=model_name(policy.get("model")) if success and policy.get("model") else "none",
+            effort=_enum(effort, efforts) if success and effort is not None else "none",
+            rank_status=_enum(policy.get("rank_status"), {"met", "capped", "unranked"}, "none"),
+            agreement=_enum(policy.get("agreement"), {"identical", "same_model", "other_model",
+                                                      "policy_higher", "policy_lower"}),
+            applied="true" if reason == "policy" and record.get("applied") is True else "false"))] = 1.0
+        if success:
+            factors = policy.get("factors") if isinstance(policy.get("factors"), dict) else {}
+            for factor in POLICY_FACTORS:
+                value = factors.get(factor) if isinstance(factors.get(factor), dict) else {}
+                if value.get("level") in (0, 1, 2, 3):
+                    points[_metric("policy_factor_levels_total", dict(labels, factor=factor, level=str(value["level"])))] = 1.0
+                confidence = value.get("confidence")
+                if _number(confidence) and confidence <= 1:
+                    histogram("policy_factor_confidence", confidence, dict(labels, factor=factor), PROBABILITY_BUCKETS)
+            for adjustment in policy.get("adjustments") or ():
+                name = str(adjustment).replace(":", "_")
+                if name in POLICY_ADJUSTMENTS:
+                    points[_metric("policy_adjustments_total", dict(labels, adjustment=name))] = 1.0
     answers = record.get("answers")
     probs = answers.get("tier", {}) if isinstance(answers, dict) else {}
     if isinstance(probs, dict) and reason.startswith("rule:"):

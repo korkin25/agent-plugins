@@ -35,7 +35,7 @@ class DashboardTests(unittest.TestCase):
                 if panel['id'] == 10:
                     expected_name += ' / ${__field.labels.recommended_effort}'
                     self.assertIn('sum by(recommended_model,recommended_effort)', panel['targets'][0]['expr'])
-                    self.assertEqual(panel['targets'][0]['expr'].count('reason="choice",record_schema="direct"'), 2)
+                    self.assertEqual(panel['targets'][0]['expr'].count('reason=~"choice|policy",record_schema="direct"'), 2)
                 if panel['id'] == 11:
                     self.assertIn('sum by(model,effort,mode,applied)', panel['targets'][0]['expr'])
                     expected_name += ' / ${__field.labels.effort} · ${__field.labels.mode} · applied=${__field.labels.applied}'
@@ -146,7 +146,7 @@ class DashboardTests(unittest.TestCase):
                 dashboard.query_stats(self.cfg, project=project)
         def fetch(config, url, body=None):
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["query"][0]
-            if "smr_telemetry_" in query or "smr_openrouter_" in query or "smr_hook_version_" in query:
+            if "smr_telemetry_" in query or "smr_openrouter_" in query:
                 self.assertNotIn("project=", query)
             else:
                 self.assertIn('project="repo-one"', query)
@@ -349,17 +349,16 @@ class DashboardTests(unittest.TestCase):
             self.assertIn('smr_jev_requests_total', target['expr'])
             self.assertIn(' <= ', target['expr'])
 
-    def test_hook_versions_use_hook_time_not_export_and_ignore_project(self):
+    def test_hook_versions_use_hook_time_not_export_and_show_project(self):
         def respond(config, url, body=None):
             expression = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)['query'][0]
             if 'smr_hook_version_last_seen_timestamp_seconds' in expression:
-                self.assertNotIn('project=', expression)
-                for label in ('instance="unit-test"', 'user="dev"', 'agent="claude"'):
+                for label in ('instance="unit-test"', 'project="repo"', 'user="dev"', 'agent="claude"'):
                     self.assertIn(label, expression)
-                self.assertIn('max by (instance,host,user,agent,plugin_version,agent_version)', expression)
+                self.assertIn('max by (instance,host,user,agent,project,plugin_version,agent_version)', expression)
                 labels = dict(instance='unit-test', host='host-a', user='dev', agent='claude')
                 return answer([(dict(labels, plugin_version='9.0'), [1000, '100']),
-                               (dict(labels, plugin_version='1.0'), [1000, '200']),
+                               (dict(labels, plugin_version='1.0', project='repo'), [1000, '200']),
                                (dict(labels, host='host-b', plugin_version='2.0'), [1000, '150']),
                                (dict(labels, host='', plugin_version='3.0'), [1000, '950'])])
             if 'smr_calls_total' in expression and 'query_range' not in url:
@@ -376,8 +375,24 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(rows[2]['latest_observed'])
         self.assertEqual(data['summary']['hook_version_metadata_gaps'], 3)
         self.assertEqual(data['summary']['hook_version_mixed_reporters'], 1)
+        self.assertEqual([row['project'] for row in rows], ['repo', 'unknown', 'unknown'])
         self.assertIn('historical', dashboard.html_document(data))
-        self.assertIn('independent of project', dashboard.format_summary(data))
+        self.assertIn('<th>Client</th><th>Project</th>', dashboard.html_document(data))
+        self.assertIn('<td>claude</td><td>repo</td><td>1.0</td>', dashboard.html_document(data))
+        self.assertIn('host-a / dev / claude: project=repo; plugin=1.0', dashboard.format_summary(data))
+        self.assertIn('the project filter when one is set', dashboard.format_summary(data))
+        self.assertNotIn('independent of project', dashboard.format_summary(data))
+
+    def test_hook_version_latest_marks_version_pair_on_every_project(self):
+        labels = dict(instance='i', host='h', user='u', agent='codex', plugin_version='2.0')
+        rows = [{'labels': dict(labels, project='a'), 'points': [[1000, 900]]},
+                {'labels': dict(labels, project='b'), 'points': [[1000, 500]]},
+                {'labels': dict(labels, project='a', plugin_version='1.0'), 'points': [[1000, 400]]},
+                {'labels': dict(labels, project='bad"project'), 'points': [[1000, 300]]}]
+        result = dashboard.hook_versions(rows, 1000)
+        self.assertEqual([(r['project'], r['plugin_version'], r['latest_observed']) for r in result],
+                         [('a', '2.0', True), ('b', '2.0', True), ('a', '1.0', False), ('unknown', '2.0', True)])
+        self.assertEqual(dashboard.mixed_version_reporters(result), 1)
 
     def test_version_only_other_project_is_not_routing_data(self):
         def respond(config, url, body=None):
@@ -410,6 +425,133 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('plugin=0.4.8; client=unknown', dashboard.format_summary(data))
         self.assertIn('<th>Client version</th>', dashboard.html_document(data))
         self.assertIn('0.121.0', dashboard.html_document(data))
+
+    def policy_respond(self, overrides=None, failing=()):
+        rows = {
+            'smr_calls_total': [
+                ({'project': 'repo-a', 'model': 'gpt-6-astra', 'recommended_model': 'gpt-6-astra', 'reason': 'choice', 'record_schema': 'direct'}, [1000, '5']),
+                ({'project': 'repo-a', 'model': 'unknown', 'recommended_model': 'gpt-6-nova', 'reason': 'choice', 'record_schema': 'direct'}, [1000, '2']),
+                ({'project': 'repo-b', 'model': '<b>evil</b>', 'recommended_model': 'unknown', 'reason': 'explicit', 'record_schema': 'direct'}, [1000, '3']),
+                ({'project': '<i>proj</i>', 'model': 'gpt-6-nova', 'recommended_model': 'gpt-6-luna', 'reason': 'policy', 'record_schema': 'direct'}, [1000, '1']),
+                ({'project': 'repo-b', 'model': 'gpt-6-luna', 'recommended_model': 'unknown', 'reason': 'policy', 'record_schema': 'direct'}, [1000, '0'])],
+            'sum by (outcome)': [({'outcome': 'success'}, [1000, '8']), ({'outcome': 'range'}, [1000, '2'])],
+            'sum by (agreement)': [({'agreement': 'identical'}, [1000, '5']), ({'agreement': 'policy_lower'}, [1000, '3']),
+                                   ({'agreement': '<script>x</script>'}, [1000, '2'])],
+            'sum by (level)': [({'level': '2'}, [1000, '6']), ({'level': '4'}, [1000, '2']), ({'level': 'none'}, [1000, '2'])],
+            'sum by (model)': [({'model': 'gpt-6-astra'}, [1000, '6']), ({'model': 'none'}, [1000, '4'])],
+            'sum by (adjustment)': [({'adjustment': 'impact_floor'}, [1000, '3'])],
+            'smr_selection_output_rate_usd_per_mtok_total': [({'source': 'choice'}, [1000, '40']), ({'source': 'policy'}, [1000, '10']),
+                                                             ({'source': 'selected'}, [1000, 'NaN'])],
+            'smr_selection_priced_total': [({'source': 'choice'}, [1000, '4']), ({'source': 'policy'}, [1000, '5']),
+                                           ({'source': 'selected'}, [1000, '4'])],
+        }
+        rows.update(overrides or {})
+        captured = []
+        def respond(config, url, body=None):
+            expression = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)['query'][0]
+            captured.append(expression)
+            if 'query_range' in url:
+                return answer([], True)
+            for marker in failing:
+                if marker in expression:
+                    raise RuntimeError('unavailable')
+            if 'smr_calls_total' in expression and expression.startswith('sum by (host'):
+                return answer(rows['smr_calls_total'])
+            if 'smr_policy_' in expression or 'smr_selection_' in expression:
+                for marker, value in rows.items():
+                    if marker in expression:
+                        return answer(value)
+            return answer([])
+        return respond, captured
+
+    def test_models_by_project_and_policy_summary(self):
+        respond, captured = self.policy_respond()
+        with mock.patch.object(dashboard, 'request', side_effect=respond), mock.patch.object(dashboard.time, 'time', return_value=1000):
+            data = dashboard.query_stats(self.cfg, project='repo-a')
+        self.assertLessEqual(len(captured), 32)
+        for metric in ('smr_policy_decisions_total', 'smr_policy_adjustments_total',
+                       'smr_selection_output_rate_usd_per_mtok_total', 'smr_selection_priced_total'):
+            expressions = [e for e in captured if metric in e]
+            self.assertTrue(expressions, metric)
+            for expression in expressions:
+                self.assertIn('project="repo-a"', expression)
+                self.assertIn('increase(', expression)
+        s = data['summary']
+        self.assertEqual(s['models_by_project'], [
+            {'project': '<i>proj</i>', 'model': 'gpt-6-nova', 'calls': 1},
+            {'project': 'repo-a', 'model': 'gpt-6-astra', 'calls': 5},
+            {'project': 'repo-b', 'model': '<b>evil</b>', 'calls': 3}])
+        # Policy launches keep Jev's Choice in recommended_model.
+        self.assertEqual(s['recommended_by_project'], [
+            {'project': '<i>proj</i>', 'model': 'gpt-6-luna', 'calls': 1},
+            {'project': 'repo-a', 'model': 'gpt-6-astra', 'calls': 5},
+            {'project': 'repo-a', 'model': 'gpt-6-nova', 'calls': 2}])
+        policy = s['policy']
+        self.assertEqual(policy['decisions'], 10)
+        self.assertEqual(policy['outcome_errors'], 2)
+        self.assertEqual(policy['outcome_error_share'], .2)
+        self.assertEqual(policy['by_agreement']['policy_lower'], 3)
+        self.assertEqual(policy['by_level'], {'2': 6, '4': 2, 'none': 2})
+        self.assertEqual(policy['by_model'], {'gpt-6-astra': 6, 'none': 4})
+        self.assertEqual(policy['adjustments'], {'impact_floor': 3})
+        self.assertEqual(policy['adjustments_total'], 3)
+        self.assertEqual(policy['average_output_usd_per_mtok'], {'choice': 10, 'policy': 2, 'selected': None})
+        self.assertEqual(policy['priced_calls'], {'choice': 4, 'policy': 5, 'selected': 4})
+        text = dashboard.format_summary(data)
+        self.assertIn('repo-a · gpt-6-nova: - / 2', text)
+        self.assertIn('repo-a · gpt-6-astra: 5 / 5', text)
+        self.assertIn('Factor policy · level: 2 standard 6, 4 frontier 2, none 2', text)
+        self.assertIn('Factor policy · average output price per call · Jev Choice: $10.000/Mtok over 4 priced calls', text)
+        self.assertIn('Factor policy · average output price per call · selected for launch: No data', text)
+        json.dumps(data)
+
+    def test_new_report_labels_are_escaped_in_html(self):
+        respond, _ = self.policy_respond()
+        with mock.patch.object(dashboard, 'request', side_effect=respond), mock.patch.object(dashboard.time, 'time', return_value=1000):
+            document = dashboard.html_document(dashboard.query_stats(self.cfg))
+        for raw in ('<b>evil</b>', '<i>proj</i>', '<script>x</script>'):
+            self.assertNotIn(raw, document)
+        self.assertIn('&lt;b&gt;evil&lt;/b&gt;', document)
+        self.assertIn('&lt;i&gt;proj&lt;/i&gt;', document)
+        self.assertIn('&lt;script&gt;x&lt;/script&gt;', document)
+        self.assertIn('<h2>Models by project</h2>', document)
+        self.assertIn('<h2>Factor policy</h2>', document)
+        self.assertIn('<td>repo-a</td><td>gpt-6-nova</td><td>-</td><td>2</td>', document)
+
+    def test_policy_unknown_empty_and_zero_are_distinct(self):
+        respond, _ = self.policy_respond(failing=('sum by (agreement)', 'smr_selection_priced_total', 'sum by (host'))
+        with mock.patch.object(dashboard, 'request', side_effect=respond), mock.patch.object(dashboard.time, 'time', return_value=1000):
+            data = dashboard.query_stats(self.cfg)
+        policy = data['summary']['policy']
+        self.assertEqual(data['status'], 'partial')
+        self.assertIsNone(policy['by_agreement'])
+        self.assertEqual(policy['average_output_usd_per_mtok'], {'choice': None, 'policy': None, 'selected': None})
+        self.assertIsNone(data['summary']['models_by_project'])
+        self.assertIn('No data', dashboard.format_summary(data))
+        self.assertIn('Factor policy · agreement with Jev Choice: No data', dashboard.format_summary(data))
+        # Observed successes with no adjustment counter: an observed zero.
+        respond, _ = self.policy_respond({'sum by (outcome)': [({'outcome': 'success'}, [1000, '4'])],
+                                          'sum by (adjustment)': [],
+                                          'sum by (level)': []})
+        with mock.patch.object(dashboard, 'request', side_effect=respond), mock.patch.object(dashboard.time, 'time', return_value=1000):
+            data = dashboard.query_stats(self.cfg)
+        policy = data['summary']['policy']
+        self.assertEqual(policy['outcome_errors'], 0)
+        self.assertEqual(policy['adjustments_total'], 0)
+        self.assertEqual(policy['by_level'], {})
+        self.assertIn('Factor policy · level: None observed', dashboard.format_summary(data))
+        self.assertIn('Factor policy · adjustments: 0', dashboard.format_summary(data))
+        # Nothing observed at all: every total stays unknown, never zero.
+        def empty(config, url, body=None):
+            return answer([], 'query_range' in url)
+        with mock.patch.object(dashboard, 'request', side_effect=empty):
+            data = dashboard.query_stats(self.cfg)
+        policy = data['summary']['policy']
+        for key in ('decisions', 'outcome_errors', 'outcome_error_share', 'adjustments_total'):
+            self.assertIsNone(policy[key], key)
+        self.assertEqual(policy['by_outcome'], {})
+        self.assertEqual(data['summary']['models_by_project'], [])
+        self.assertIn('Factor policy · decisions · window: No data', dashboard.format_summary(data))
 
     def test_fresh_account_snapshot_beats_higher_stale_balance(self):
         def respond(config, url, body=None):
@@ -453,6 +595,10 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('user=~"$user"', project["definition"])
         self.assertTrue(any(v["name"] == "user" for v in doc["templating"]["list"]))
         for panel in doc["panels"]:
+            if panel["type"] == "row":
+                self.assertFalse(panel.get("targets"))
+                self.assertFalse(panel["collapsed"])
+                continue
             for target in panel.get("targets", []):
                 if 'smr_openrouter_' in target['expr']:
                     self.assertIn('account=~"$account"', target['expr'])
@@ -467,9 +613,10 @@ class DashboardTests(unittest.TestCase):
                 self.assertIn('instance=~"$instance"', target["expr"])
                 if "smr_hook_version_" in target["expr"]:
                     self.assertIn('plugin_version,agent_version)', target['expr'])
+                    self.assertIn('user,project,agent,', target['expr'])
                     self.assertIn('agent=~"$agent"', target["expr"])
                     self.assertIn('user=~"$user"', target["expr"])
-                    self.assertNotIn('$project', target["expr"])
+                    self.assertIn('project=~"$project"', target["expr"])
                     continue
                 if "smr_telemetry_" not in target["expr"]:
                     self.assertIn('agent=~"$agent"', target["expr"])

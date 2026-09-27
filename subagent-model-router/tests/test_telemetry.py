@@ -551,14 +551,67 @@ finally:
         self.assertIn('agent_version="unknown"', unknown)
         self.assertIn('host="unknown"', unknown)
 
+    def test_factor_policy_price_and_project_model_points(self):
+        record = dict(self.record, reason="choice", jev_attempted=True, jev_outcome="success", project="proj-a",
+                      user="tester", model="gpt-5.5", effort="high", applied=True, actual_model="gpt-5.5",
+                      actual_effort="high", model_source="updated_input", effort_source="updated_input",
+                      choice_model="gpt-5.5", choice_output_rate=10.0, choice_price_ratio=2.0,
+                      selected_output_rate=10.0, selected_price_ratio=2.0,
+                      policy={"policy": "factors_v1", "mode": "shadow", "outcome": "success", "level": 3,
+                              "model": "gpt-5.6-terra", "effort": "xhigh", "rank_status": "met",
+                              "agreement": "policy_higher", "output_rate": 20.0, "price_ratio": 4.0,
+                              "adjustments": ["impact_floor", "confidence_raise:reasoning", "bogus"],
+                              "factors": {"reasoning": {"level": 2, "confidence": .9},
+                                          "impact": {"level": 2, "confidence": .7}, "review": {"noul": .1}}})
+        points = telemetry._points(self.cfg, record, .2)
+        base = dict(agent="codex", instance="test", project="proj-a", user="tester")
+        metric = lambda name, **labels: telemetry._metric(name, dict(base, **labels))
+        decision = next(name for name in points if name.startswith("smr_policy_decisions_total{"))
+        for part in ('level="3"', 'model="gpt-5.6-terra"', 'effort="xhigh"', 'agreement="policy_higher"',
+                     'policy_mode="shadow"', 'applied="false"', 'outcome="success"', 'project="proj-a"'):
+            self.assertIn(part, decision)
+        self.assertIn(metric("policy_factor_levels_total", factor="reasoning", level="2"), points)
+        self.assertIn(metric("policy_adjustments_total", adjustment="impact_floor"), points)
+        self.assertIn(metric("policy_adjustments_total", adjustment="confidence_raise_reasoning"), points)
+        self.assertFalse(any("bogus" in name for name in points))
+        self.assertEqual(points[metric("selection_output_rate_usd_per_mtok_total", model="gpt-5.6-terra", source="policy")], 20.0)
+        self.assertEqual(points[metric("selection_price_ratio_sum", source="choice")], 2.0)
+        call = next(name for name in points if name.startswith("smr_calls_total{"))
+        self.assertIn('model="gpt-5.5"', call)
+        self.assertIn('project="proj-a"', call)
+        failed = telemetry._points(self.cfg, dict(record, policy={"policy": "factors_v1", "mode": "shadow",
+                                                               "outcome": "error:answers"}), .2)
+        decision = next(name for name in failed if name.startswith("smr_policy_decisions_total{"))
+        self.assertIn('outcome="answers"', decision)
+        self.assertIn('level="none"', decision)
+        self.assertFalse(any(name.startswith("smr_policy_factor_levels_total") for name in failed))
+
+    def test_explicit_and_policy_launches_label_the_launched_model(self):
+        explicit = telemetry._points(self.cfg, dict(self.record, reason="explicit", jev_attempted=False,
+                                                    applied=False, actual_model="opus", model_source="specified"), .2)
+        self.assertIn('model="opus"', next(n for n in explicit if n.startswith("smr_calls_total{")))
+        policy = telemetry._points(self.cfg, dict(self.record, reason="policy", jev_attempted=True, jev_outcome="success",
+                                                  applied=True, model="gpt-5.6-terra", actual_model="gpt-5.6-terra",
+                                                  model_source="updated_input"), .2)
+        self.assertIn('model="gpt-5.6-terra"', next(n for n in policy if n.startswith("smr_calls_total{")))
+        self.assertIn('reason="policy"', next(n for n in policy if n.startswith("smr_calls_total{")))
+        chosen = telemetry._points(self.cfg, dict(self.record, reason="policy", jev_attempted=True, jev_outcome="success",
+                                                  applied=True, model="gpt-5.6-terra", actual_model="gpt-5.6-terra",
+                                                  model_source="updated_input", choice_model="gpt-5.5",
+                                                  choice_effort="low"), .2)
+        call = next(n for n in chosen if n.startswith("smr_calls_total{"))
+        self.assertIn('recommended_model="gpt-5.5"', call)
+        self.assertIn('recommended_effort="low"', call)
+        self.assertIn('model="gpt-5.6-terra"', call)
+
     def test_version_last_seen_gauge_is_persistent_and_uses_observation_time(self):
         self.record.update(plugin_version="1.2.3", agent_version="0.157.0", host="router-host", user="tester",
                            ts="2026-09-26T01:02:03Z")
         with mock.patch.object(telemetry.time, "time", return_value=9999999999):
             self.assertTrue(self.enqueue())
         name = telemetry._metric("hook_version_last_seen_timestamp_seconds", dict(
-            instance="test", host="router-host", user="tester", agent="codex", plugin_version="1.2.3",
-            agent_version="0.157.0"))
+            instance="test", host="router-host", user="tester", project=self.record.get("project") or "unknown",
+            agent="codex", plugin_version="1.2.3", agent_version="0.157.0"))
         self.assertEqual(self.balance_rows()[name], 1790384523)
         db = self.connection()
         try:

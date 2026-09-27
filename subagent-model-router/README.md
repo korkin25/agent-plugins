@@ -8,8 +8,9 @@ Claude Code and in Codex — while your main session stays on the model you pick
 Version 0.5.0 asks Jev to choose **one concrete model and effort candidate** for each eligible task.
 The `PreToolUse` hook watches `Agent` in Claude Code and `spawn_agent` in Codex
 (`collaborationspawn_agent` under multi-agent v2). Jev receives the available candidates and the filtered
-full task, then selects the pair directly. There are no task tiers, risk/review classifiers, probability
-thresholds or parent-model lookups.
+full task, then selects the pair directly, without parent-model lookups. Version 0.6.0 adds a separate,
+code-owned factor policy in the same request (see [Factor policy](#factor-policy-060)); by default it only
+records its recommendation next to the Choice.
 
 - **Codex:** candidates come from the cached native catalog of the client that runs the session.
   Only visible models and their supported efforts are offered, with the client's model-purpose and effort
@@ -96,6 +97,32 @@ context and future output remain unknown. Standard and long-context input estima
 the full request's context band is unknown. These estimates do not replace Jev's reported usage or charges.
 No extra API request or parent-model call is made to calculate them.
 
+### Factor policy (0.6.0)
+
+Version 0.6.0 adds a second, code-owned decision next to the direct Choice, following the
+[TypeSafe guidance](https://docs.typesafe.ai/primitives) to ask one snap judgment per question and combine
+answers in code. The same Jev request (one call, no extra latency worth mentioning) also carries eight atomic
+questions about the task only: kind of reasoning, completeness of the specification, how a wrong result would
+be caught, scope, error impact, whether it is an independent review, review depth, and whether an earlier
+attempt failed. Prices, catalogues and model names are not part of these questions.
+
+Code then derives a required capability level (1 light, 2 standard, 3 strong, 4 frontier):
+
+- the maximum of the warning signals — reasoning kind, error impact, substantive review — so one strong signal
+  is never averaged away; security or concurrency across several components is frontier;
+- one step down when automated checks will catch a mistake and the task is fully specified (both answered
+  confidently) and the impact is harmless; one step up when an earlier attempt failed;
+- a Score answered with low confidence counts as its upper adjacent level; the threshold is stricter for
+  high-impact tasks (`policy.min_confidence`, `policy.strict_confidence`).
+
+The model is the cheapest one whose owner-configured `capability_rank` meets the level (Claude default:
+haiku 1, sonnet 2, opus 3, fable 4; Codex has no default ranks), priced from the same standard-API references;
+unknown prices sort after known ones. Effort follows the reasoning kind and specification, clamped to what the
+model supports. `policy.mode = "shadow"` (default) records the recommendation and its agreement with the Choice
+without touching the launch; `active` launches the policy pick (`reason="policy"`); `off` omits the questions.
+Missing or malformed factor answers only disable the policy for that call; the Choice still decides.
+`explain` prints both decisions; `check` prints the policy mode and ranks.
+
 ### Model notice before launch
 
 After a valid choice, synchronous `PreToolUse` emits a user-facing `systemMessage` in both clients:
@@ -103,6 +130,7 @@ After a valid choice, synchronous `PreToolUse` emits a user-facing `systemMessag
 ```text
 subagent-model-router: "find_readme" — selected for launch: model=haiku; choice
 subagent-model-router: "list_toml" — selected for launch: model=gpt-5.6-luna, effort=low; choice
+subagent-model-router: "fix_login" — selected for launch: model=sonnet, effort=low; choice; factor policy (shadow): level 3, model=opus, effort=xhigh
 ```
 
 The notice describes selected launch parameters, not successful execution. Shadow mode labels the choice

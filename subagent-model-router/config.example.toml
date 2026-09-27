@@ -17,17 +17,31 @@ timeout_seconds = 3          # for the whole Jev request, one retry included (at
 
 # Removed settings (thresholds, tier model/effort tables, observe_transcript_model)
 # are ignored when migrating; check reports a warning. Delete them from your config.
+# Factor policy (0.6.0). The same Jev request also asks atomic Score/Noul questions about the task
+# (reasoning, spec, verification, scope, impact, review, review depth, prior failure); code turns them into a
+# required capability level 1-4 and picks the cheapest ranked model that meets it. Prices never reach Jev.
+# An invalid [policy] or capability_rank disables only the factor policy; routing keeps working.
+[policy]
+mode = "shadow"             # off — do not ask; shadow — record and compare with the Choice; active — launch its pick
+min_confidence = 0.6        # below this a Score counts as its upper adjacent level (asymmetric toward capability)
+strict_confidence = 0.8     # the same threshold when the task's error impact is high
+review_threshold = 0.5      # review Noul at or above this makes review depth count
+prior_failure_threshold = 0.5  # "earlier attempt failed" at or above this raises the level one step
+
 [claude]
 route_types = ["general-purpose"]
 allowed_models = []         # [] = supported Agent aliases present in native SDK model catalogue
 efforts = []                # [] = every level the native catalogue reports for each model
 # Supported aliases: haiku, sonnet, opus, fable. No-effort models retain effort=null.
+# capability_rank = { haiku = 1, sonnet = 2, opus = 3, fable = 4 }   # default; 1 light … 4 frontier
 # check refreshes metadata without a model turn; Agent hooks read cache and refresh in background.
 
 [codex]
 route_agent_types = ["", "default", "worker"]
 allowed_models = []                 # optional allowlist; [] = every model in the actual binary's catalog
 # Every supported reasoning effort for each allowed model is offered directly to Jev.
+# capability_rank = { "gpt-5.6-luna" = 1, "gpt-5.5" = 2, "gpt-5.6-terra" = 3 }  # none by default: the factor
+#                                                     # policy then records the level but recommends no model
 
 # Optional monitoring, shared by Claude Code and Codex. No telemetry network I/O in the hook.
 # With victoriametrics the JSONL journal is no longer appended; existing files are not deleted.

@@ -16,11 +16,14 @@ from pathlib import Path
 import time
 import urllib.parse
 
-from router_telemetry import request, validate_config
+from router_telemetry import POLICY_ADJUSTMENTS, request, validate_config
 
 MAX_SERIES = 120
 MAX_POINTS = 241
 COLORS = ("#73a7ff", "#52d6b0", "#bd95ff", "#ffbc66", "#ff7d98", "#5ed4ed")
+PRICE_SOURCES = ("choice", "policy", "selected")
+POLICY_LEVELS = {"1": "light", "2": "standard", "3": "strong", "4": "frontier"}
+_LABEL_RE = re.compile(r"[A-Za-z0-9_.:-]{1,80}")
 
 
 def _number(value):
@@ -87,23 +90,35 @@ def _agent_version(value):
         r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?", value) else "unknown"
 
 
+def _project_label(value):
+    """A hook's reported project cohort; older series without the label stay unknown."""
+    return value if isinstance(value, str) and _LABEL_RE.fullmatch(value) and value != "unknown" else "unknown"
+
+
 def hook_versions(rows, end):
-    """Last hook time is the gauge value, never its heartbeat/export timestamp."""
+    """Last hook time is the gauge value, never its heartbeat/export timestamp.
+
+    A reporter is instance/host/user/client; the project is the cohort that hook
+    reported. "Latest observed" marks the version pair of the reporter's most
+    recent hook, on every project row where that pair was seen.
+    """
     observed = {}
     for row in rows:
         labels, stamp = row["labels"], _value(row)
         if not _reporter_labels(labels) or stamp is None or not 0 < stamp <= end:
             continue
-        identity = tuple(labels.get(key, "unknown") for key in ("instance", "host", "user", "agent", "plugin_version")) + (_agent_version(labels.get("agent_version")),)
+        identity = (tuple(labels.get(key, "unknown") for key in ("instance", "host", "user", "agent", "plugin_version"))
+                    + (_agent_version(labels.get("agent_version")), _project_label(labels.get("project"))))
         observed[identity] = max(stamp, observed.get(identity, 0))
     latest = {}
     for identity, stamp in observed.items():
-        latest[identity[:4]] = max(stamp, latest.get(identity[:4], 0))
+        if stamp > latest.get(identity[:4], (0, None))[0]:
+            latest[identity[:4]] = (stamp, identity[4:6])
     result = []
     for identity, stamp in sorted(observed.items(), key=lambda item: (item[0][:4], -item[1], item[0][4:])):
-        result.append(dict(zip(("instance", "host", "user", "agent", "plugin_version", "agent_version"), identity),
+        result.append(dict(zip(("instance", "host", "user", "agent", "plugin_version", "agent_version", "project"), identity),
                            last_seen_timestamp=stamp, age_seconds=end - stamp,
-                           latest_observed=stamp == latest[identity[:4]]))
+                           latest_observed=identity[4:6] == latest[identity[:4]][1]))
     return result
 
 
@@ -115,7 +130,63 @@ def mixed_version_reporters(rows):
     return sum(len(values) > 1 for values in versions.values()) if rows else None
 
 
-VERSION_NOTE = ("Observed hook versions within instance/user/client filters, independent of project. "
+def _grouped(rows, label):
+    """Window totals by one label; NaN samples are gaps, not zero."""
+    counts = {}
+    for row in rows:
+        value = _value(row)
+        if value is not None and value >= 0:
+            name = row["labels"].get(label) or "unknown"
+            counts[name] = counts.get(name, 0.0) + value
+    return counts
+
+
+def project_models(rows, label, keep):
+    """[{project, model, calls}] for observed (non-unknown) models with calls in the window."""
+    totals = {}
+    for row in rows:
+        labels, value = row["labels"], _value(row)
+        model = labels.get(label) or "unknown"
+        if model == "unknown" or value is None or value <= 0 or not keep(labels):
+            continue
+        key = (labels.get("project") or "unknown", model)
+        totals[key] = totals.get(key, 0.0) + value
+    return [{"project": project, "model": model, "calls": calls}
+            for (project, model), calls in sorted(totals.items(), key=lambda item: (item[0][0], -item[1], item[0][1]))]
+
+
+def policy_summary(outcome, agreement, level, model, adjustments, output_rate, priced):
+    """Factor-policy view from window counts; each argument is a dict or None (unknown).
+
+    None means the source was unavailable; an empty dict means no observations.
+    Totals stay None without observations and are never filled with zero.
+    """
+    decisions = sum(outcome.values()) if outcome else None
+    failures = sum(v for k, v in outcome.items() if k != "success") if outcome else None
+    successes = outcome.get("success", 0) if outcome else 0
+    if adjustments is None:
+        adjustments_total = None
+    elif adjustments:
+        adjustments_total = sum(adjustments.values())
+    else:
+        # Adjustments are recorded only for successful decisions; with those
+        # observed, an absent adjustment counter is an observed zero.
+        adjustments_total = 0.0 if successes > 0 else None
+    average, priced_calls = {}, {}
+    for source in PRICE_SOURCES:
+        count = priced.get(source) if priced is not None else None
+        total = output_rate.get(source) if output_rate is not None else None
+        priced_calls[source] = count if count else None
+        average[source] = total / count if count and total is not None else None
+    return {"decisions": decisions, "outcome_errors": failures,
+            "outcome_error_share": failures / decisions if decisions and failures is not None else None,
+            "by_outcome": outcome, "by_agreement": agreement, "by_level": level, "by_model": model,
+            "adjustments": adjustments, "adjustments_total": adjustments_total,
+            "average_output_usd_per_mtok": average, "priced_calls": priced_calls}
+
+
+VERSION_NOTE = ("Observed hook versions within instance/user/client filters and the project filter when one is set. "
+                "Each row shows the project the hook reported; series from releases without a project label show unknown. "
                 "Plugin version and invoking Claude Code/Codex client version are separate from the model; missing client versions remain unknown. "
                 "Latest means most recent hook timestamp per reporter, not newest release. Historical versions remain visible. "
                 "This is not an installed-version inventory; idle or unreported installations are unknown.")
@@ -179,7 +250,10 @@ def query_stats(cfg, days=7, project=None, user=None, agent=None, account=None):
     if agent is not None:
         selector = selector[:-1] + ",agent=" + json.dumps(agent) + "}"
     version_selector = health_selector
-    for key, value in (("user", user), ("agent", agent)):
+    # Hook-version rows now carry the reporting project, so the project filter
+    # applies too; series from releases without that label drop out of a
+    # project-filtered view rather than being attributed to it.
+    for key, value in (("project", project), ("user", user), ("agent", agent)):
         if value is not None:
             version_selector = version_selector[:-1] + "," + key + "=" + json.dumps(value) + "}"
     window = str(days * 86400) + "s"
@@ -188,12 +262,12 @@ def query_stats(cfg, days=7, project=None, user=None, agent=None, account=None):
         return "increase(" + metric + selector + "[" + span + "])"
     queries = {
         "calls": (False, "sum by (host,plugin_version,agent_version,user,project,agent,mode,reason,model,effort,recommended_model,recommended_effort,model_source,effort_source,record_schema,applied) (" + inc("smr_calls_total") + ")"),
-        "hook_versions": (False, "max by (instance,host,user,agent,plugin_version,agent_version) (last_over_time(smr_hook_version_last_seen_timestamp_seconds" + version_selector + "[" + window + "]))"),
+        "hook_versions": (False, "max by (instance,host,user,agent,project,plugin_version,agent_version) (last_over_time(smr_hook_version_last_seen_timestamp_seconds" + version_selector + "[" + window + "]))"),
         "requests": (False, "sum by (outcome) (" + inc("smr_jev_requests_total") + ")"),
         "jev_buckets": (False, "sum by (le) (" + inc("smr_jev_request_duration_seconds_bucket") + ")"),
         "hook_buckets": (False, "sum by (le) (" + inc("smr_hook_duration_seconds_bucket") + ")"),
         "request_rate": (True, "sum by (outcome) (rate(smr_jev_requests_total" + selector + "[" + lookback + "]))"),
-        "model_rate": (True, "sum by (recommended_model,recommended_effort) (rate(smr_calls_total" + selector[:-1] + ',reason="choice",record_schema="direct"}[' + lookback + "]))"),
+        "model_rate": (True, "sum by (recommended_model,recommended_effort) (rate(smr_calls_total" + selector[:-1] + ',reason=~"choice|policy",record_schema="direct"}[' + lookback + "]))"),
         "latency_p95": (True, "histogram_quantile(0.95, sum by (le) (rate(smr_jev_request_duration_seconds_bucket" + selector + "[" + lookback + "])))"),
         "pending_events": (False, "sum(last_over_time(smr_telemetry_pending_events" + health_selector + "[" + window + "]))"),
         "coalesced_events": (False, "sum(last_over_time(smr_telemetry_coalesced_events_total" + health_selector + "[" + window + "]))"),
@@ -204,6 +278,15 @@ def query_stats(cfg, days=7, project=None, user=None, agent=None, account=None):
         "jev_unpriced_requests": (False, "sum(" + inc("smr_jev_unpriced_requests_total") + ")"),
         "jev_cost_rate": (True, "3600 * sum(rate(smr_jev_cost_usd_total" + selector + "[" + lookback + "]))"),
         "jev_cost_rate_current": (False, "3600 * sum(rate(smr_jev_cost_usd_total" + selector + "[" + lookback + "]))"),
+        # Factor policy: one bounded grouping per dimension instead of the full
+        # label product, which could exceed the per-query series limit.
+        "policy_outcome": (False, "sum by (outcome) (" + inc("smr_policy_decisions_total") + ")"),
+        "policy_agreement": (False, "sum by (agreement) (" + inc("smr_policy_decisions_total") + ")"),
+        "policy_level": (False, "sum by (level) (" + inc("smr_policy_decisions_total") + ")"),
+        "policy_model": (False, "sum by (model) (" + inc("smr_policy_decisions_total") + ")"),
+        "policy_adjustments": (False, "sum by (adjustment) (" + inc("smr_policy_adjustments_total") + ")"),
+        "selection_output_rate": (False, "sum by (source) (" + inc("smr_selection_output_rate_usd_per_mtok_total") + ")"),
+        "selection_priced": (False, "sum by (source) (" + inc("smr_selection_priced_total") + ")"),
     }
     observation_metrics = ["jev_" + direction + suffix for direction in ("input", "output")
                            for suffix in ("_tokens", "_known_token_requests", "_unknown_token_requests")]
@@ -327,6 +410,18 @@ def query_stats(cfg, days=7, project=None, user=None, agent=None, account=None):
                 name = row["labels"].get(label) or "unknown"
                 counts[name] = counts.get(name, 0.0) + value
         summary["by_" + label] = counts
+    calls_unknown = "calls" in errors
+    summary["models_by_project"] = None if calls_unknown else project_models(
+        data["calls"], "model", lambda labels: True)
+    summary["recommended_by_project"] = None if calls_unknown else project_models(
+        data["calls"], "recommended_model", _is_direct_choice)
+    def grouped(name, label):
+        return None if name in errors else _grouped(data[name], label)
+    summary["policy"] = policy_summary(
+        grouped("policy_outcome", "outcome"), grouped("policy_agreement", "agreement"),
+        grouped("policy_level", "level"), grouped("policy_model", "model"),
+        grouped("policy_adjustments", "adjustment"),
+        grouped("selection_output_rate", "source"), grouped("selection_priced", "source"))
     has_data = any(point[1] is not None for name, rows in data.items()
                    if name not in ("pending_events", "coalesced_events", "dropped_events", "last_delivery", "account_values", "account_health", "hook_versions")
                    for row in rows for point in row["points"])
@@ -373,12 +468,19 @@ def format_summary(data):
                  "; dropped lifetime " + _fmt(data["summary"]["dropped_events"]) +
                  "; delivery age " + _fmt(data["summary"]["last_delivery_age_seconds"], "s"))
     lines.extend(title + ": " + value for title, value in money_rows(data["summary"]))
+    lines.append("Models by project (launched / Jev recommended; - = none observed):")
+    table = project_model_rows(data["summary"])
+    lines.extend("  " + project + " · " + model + ": " + launched + " / " + recommended
+                 for project, model, launched, recommended in table)
+    if not table:
+        lines.append("  No data")
+    lines.extend("Factor policy · " + title + ": " + value for title, value in policy_rows(data["summary"]))
     lines.append(VERSION_NOTE)
     lines.append("Reporters with multiple observed versions: " + _fmt(data["summary"].get("hook_version_mixed_reporters")))
     lines.append("Calls with missing reporter metadata (routing filters): " + _fmt(data["summary"].get("hook_version_metadata_gaps")))
     for row in data["summary"].get("hook_versions", []):
         lines.append(" / ".join(row[key] for key in ("instance", "host", "user", "agent")) +
-                     ": plugin=" + row["plugin_version"] + "; client=" + row["agent_version"] + "; " +
+                     ": project=" + row.get("project", "unknown") + "; plugin=" + row["plugin_version"] + "; client=" + row["agent_version"] + "; " +
                      _fmt(row["age_seconds"], "s") + " ago; " + ("latest observed" if row["latest_observed"] else "historical"))
     lines.append(data["note"])
     return "\n".join(lines)
@@ -406,6 +508,50 @@ def money_rows(summary):
             success = values.get(scope + "_balance_probe_success")
             state = "failed" if success == 0 else "success" if success == 1 else "No data"
             rows.append((alias + " · " + scope + " latest probe / snapshot age", state + " / " + _fmt(values.get(scope + "_age_seconds"), "s")))
+    return rows
+
+
+def project_model_rows(summary):
+    """[(project, model, launched, recommended)] as display strings; unknown stays explicit."""
+    sources = [summary.get("models_by_project"), summary.get("recommended_by_project")]
+    cells = {}
+    for index, rows in enumerate(sources):
+        for row in rows or ():
+            cells.setdefault((row["project"], row["model"]), [None, None])[index] = row["calls"]
+    def cell(index, value):
+        if value is not None:
+            return _fmt(value)
+        return "No data" if sources[index] is None else "-"
+    return [(project, model, cell(0, values[0]), cell(1, values[1]))
+            for (project, model), values in sorted(cells.items(), key=lambda item: (item[0][0], -sum(v or 0 for v in item[1]), item[0][1]))]
+
+
+def _counts_text(counts, names=None):
+    if counts is None:
+        return "No data"
+    if not counts:
+        return "None observed"
+    return ", ".join((names or {}).get(name, name) + " " + _fmt(count)
+                     for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:10])
+
+
+def policy_rows(summary):
+    """Factor policy next to the Jev Choice; unavailable and unobserved stay distinct from zero."""
+    policy = summary.get("policy") or {}
+    levels = {key: key + " " + value for key, value in POLICY_LEVELS.items()}
+    rows = [("decisions · window", _fmt(policy.get("decisions"))),
+            ("outcome errors", _fmt(policy.get("outcome_errors")) + " (" + _fmt(policy.get("outcome_error_share"), "%") + ")"),
+            ("agreement with Jev Choice", _counts_text(policy.get("by_agreement"))),
+            ("level", _counts_text(policy.get("by_level"), levels)),
+            ("policy model", _counts_text(policy.get("by_model"))),
+            ("adjustments", _fmt(policy.get("adjustments_total")) + (
+                "; " + _counts_text(policy.get("adjustments")) if policy.get("adjustments") else ""))]
+    average = policy.get("average_output_usd_per_mtok") or {}
+    priced = policy.get("priced_calls") or {}
+    for source, title in (("choice", "Jev Choice"), ("policy", "policy"), ("selected", "selected for launch")):
+        value = average.get(source)
+        rows.append(("average output price per call · " + title,
+                     "No data" if value is None else f"${value:,.3f}/Mtok over {_fmt(priced.get(source))} priced calls"))
     return rows
 
 
@@ -453,7 +599,7 @@ def _chart(rows, start, end, step):
 
 
 def _is_direct_choice(labels):
-    return labels.get("reason") == "choice" and labels.get("record_schema") == "direct"
+    return labels.get("reason") in ("choice", "policy") and labels.get("record_schema") == "direct"
 
 
 def _breakdown(rows, label, decisions_only=False, current_only=False):
@@ -496,14 +642,25 @@ def html_document(data):
     panels.append('<section><h2>Reported costs and account snapshots</h2><p>Unpriced requests are not free. Token coverage is separate for input and output. Account and key totals include other tools; key limit remaining is not wallet credit. The freshest successful snapshot is selected across installations; values may be stale. Missing key limits can mean unlimited or unavailable.</p><table><tbody>' + ''.join('<tr><td>' + esc(title) + '</td><td>' + esc(value) + '</td></tr>' for title, value in money_rows(summary)) + '</tbody></table></section>')
     version_rows = []
     for row in summary.get("hook_versions", []):
-        values = [row[key] for key in ("instance", "host", "user", "agent", "plugin_version", "agent_version")]
+        values = [row.get(key, "unknown") for key in ("instance", "host", "user", "agent", "project", "plugin_version", "agent_version")]
         values += [_fmt(row["age_seconds"], "s"), "latest observed" if row["latest_observed"] else "historical"]
         version_rows.append('<tr>' + ''.join('<td>' + esc(value) + '</td>' for value in values) + '</tr>')
     panels.append('<section><h2>Observed hook versions</h2><p>' + esc(VERSION_NOTE) + '</p><p>Reporters with multiple observed versions: ' +
                   _fmt(summary.get("hook_version_mixed_reporters")) + '</p><p>Calls with missing reporter metadata (routing filters): ' +
                   _fmt(summary.get("hook_version_metadata_gaps")) + '</p><table><thead><tr>' +
-                  ''.join('<th>' + title + '</th>' for title in ("Instance", "Host", "User", "Client", "Plugin version", "Client version", "Last hook age", "Observation")) +
-                  '</tr></thead><tbody>' + (''.join(version_rows) or '<tr><td colspan="8">No version observations</td></tr>') + '</tbody></table></section>')
+                  ''.join('<th>' + title + '</th>' for title in ("Instance", "Host", "User", "Client", "Project", "Plugin version", "Client version", "Last hook age", "Observation")) +
+                  '</tr></thead><tbody>' + (''.join(version_rows) or '<tr><td colspan="9">No version observations</td></tr>') + '</tbody></table></section>')
+    model_rows = ''.join('<tr>' + ''.join('<td>' + esc(value) + '</td>' for value in row) + '</tr>'
+                         for row in project_model_rows(summary))
+    panels.append('<section><h2>Models by project</h2><p>Launched: submitted launch model (Jev Choice or factor policy applied, or named explicitly). '
+                  'Jev recommended: direct Jev Choice. "-" means none observed; "No data" means unavailable.</p><table><thead><tr>' +
+                  ''.join('<th>' + title + '</th>' for title in ("Project", "Model", "Launched", "Jev recommended")) +
+                  '</tr></thead><tbody>' + (model_rows or '<tr><td colspan="4">No data</td></tr>') + '</tbody></table></section>')
+    panels.append('<section><h2>Factor policy</h2><p>Agreement compares the policy model with the Jev Choice: policy_higher means the policy wanted a more capable model, '
+                  'policy_lower means the Choice cost more than the policy thought necessary. Average output price is the standard API list price per call, '
+                  'an economic indicator only, not an invoice.</p><table><tbody>' +
+                  ''.join('<tr><td>' + esc(title) + '</td><td>' + esc(value) + '</td></tr>' for title, value in policy_rows(summary)) +
+                  '</tbody></table></section>')
     for title, label, decisions, current in (("Calls by user", "user", False, False), ("Calls by project", "project", False, False), ("Jev selected model", "recommended_model", True, True), ("Jev selected effort", "recommended_effort", True, True), ("Submitted launch model", "model", False, True), ("Submitted launch effort", "effort", False, True), ("Routing reasons", "reason", False, False)):
         panels.append('<section><h2>' + title + '</h2>' + _breakdown(series["calls"], label, decisions, current) + '</section>')
     health_html = '<section style="margin-top:18px"><h2>Telemetry delivery · last received snapshot</h2><p>Workers exit after five minutes per run; later calls restart them. Snapshot age alone does not prove a failure.</p><table><tbody>'

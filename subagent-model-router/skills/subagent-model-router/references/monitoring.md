@@ -174,13 +174,14 @@ after 24 hours; repeated startup with the same session/executable identity reuse
 Missing, expired, unsafe or conflicting state yields unknown, without a runtime probe on the routing path.
 An old session must first emit `SessionStart` with the upgraded handler to populate this cache.
 `smr_calls_total` includes these labels. The gauge
-`smr_hook_version_last_seen_timestamp_seconds{instance,host,user,agent,plugin_version,agent_version}`
+`smr_hook_version_last_seen_timestamp_seconds{instance,host,user,project,agent,plugin_version,agent_version}` (`project` since 0.6.0)
 contains the timestamp of the actual routing hook observation. Worker delivery/heartbeats retain that
 value; they cannot make an idle old hook look newly observed.
 
 Reports list versions and age per reporter, retaining historical versions and flagging multiple observed
-plugin/client combinations. Latest means most recently observed, not highest release number. Version
-reporting follows instance/user/client filters independently of project filters. Missing reporter metadata
+plugin/client combinations. Latest means most recently observed, not highest release number. Since 0.6.0
+each row also names the project of the observed call; samples written before 0.6.0 have no project and
+show as `unknown` (visible when the project filter is All). Missing reporter metadata
 is shown separately; older samples are not retrospectively labelled. No fresh samples can mean idle
 sessions, delivery gaps or uninstrumented old code: these data cannot prove all hosts are upgraded.
 
@@ -234,3 +235,31 @@ They describe filtered task/description text using the coarse `utf8_bytes_div4_h
 approximate status. The full native child prompt is unknown; standard and long-context uncached input
 costs are alternatives. These fields do not count the Jev request itself and do not replace its reported
 input/output usage or cost metrics.
+
+## Factor policy and models by project (0.6.0+)
+
+`smr_calls_total.model` now also names the launched model for `reason="explicit"` launches (the parent passed
+`model` itself, `model_source="specified"`) and for `reason="policy"` launches, so the per-project model
+matrix covers every launch whose model is known. `recommended_model` remains the direct Jev Choice.
+
+Factor-policy series (all with `instance, agent, project, user`):
+
+| Metric | Extra labels | Meaning |
+|---|---|---|
+| `smr_policy_decisions_total` | `provider, policy, policy_mode, outcome, level, model, effort, rank_status, agreement, applied` | one per routed call with the policy on |
+| `smr_policy_factor_levels_total` | `factor, level` | argmax level of each factor question |
+| `smr_policy_factor_confidence_*` | `factor, le` | confidence histogram per factor |
+| `smr_policy_adjustments_total` | `adjustment` | which rule moved the level (floors, discount, raises) |
+| `smr_selection_price_ratio_*` | `source, le` | output price of the choice/policy/selected model over the cheapest offered |
+| `smr_selection_output_rate_usd_per_mtok_total`, `smr_selection_priced_total` | `source, model` | average standard-API output price per call = ratio of increases |
+
+`agreement` compares the policy model with the Choice: `policy_lower` means the Choice picked a more capable
+(and more expensive) model than the policy considered necessary — a candidate saving; `policy_higher` means
+the policy would have used a stronger model — a candidate under-routing. Neither proves task success or real
+spend: prices are standard-API references, not invoices, and the child's actual token use is unknown. Judge
+the policy with the labelled offline set in `eval/factors_README.md` before switching `policy.mode` to active.
+
+The Grafana dashboard has rows "Models by project" (launched and recommended model matrices, launched models
+over time) and "Factor policy (shadow)" (agreement, savings/under-routing shares, level and model by project,
+factor distributions, adjustments, average output price per call and price ratios). `stats` reports carry
+the same summaries.

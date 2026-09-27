@@ -1,7 +1,7 @@
 {
   "id": null,
   "uid": "subagent-model-router",
-  "title": "Subagent Model Router \u00b7 Operations",
+  "title": "Subagent Model Router · Operations",
   "description": "Received counter estimates for the selected window. Delayed telemetry may be absent; no data is not zero. Routing selection share does not establish cost savings or model quality.",
   "tags": [
     "subagent-model-router",
@@ -166,7 +166,7 @@
     {
       "id": 1,
       "type": "text",
-      "title": "Routing operations \u00b7 evidence scope",
+      "title": "Routing operations · evidence scope",
       "gridPos": {
         "x": 0,
         "y": 0,
@@ -516,7 +516,7 @@
     },
     {
       "id": 8,
-      "title": "Jev requests \u00b7 success and failure",
+      "title": "Jev requests · success and failure",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -569,7 +569,7 @@
     },
     {
       "id": 9,
-      "title": "Jev latency \u00b7 all outcomes",
+      "title": "Jev latency · all outcomes",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -647,7 +647,7 @@
       },
       "targets": [
         {
-          "expr": "sum by(recommended_model,recommended_effort) (increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",reason=\"choice\",record_schema=\"direct\"}[$__range])) / scalar(sum(increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",reason=\"choice\",record_schema=\"direct\"}[$__range])))",
+          "expr": "sum by(recommended_model,recommended_effort) (increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",reason=~\"choice|policy\",record_schema=\"direct\"}[$__range])) / scalar(sum(increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",reason=~\"choice|policy\",record_schema=\"direct\"}[$__range])))",
           "refId": "A",
           "legendFormat": "{{recommended_model}} / {{recommended_effort}}",
           "range": false,
@@ -703,7 +703,7 @@
         {
           "expr": "sum by(model,effort,mode,applied) (increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",record_schema=\"direct\",reason=\"choice\",mode=\"active\",applied=\"true\"}[$__range])) / scalar(sum(increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",record_schema=\"direct\",reason=\"choice\",mode=\"active\",applied=\"true\"}[$__range])))",
           "refId": "A",
-          "legendFormat": "{{model}} / {{effort}} \u00b7 {{mode}} \u00b7 applied={{applied}}",
+          "legendFormat": "{{model}} / {{effort}} · {{mode}} · applied={{applied}}",
           "range": false,
           "instant": true
         }
@@ -716,7 +716,7 @@
           },
           "min": 0,
           "max": 1,
-          "displayName": "${__field.labels.model} / ${__field.labels.effort} \u00b7 ${__field.labels.mode} \u00b7 applied=${__field.labels.applied}"
+          "displayName": "${__field.labels.model} / ${__field.labels.effort} · ${__field.labels.mode} · applied=${__field.labels.applied}"
         },
         "overrides": []
       },
@@ -807,7 +807,7 @@
       },
       "targets": [
         {
-          "expr": "sum by(recommended_model,recommended_effort) (rate(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",reason=\"choice\",record_schema=\"direct\"}[$__rate_interval]))",
+          "expr": "sum by(recommended_model,recommended_effort) (rate(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",reason=~\"choice|policy\",record_schema=\"direct\"}[$__rate_interval]))",
           "refId": "A",
           "legendFormat": "{{recommended_model}} / {{recommended_effort}}",
           "range": true,
@@ -862,7 +862,7 @@
         {
           "expr": "sum by(mode,applied) (rate(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",record_schema=\"direct\"}[$__rate_interval]))",
           "refId": "A",
-          "legendFormat": "{{mode}} \u00b7 applied={{applied}}",
+          "legendFormat": "{{mode}} · applied={{applied}}",
           "range": true,
           "instant": false
         }
@@ -1017,7 +1017,7 @@
     },
     {
       "id": 17,
-      "title": "Pending events \u00b7 last received",
+      "title": "Pending events · last received",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1063,7 +1063,7 @@
     },
     {
       "id": 18,
-      "title": "Coalesced timing \u00b7 lifetime",
+      "title": "Coalesced timing · lifetime",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1109,7 +1109,7 @@
     },
     {
       "id": 19,
-      "title": "Dropped events \u00b7 lifetime",
+      "title": "Dropped events · lifetime",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1348,7 +1348,7 @@
     },
     {
       "id": 24,
-      "title": "Jev reported spend \u00b7 window",
+      "title": "Jev reported spend · window",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1517,7 +1517,7 @@
     },
     {
       "id": 27,
-      "title": "Jev spend \u00b7 average USD/hour",
+      "title": "Jev spend · average USD/hour",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1574,7 +1574,7 @@
     },
     {
       "id": 28,
-      "title": "Jev spend rate \u00b7 USD/hour",
+      "title": "Jev spend rate · USD/hour",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -1626,7 +1626,7 @@
     },
     {
       "id": 29,
-      "title": "OpenRouter credit balance \u00b7 last snapshot",
+      "title": "OpenRouter credit balance · last snapshot",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1683,7 +1683,7 @@
     },
     {
       "id": 30,
-      "title": "Key limit remaining \u00b7 last snapshot",
+      "title": "Key limit remaining · last snapshot",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1740,7 +1740,7 @@
     },
     {
       "id": 31,
-      "title": "Key billed this month \u00b7 last snapshot",
+      "title": "Key billed this month · last snapshot",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1853,7 +1853,7 @@
     },
     {
       "id": 33,
-      "title": "Key snapshot age \u00b7 freshest success",
+      "title": "Key snapshot age · freshest success",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -1965,7 +1965,7 @@
     },
     {
       "id": 35,
-      "title": "Account snapshot age \u00b7 freshest success",
+      "title": "Account snapshot age · freshest success",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -2021,7 +2021,7 @@
     },
     {
       "id": 37,
-      "title": "Jev tokens \u00b7 reported input / output",
+      "title": "Jev tokens · reported input / output",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -2085,7 +2085,7 @@
     },
     {
       "id": 38,
-      "title": "Jev token coverage \u00b7 input / output",
+      "title": "Jev token coverage · input / output",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -2149,7 +2149,7 @@
     },
     {
       "id": 44,
-      "title": "Observed hook versions \u00b7 last hook age",
+      "title": "Observed hook versions · last hook age",
       "type": "table",
       "datasource": {
         "type": "prometheus",
@@ -2164,7 +2164,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "($__to / 1000) - label_replace(max by(instance,host,user,agent,plugin_version,agent_version)(((last_over_time(smr_hook_version_last_seen_timestamp_seconds{instance=~\"$instance\",user=~\"$user\",agent=~\"$agent\"}[$__range]) >= ($__from / 1000)) <= ($__to / 1000))), \"agent_version\", \"unknown\", \"agent_version\", \"^$\")",
+          "expr": "($__to / 1000) - label_replace(label_replace(max by(instance,host,user,project,agent,plugin_version,agent_version)(((last_over_time(smr_hook_version_last_seen_timestamp_seconds{instance=~\"$instance\",user=~\"$user\",project=~\"$project\",agent=~\"$agent\"}[$__range]) >= ($__from / 1000)) <= ($__to / 1000))), \"agent_version\", \"unknown\", \"agent_version\", \"^$\"), \"project\", \"unknown\", \"project\", \"^$\")",
           "format": "table",
           "instant": true,
           "range": false
@@ -2208,15 +2208,1256 @@
               "instance": 0,
               "host": 1,
               "user": 2,
-              "agent": 3,
-              "plugin_version": 4,
-              "Value": 6,
-              "agent_version": 5
+              "project": 3,
+              "agent": 4,
+              "plugin_version": 5,
+              "agent_version": 6,
+              "Value": 7
             }
           }
         }
       ],
-      "description": "Observed executing hook versions within instance/user/client filters, independent of project. Only hook timestamps within the selected time range are shown; age is measured from that range's end. Per reporter the smallest age is the latest observed hook, not necessarily the newest release. Gauge value is actual hook time; worker re-exports do not refresh it. A delayed delivery after the selected range cannot reconstruct a missing historical sample. This is not an installed-version inventory. Missing metadata and idle/unreported installations are unknown. Plugin version and invoking Claude Code/Codex agent_version are separate from the model. Missing historical client version is unknown; distinct client versions remain separate rows."
+      "description": "Observed executing hook versions within instance/user/project/client filters, one row per project. Hooks older than 0.6.0 reported no project: their rows show project unknown and match only when the project filter is All. Only hook timestamps within the selected time range are shown; age is measured from that range's end. Per reporter the smallest age is the latest observed hook, not necessarily the newest release. Gauge value is actual hook time; worker re-exports do not refresh it. A delayed delivery after the selected range cannot reconstruct a missing historical sample. This is not an installed-version inventory. Missing metadata and idle/unreported installations are unknown. Plugin version and invoking Claude Code/Codex agent_version are separate from the model. Missing historical client version is unknown; distinct client versions remain separate rows."
+    },
+    {
+      "id": 45,
+      "type": "row",
+      "title": "Models by project",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "x": 0,
+        "y": 96,
+        "w": 24,
+        "h": 1
+      },
+      "description": "Which models were launched and which models Jev recommended, per project. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 46,
+      "title": "Launched models by project",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 97,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by(project,model) (increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",record_schema=\"direct\",model!=\"unknown\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "groupingToMatrix",
+          "options": {
+            "columnField": "model",
+            "rowField": "project",
+            "valueField": "Value"
+          }
+        }
+      ],
+      "description": "Subagent launches per project (rows) and launched model (columns) in the selected window. The model is known for applied Jev Choice, applied policy and explicit parent-specified launches; unknown launch models are excluded. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 47,
+      "title": "Jev recommended models by project",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 97,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by(project,recommended_model) (increase(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",record_schema=\"direct\",reason=~\"choice|policy\",recommended_model!=\"unknown\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "groupingToMatrix",
+          "options": {
+            "columnField": "recommended_model",
+            "rowField": "project",
+            "valueField": "Value"
+          }
+        }
+      ],
+      "description": "Successful direct Jev Choice recommendations per project (rows) and recommended model (columns), whether or not the recommendation was applied. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 48,
+      "title": "Launched models over time",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 105,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by(model) (rate(smr_calls_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",record_schema=\"direct\",model!=\"unknown\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{model}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Stacked launch rate per launched model for the selected projects. Unknown launch models are excluded. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 49,
+      "type": "row",
+      "title": "Factor policy (shadow)",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "x": 0,
+        "y": 113,
+        "w": 24,
+        "h": 1
+      },
+      "description": "Factor policy decisions compared with Jev direct Choice. In shadow mode the policy only observes. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 50,
+      "title": "Policy agreement with Jev Choice",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 114,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "(sum(increase(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome=\"success\",agreement=~\"identical|same_model\"}[$__range])) or (0 * sum(increase(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome=\"success\"}[$__range])))) / sum(increase(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome=\"success\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "agreement",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Share of successful policy decisions whose model matches Jev direct Choice (identical, or same model with another effort). Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 51,
+      "title": "Policy lower share · potential savings",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 114,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "(sum(increase(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome=\"success\",agreement=\"policy_lower\"}[$__range])) or (0 * sum(increase(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome=\"success\"}[$__range])))) / sum(increase(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome=\"success\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "policy_lower",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Share of successful policy decisions where the policy needed a less capable model than Jev Choice: potential saving, not a realised one. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 52,
+      "title": "Policy higher share · possible under-routing",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 114,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "(sum(increase(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome=\"success\",agreement=\"policy_higher\"}[$__range])) or (0 * sum(increase(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome=\"success\"}[$__range])))) / sum(increase(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome=\"success\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "policy_higher",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Share of successful policy decisions where the policy wanted a more capable model than Jev Choice: possible under-routing by Choice. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 53,
+      "title": "Policy outcome error share",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 114,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "expr": "(sum(increase(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome!=\"success\"}[$__range])) or (0 * sum(increase(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])))) / sum(increase(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "errors",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Share of policy decisions that failed validation (answers, range, options, sum, unknown) and produced no level. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 54,
+      "title": "Policy agreement with Jev Choice · breakdown",
+      "type": "bargauge",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 119,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by(agreement) (increase(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome=\"success\"}[$__range])) / scalar(sum(increase(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome=\"success\"}[$__range])))",
+          "refId": "A",
+          "legendFormat": "{{agreement}}",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0,
+          "noValue": "No data",
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "valueMode": "color",
+        "showUnfilled": true,
+        "minVizWidth": 0,
+        "minVizHeight": 16,
+        "maxVizHeight": 300,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "sizing": "auto"
+      },
+      "description": "Distribution of agreement values among successful policy decisions: identical, same_model, other_model, policy_higher, policy_lower, unknown. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 55,
+      "title": "Required level by project",
+      "type": "bargauge",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 119,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by(project,level) (increase(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome=\"success\"}[$__range])) / on(project) group_left sum by(project) (increase(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome=\"success\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "{{project}} · L{{level}}",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0,
+          "noValue": "No data",
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "valueMode": "color",
+        "showUnfilled": true,
+        "minVizWidth": 0,
+        "minVizHeight": 16,
+        "maxVizHeight": 300,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "sizing": "auto"
+      },
+      "description": "Share of each required policy level (1 light, 2 standard, 3 strong, 4 frontier) within each project's successful policy decisions. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 56,
+      "title": "Policy model by project",
+      "type": "bargauge",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 119,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by(project,model) (increase(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome=\"success\"}[$__range])) / on(project) group_left sum by(project) (increase(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome=\"success\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "{{project}} · {{model}}",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0,
+          "noValue": "No data",
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "valueMode": "color",
+        "showUnfilled": true,
+        "minVizWidth": 0,
+        "minVizHeight": 16,
+        "maxVizHeight": 300,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "sizing": "auto"
+      },
+      "description": "Share of each policy-selected model within each project's successful policy decisions. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 57,
+      "title": "Policy lower / higher share over time",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 127,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome=\"success\",agreement=\"policy_lower\"}[$__rate_interval])) / sum(rate(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome=\"success\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "policy_lower · potential savings",
+          "range": true,
+          "instant": false
+        },
+        {
+          "expr": "sum(rate(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome=\"success\",agreement=\"policy_higher\"}[$__rate_interval])) / sum(rate(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome=\"success\"}[$__rate_interval]))",
+          "refId": "B",
+          "legendFormat": "policy_higher · possible under-routing",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Share of successful policy decisions where the policy wanted a cheaper (policy_lower) or more capable (policy_higher) model than Jev Choice. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 58,
+      "title": "Policy outcome errors",
+      "type": "bargauge",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 127,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by(outcome) (increase(smr_policy_decisions_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",outcome!=\"success\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "{{outcome}}",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0,
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "valueMode": "color",
+        "showUnfilled": true,
+        "minVizWidth": 0,
+        "minVizHeight": 16,
+        "maxVizHeight": 300,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "sizing": "auto"
+      },
+      "description": "Failed policy decisions by validation outcome in the selected window. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 59,
+      "title": "Policy adjustments",
+      "type": "bargauge",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 127,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by(adjustment) (increase(smr_policy_adjustments_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "{{adjustment}}",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0,
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "valueMode": "color",
+        "showUnfilled": true,
+        "minVizWidth": 0,
+        "minVizHeight": 16,
+        "maxVizHeight": 300,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "sizing": "auto"
+      },
+      "description": "How often each rule adjusted the required level (floors, discounts and confidence raises) in successful policy decisions. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 60,
+      "title": "Average output price per call by source",
+      "type": "bargauge",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 135,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by(source) (increase(smr_selection_output_rate_usd_per_mtok_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) / sum by(source) (increase(smr_selection_priced_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "{{source}}",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: USD/Mtok",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0,
+          "noValue": "No data",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "valueMode": "color",
+        "showUnfilled": true,
+        "minVizWidth": 0,
+        "minVizHeight": 16,
+        "maxVizHeight": 300,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "sizing": "auto"
+      },
+      "description": "Average standard-API output price (USD per million output tokens) of the model per priced call: Jev Choice, factor policy and selected launch. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 61,
+      "title": "Average output price per call by project",
+      "type": "bargauge",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 135,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by(project,source) (increase(smr_selection_output_rate_usd_per_mtok_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])) / sum by(project,source) (increase(smr_selection_priced_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "{{project}} · {{source}}",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: USD/Mtok",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0,
+          "noValue": "No data",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "valueMode": "color",
+        "showUnfilled": true,
+        "minVizWidth": 0,
+        "minVizHeight": 16,
+        "maxVizHeight": 300,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "sizing": "auto"
+      },
+      "description": "Average standard-API output price (USD per million output tokens) per priced call, by project and source (choice, policy, selected). Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 62,
+      "title": "Price ratio to cheapest offered model · p50 / p90",
+      "type": "bargauge",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 135,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by(source,le) (increase(smr_selection_price_ratio_bucket{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])))",
+          "refId": "A",
+          "legendFormat": "p50 · {{source}}",
+          "range": false,
+          "instant": true
+        },
+        {
+          "expr": "histogram_quantile(0.9, sum by(source,le) (increase(smr_selection_price_ratio_bucket{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\"}[$__range])))",
+          "refId": "B",
+          "legendFormat": "p90 · {{source}}",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0,
+          "noValue": "No data",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "valueMode": "color",
+        "showUnfilled": true,
+        "minVizWidth": 0,
+        "minVizHeight": 16,
+        "maxVizHeight": 300,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "sizing": "auto"
+      },
+      "description": "Median and p90 of the output price of each source's model divided by the cheapest priced offered model (1 = cheapest), estimated from histogram buckets. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 63,
+      "title": "Factor level distribution · reasoning",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 143,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "sum by(level) (rate(smr_policy_factor_levels_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",factor=\"reasoning\"}[$__rate_interval])) / scalar(sum(rate(smr_policy_factor_levels_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",factor=\"reasoning\"}[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "level {{level}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Share of levels 0-3 assessed for the reasoning factor in successful policy decisions, stacked to 100%. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 64,
+      "title": "Factor level distribution · spec",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 143,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "sum by(level) (rate(smr_policy_factor_levels_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",factor=\"spec\"}[$__rate_interval])) / scalar(sum(rate(smr_policy_factor_levels_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",factor=\"spec\"}[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "level {{level}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Share of levels 0-3 assessed for the spec factor in successful policy decisions, stacked to 100%. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 65,
+      "title": "Factor level distribution · verification",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 143,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "sum by(level) (rate(smr_policy_factor_levels_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",factor=\"verification\"}[$__rate_interval])) / scalar(sum(rate(smr_policy_factor_levels_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",factor=\"verification\"}[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "level {{level}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Share of levels 0-3 assessed for the verification factor in successful policy decisions, stacked to 100%. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 66,
+      "title": "Factor level distribution · scope",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 150,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "sum by(level) (rate(smr_policy_factor_levels_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",factor=\"scope\"}[$__rate_interval])) / scalar(sum(rate(smr_policy_factor_levels_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",factor=\"scope\"}[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "level {{level}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Share of levels 0-3 assessed for the scope factor in successful policy decisions, stacked to 100%. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 67,
+      "title": "Factor level distribution · impact",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 150,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "sum by(level) (rate(smr_policy_factor_levels_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",factor=\"impact\"}[$__rate_interval])) / scalar(sum(rate(smr_policy_factor_levels_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",factor=\"impact\"}[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "level {{level}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Share of levels 0-3 assessed for the impact factor in successful policy decisions, stacked to 100%. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
+    },
+    {
+      "id": 68,
+      "title": "Factor level distribution · review_depth",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 150,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "sum by(level) (rate(smr_policy_factor_levels_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",factor=\"review_depth\"}[$__rate_interval])) / scalar(sum(rate(smr_policy_factor_levels_total{instance=~\"$instance\",agent=~\"$agent\",project=~\"$project\",user=~\"$user\",factor=\"review_depth\"}[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "level {{level}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Share of levels 0-3 assessed for the review_depth factor in successful policy decisions, stacked to 100%. Received counter estimates for the selected window; no data is not zero. Price figures are standard-API references, not invoices."
     }
   ]
 }
