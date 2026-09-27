@@ -147,6 +147,15 @@ class SelectTests(unittest.TestCase):
                          ("o-high", {"status": "capped", "rank": 3}))
         self.assertEqual(rf.select({"level": 2, "effort_class": "high"}, options, {}), (None, {"status": "unranked"}))
 
+    def test_cheaper_stronger_model_beats_a_pricier_weaker_one(self):
+        options = {"terra": option("gpt-5.6-terra", "high", 12), "sol": option("gpt-6-sol", "high", 10),
+                   "luna": option("gpt-6-luna", "low", .5)}
+        ranks = rf.DEFAULT_RANKS["codex"]
+        self.assertEqual(rf.select({"level": 2, "effort_class": "high"}, options, ranks)[0], "sol")
+        self.assertEqual(rf.select({"level": 1, "effort_class": "low"}, options, ranks)[0], "luna")
+        same = {"a": option("gpt-5.4", "low", 10), "b": option("gpt-6-sol", "low", 10)}
+        self.assertEqual(rf.select({"level": 2, "effort_class": "low"}, same, ranks)[0], "a")  # tie: lower rank
+
     def test_unknown_price_is_not_free(self):
         options = {"a": option("cheap-known", "low", 1), "b": option("unknown-price", "low")}
         self.assertEqual(rf.select({"level": 2, "effort_class": "low"}, options,
@@ -169,6 +178,7 @@ class ConfigTests(unittest.TestCase):
         cfg = router.normalize_config({"codex": {"capability_rank": {"gpt-5.5": 2}}})
         self.assertEqual(cfg["policy"]["mode"], "shadow")
         self.assertEqual(cfg["policy"]["ranks"], {"claude": rf.DEFAULT_RANKS["claude"], "codex": {"gpt-5.5": 2}})
+        self.assertEqual(router.normalize_config({})["policy"]["ranks"]["codex"]["gpt-6-astra"], 4)
         self.assertNotIn("capability_rank", cfg["codex"])
 
     def test_invalid_policy_disables_only_the_policy(self):

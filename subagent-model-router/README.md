@@ -116,8 +116,10 @@ Code then derives a required capability level (1 light, 2 standard, 3 strong, 4 
   high-impact tasks (`policy.min_confidence`, `policy.strict_confidence`).
 
 The model is the cheapest one whose owner-configured `capability_rank` meets the level (Claude default:
-haiku 1, sonnet 2, opus 3, fable 4; Codex has no default ranks), priced from the same standard-API references;
-unknown prices sort after known ones. Effort follows the reasoning kind and specification, clamped to what the
+haiku 1, sonnet 2, opus 3, fable 4; Codex default since 0.6.1: gpt-6-luna and gpt-5.6-luna 1, gpt-5.6-terra,
+gpt-5.4 and gpt-5.5 2, gpt-6-sol and gpt-5.6-sol 3, gpt-6-astra 4; previews without description or price stay
+unranked), priced from the same standard-API references. Among adequate models the cheapest wins even when it is
+more capable; rank only breaks price ties, and unknown prices sort after known ones. Effort follows the reasoning kind and specification, clamped to what the
 model supports. `policy.mode = "shadow"` (default) records the recommendation and its agreement with the Choice
 without touching the launch; `active` launches the policy pick (`reason="policy"`); `off` omits the questions.
 Missing or malformed factor answers only disable the policy for that call; the Choice still decides.

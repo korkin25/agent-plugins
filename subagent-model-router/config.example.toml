@@ -40,8 +40,9 @@ efforts = []                # [] = every level the native catalogue reports for 
 route_agent_types = ["", "default", "worker"]
 allowed_models = []                 # optional allowlist; [] = every model in the actual binary's catalog
 # Every supported reasoning effort for each allowed model is offered directly to Jev.
-# capability_rank = { "gpt-5.6-luna" = 1, "gpt-5.5" = 2, "gpt-5.6-terra" = 3 }  # none by default: the factor
-#                                                     # policy then records the level but recommends no model
+# capability_rank = { "gpt-6-luna" = 1, "gpt-5.6-luna" = 1, "gpt-5.6-terra" = 2, "gpt-5.4" = 2, "gpt-5.5" = 2,
+#                     "gpt-6-sol" = 3, "gpt-5.6-sol" = 3, "gpt-6-astra" = 4 }   # default (0.6.1); a table here
+#                                        # replaces it whole; unranked models are never picked by the policy
 
 # Optional monitoring, shared by Claude Code and Codex. No telemetry network I/O in the hook.
 # With victoriametrics the JSONL journal is no longer appended; existing files are not deleted.
