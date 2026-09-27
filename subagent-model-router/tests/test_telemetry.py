@@ -328,11 +328,13 @@ class TelemetryTests(unittest.TestCase):
         with mock.patch.object(telemetry, "request", side_effect=AssertionError("hook must not use HTTP")) as http:
             self.assertTrue(self.enqueue())
             http.assert_not_called()  # verifies isolation independently of disk/runner scheduling
-        with server(delay=.3) as (url, seen):
+        # The 0.1 s client timeout must return well before the 2 s server reply; the wide
+        # margin keeps the check meaningful on a loaded shared runner.
+        with server(delay=2) as (url, seen):
             started = time.monotonic()
             with self.assertRaisesRegex(telemetry.TelemetryError, "timeout|network"):
                 telemetry.request(self.cfg, url + "/api/v1/import/prometheus", b"metric 1\n")
-            self.assertLess(time.monotonic() - started, .25)
+            self.assertLess(time.monotonic() - started, 1)
 
     def test_auth_no_redirect_and_redacted_failure(self):
         token = self.root / "token"
