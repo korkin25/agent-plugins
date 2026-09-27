@@ -173,8 +173,8 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(observed['summary']['claude_model_lookup_cost_usd'], 0)
         self.assertEqual(observed['summary']['jev_requests'], 0)
 
-    def test_local_hook_versions_preserve_history_and_ignore_project(self):
-        from router_dashboard import html_document
+    def test_local_hook_versions_preserve_history_and_show_project(self):
+        from router_dashboard import html_document, format_summary
         now = dt.datetime(2026, 1, 10, tzinfo=dt.timezone.utc)
         base = dict(ts='2026-01-08T00:00:00Z', reason='explicit', host='host', user='dev',
                     agent='claude', project='one', plugin_version='9.0')
@@ -182,22 +182,127 @@ class TerminalTests(unittest.TestCase):
                 dict(base, host='', plugin_version='invalid'), dict(base, plugin_version=None),
                 dict(base, host='other', user='other'), dict(base, agent='codex'),
                 dict(base, ts='2027-01-01T00:00:00Z', plugin_version='future')]
-        data = t.local_data(rows, days=7, now=now, project='one', user='dev', agent='claude')
+        data = t.local_data(rows, days=7, now=now, user='dev', agent='claude')
         versions = data['summary']['hook_versions']
-        self.assertEqual(len(versions), 2)
-        self.assertEqual(versions[0]['plugin_version'], '1.0')
+        self.assertEqual([(v['project'], v['plugin_version']) for v in versions], [('two', '1.0'), ('one', '9.0')])
         self.assertTrue(versions[0]['latest_observed'])
         self.assertFalse(versions[1]['latest_observed'])
         self.assertEqual(versions[0]['age_seconds'], 86400)
         self.assertEqual(data['summary']['hook_version_metadata_gaps'], 2)
         self.assertEqual(data['summary']['hook_version_mixed_reporters'], 1)
-        self.assertEqual(data['summary']['calls'], 3)
-        self.assertIn('историческая', t.format_terminal(data))
-        self.assertIn('independent of project', html_document(data))
+        self.assertEqual(data['summary']['calls'], 4)
+        out = t.format_terminal(data)
+        self.assertIn('историческая', out)
+        self.assertIn('| Instance / host / user / клиент | Проект | Плагин |', out)
+        self.assertIn('| local journal / host / dev / claude | two | 1.0 |', out)
+        self.assertIn('фильтр project, если он задан', out)
+        self.assertNotIn('независимо от project', out)
+        self.assertIn('<td>claude</td><td>one</td><td>9.0</td>', html_document(data))
+        self.assertIn('project=two; plugin=1.0', format_summary(data))
+        self.assertNotIn('independent of project', html_document(data))
+        # The project filter now applies to hook-version rows as well.
+        one = t.local_data(rows, days=7, now=now, project='one', user='dev', agent='claude')['summary']
+        self.assertEqual([(v['project'], v['plugin_version']) for v in one['hook_versions']], [('one', '9.0')])
+        self.assertEqual(one['calls'], 3)
         old = t.local_data([dict(ts=base['ts'], reason='explicit')], now=now)
         self.assertEqual(old['summary']['hook_versions'], [])
         self.assertEqual(old['summary']['hook_version_metadata_gaps'], 1)
         self.assertIn('нет наблюдений версий', t.format_terminal(old))
+
+    def test_local_project_resolution_from_cwd(self):
+        now = dt.datetime(2026, 1, 10, tzinfo=dt.timezone.utc)
+        base = dict(ts='2026-01-09T00:00:00Z', reason='explicit', host='host', user='dev', agent='codex', plugin_version='1.0')
+        rows = [dict(base, cwd='/nonexistent-smr-test/work/alpha'), dict(base, cwd='relative/beta'),
+                dict(base), dict(base, project='recorded', cwd='/nonexistent-smr-test/work/alpha')]
+        data = t.local_data(rows, now=now)
+        self.assertEqual(data['summary']['by_project'], {'alpha': 1, 'unknown': 2, 'recorded': 1})
+        self.assertEqual(sorted(v['project'] for v in data['summary']['hook_versions']), ['alpha', 'recorded', 'unknown'])
+        self.assertEqual(t.local_data(rows, now=now, project='alpha')['summary']['calls'], 1)
+
+    def test_local_models_by_project(self):
+        from router_dashboard import html_document, format_summary
+        now = dt.datetime(2026, 1, 10, tzinfo=dt.timezone.utc)
+        ok = dict(ts='2026-01-09T00:00:00Z', agent='codex', jev_attempted=True, jev_outcome='success')
+        rows = [dict(ok, cwd='/nonexistent-smr-test/alpha', reason='choice', model='gpt-6-astra', actual_model='gpt-6-astra', applied=True, mode='active'),
+                dict(ok, cwd='/nonexistent-smr-test/alpha', reason='choice', model='gpt-6-astra', actual_model=None, applied=False, mode='shadow'),
+                dict(ok, cwd='/nonexistent-smr-test/alpha', reason='policy', model='gpt-6-nova', actual_model='gpt-6-nova', applied=True, mode='active',
+                     choice_model='gpt-6-astra', choice_effort='low'),
+                dict(ok, cwd='/nonexistent-smr-test/beta', reason='explicit', jev_attempted=False, jev_outcome=None,
+                     actual_model='<b>x</b>', model_source='specified'),
+                dict(ok, cwd='/nonexistent-smr-test/beta', reason='explicit', jev_attempted=False, jev_outcome=None,
+                     actual_model='gpt-6-luna', model_source='specified'),
+                dict(ok, cwd='/nonexistent-smr-test/beta', reason='explicit', jev_attempted=False, jev_outcome=None,
+                     actual_model='gpt-6-luna', model_source='unknown'),
+                dict(ok, cwd='/nonexistent-smr-test/beta', reason='choice', model='gpt-6-astra', actual_model='gpt-6-luna', applied=True)]
+        s = t.local_data(rows, now=now)['summary']
+        self.assertEqual(s['models_by_project'], [
+            {'project': 'alpha', 'model': 'gpt-6-astra', 'calls': 1}, {'project': 'alpha', 'model': 'gpt-6-nova', 'calls': 1},
+            {'project': 'beta', 'model': 'gpt-6-luna', 'calls': 1}])
+        self.assertEqual(s['recommended_by_project'], [
+            {'project': 'alpha', 'model': 'gpt-6-astra', 'calls': 3}, {'project': 'beta', 'model': 'gpt-6-astra', 'calls': 1}])
+        data = t.local_data(rows, now=now)
+        out = t.format_terminal(data)
+        self.assertIn('**Модели по проектам**', out)
+        self.assertIn('| alpha | gpt-6-astra | 1 | 3 |', out)
+        self.assertIn('| alpha | gpt-6-nova | 1 | — |', out)
+        self.assertIn('| beta | gpt-6-astra | — | 1 |', out)
+        self.assertIn('<td>alpha</td><td>gpt-6-nova</td><td>1</td><td>-</td>', html_document(data))
+        self.assertIn('beta · gpt-6-luna: 1 / -', format_summary(data))
+        empty = t.local_data([], now=now)
+        self.assertEqual(empty['summary']['models_by_project'], [])
+        self.assertIn('| нет данных | нет данных | нет данных | нет данных |', t.format_terminal(empty))
+
+    def test_local_policy_summary_unknown_vs_zero(self):
+        now = dt.datetime(2026, 1, 10, tzinfo=dt.timezone.utc)
+        ok = dict(ts='2026-01-09T00:00:00Z', agent='codex', reason='choice', jev_attempted=True, jev_outcome='success')
+        success = dict(policy='factors_v1', mode='shadow', outcome='success', level=3, model='gpt-6-astra', effort='high',
+                       agreement='policy_higher', output_rate=10.0, adjustments=['impact_floor', 'confidence_raise:reasoning', 'bogus'])
+        rows = [dict(ok, policy=success, choice_output_rate=2.0, selected_output_rate=2.0),
+                dict(ok, policy=dict(success, level=True, agreement='nonsense', model='<script>', output_rate=None, adjustments=None),
+                     choice_output_rate=4.0, selected_output_rate='5'),
+                dict(ok, policy=dict(policy='factors_v1', outcome='error:range', agreement=None, level=2, output_rate=-1)),
+                dict(ok, policy=dict(success, outcome='weird')),
+                dict(ok, jev_attempted=False, jev_outcome=None, policy=success)]
+        policy = t.local_data(rows, now=now)['summary']['policy']
+        self.assertEqual(policy['decisions'], 4)
+        self.assertEqual(policy['by_outcome'], {'success': 2, 'range': 1, 'unknown': 1})
+        self.assertEqual(policy['outcome_errors'], 2)
+        self.assertEqual(policy['by_agreement'], {'policy_higher': 2, 'unknown': 2})
+        self.assertEqual(policy['by_level'], {'3': 1, 'none': 3})
+        self.assertEqual(policy['by_model'], {'gpt-6-astra': 1, 'unknown': 1, 'none': 2})
+        self.assertEqual(policy['adjustments'], {'impact_floor': 1, 'confidence_raise_reasoning': 1})
+        self.assertEqual(policy['adjustments_total'], 2)
+        # policy.output_rate is read from every row, including the non-attempted one.
+        self.assertEqual(policy['priced_calls'], {'choice': 2, 'policy': 3, 'selected': 1})
+        self.assertEqual(policy['average_output_usd_per_mtok'], {'choice': 3.0, 'policy': 10.0, 'selected': 2.0})
+        out = t.format_terminal(t.local_data(rows, now=now))
+        self.assertIn('**Факторная политика**', out)
+        self.assertIn('Решений за окно: 4 · ошибки исхода: 2 (50.0%)', out)
+        self.assertIn('Уровни: none 3 · 3 (сильный) 1.', out)
+        self.assertIn('выбор Jev $3.000/Mtok (2 выз.)', out)
+        self.assertNotIn('<script>', out)
+        # Successes without adjustments are an observed zero; no policy records stay unknown.
+        zero = t.local_data([dict(ok, policy=dict(success, adjustments=[]))], now=now)['summary']['policy']
+        self.assertEqual(zero['adjustments_total'], 0)
+        self.assertEqual(zero['outcome_errors'], 0)
+        none = t.local_data([dict(ok)], now=now)['summary']['policy']
+        for key in ('decisions', 'outcome_errors', 'outcome_error_share', 'adjustments_total'):
+            self.assertIsNone(none[key], key)
+        self.assertEqual(none['by_agreement'], {})
+        self.assertEqual(none['average_output_usd_per_mtok'], {'choice': None, 'policy': None, 'selected': None})
+        out = t.format_terminal(t.local_data([dict(ok)], now=now))
+        self.assertIn('Решений за окно: нет данных · ошибки исхода: нет данных', out)
+        self.assertIn('Согласие с выбором Jev: не наблюдалось.', out)
+        self.assertIn('Корректировки: нет данных.', out)
+        self.assertIn('выбор Jev нет данных', out)
+
+    def test_terminal_renders_unavailable_vm_sections(self):
+        data = t.local_data([])
+        data['summary'].update(models_by_project=None, recommended_by_project=None,
+                               policy={'decisions': None, 'by_agreement': None})
+        out = t.format_terminal(data)
+        self.assertIn('Согласие с выбором Jev: нет данных.', out)
+        self.assertIn('| нет данных | нет данных | нет данных | нет данных |', out)
 
     def test_local_executing_client_version_is_distinct_from_plugin_and_model(self):
         from router_dashboard import format_summary, html_document

@@ -1760,7 +1760,7 @@ class DirectChoiceTests(Sandbox):
         self.assertIn(selected_effort, router.parse_catalog(json.dumps(CATALOG).encode())[selected_model])
         sent = json.loads(self.fake.requests[0]['body'])
         self.assertEqual(sent['state']['task'], task)
-        self.assertEqual(set(sent['questions']), {'selection'})
+        self.assertEqual(set(sent['questions']), {'selection', 'f_reasoning', 'f_spec', 'f_verification', 'f_scope', 'f_impact', 'f_review', 'f_review_depth', 'f_prior_failure'})
         self.assertEqual(len(sent['questions']['selection']['criteria']), 15)
         row = self.last_row()
         self.assertEqual((row['reason'], row['model'], row['effort']), ('choice', selected_model, selected_effort))
@@ -1869,7 +1869,7 @@ class DirectChoiceTests(Sandbox):
         request = self.fake.requests[0]
         body = json.loads(request["body"])
         self.assertEqual(body["model"], "typesafe/jev-1.13")
-        self.assertEqual(set(body["questions"]), {"selection"})
+        self.assertEqual(set(body["questions"]), {'selection', 'f_reasoning', 'f_spec', 'f_verification', 'f_scope', 'f_impact', 'f_review', 'f_review_depth', 'f_prior_failure'})
         self.assertEqual(request["headers"]["Authorization"], "Bearer " + KEY)
         self.assertEqual(self.last_row()["request_id"], "provider-request-7")
         self.assertEqual(self.last_row()["usage"]["cost"], .003)

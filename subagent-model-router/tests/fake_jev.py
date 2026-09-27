@@ -67,7 +67,11 @@ class FakeJev:
                     if "_fixture_choice_index" in fixture:
                         offered = list(json.loads(body)["questions"]["selection"]["criteria"])
                         choice = offered[fixture["_fixture_choice_index"]]
-                        response_body = json.dumps(jev_body(choice, {option: float(option == choice) for option in offered})).encode()
+                        reply_body = jev_body(choice, {option: float(option == choice) for option in offered})
+                        # Optional factor answers, only for factor questions actually asked.
+                        asked = json.loads(body)["questions"]
+                        reply_body["answers"].update({k: v for k, v in fixture.get("_factors", {}).items() if k in asked})
+                        response_body = json.dumps(reply_body).encode()
                 except (ValueError, KeyError, TypeError, IndexError):
                     pass
                 try:

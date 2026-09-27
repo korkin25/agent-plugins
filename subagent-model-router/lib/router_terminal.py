@@ -14,6 +14,7 @@ from collections import Counter
 _BARS = "▏▎▍▌▋▊▉█"
 _SPARK = "▁▂▃▄▅▆▇█"
 _MODEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,199}\Z")
+_PROJECT_RE = re.compile(r"[A-Za-z0-9_.:-]{1,80}\Z")
 
 
 def _clean(value, fallback="unknown"):
@@ -93,10 +94,14 @@ def local_data(rows, days=None, now=None, project=None, user=None, agent=None):
     cutoff = now - dt.timedelta(days=days) if days is not None else None
     rows = [r for r in rows if (stamp := _parse_time(r.get("ts"))) is not None
             and stamp <= now and (cutoff is None or stamp >= cutoff)]
+    projects = {}
+    # Journal rows carry cwd rather than a resolved cohort. One project per row
+    # keeps the project filter, breakdowns and hook-version rows consistent.
+    rows = [dict(r, project=_local_project(r, projects)) for r in rows]
     rows = [r for r in rows if all(want is None or r.get(key) == want
                                   for key, want in (("user", user), ("agent", agent)))]
-    version_rows = rows
     rows = [r for r in rows if project is None or r.get("project") == project]
+    version_rows = rows
     end = now.timestamp()
     start = (cutoff or min((_parse_time(r.get("ts")) for r in version_rows), default=now)).timestamp()
     decisions = [r for r in rows if _is_direct_choice(r)]
@@ -110,7 +115,7 @@ def local_data(rows, days=None, now=None, project=None, user=None, agent=None):
                "error_share": errors / len(attempted) if attempted else None}
     from router_dashboard import hook_versions, mixed_version_reporters, _reporter_labels
     summary["hook_versions"] = hook_versions([
-        {"labels": dict({key: r.get(key) for key in ("host", "user", "agent", "plugin_version", "agent_version")}, instance="local journal"),
+        {"labels": dict({key: r.get(key) for key in ("host", "user", "agent", "project", "plugin_version", "agent_version")}, instance="local journal"),
          "points": [[end, _parse_time(r["ts"]).timestamp()]]} for r in version_rows], end)
     summary["hook_version_mixed_reporters"] = mixed_version_reporters(summary["hook_versions"])
     summary["hook_version_metadata_gaps"] = sum(not _reporter_labels(r) for r in rows) if rows else None
@@ -121,6 +126,9 @@ def local_data(rows, days=None, now=None, project=None, user=None, agent=None):
         summary["by_" + label] = dict(Counter(_clean(_journal_label(r, label)) for r in rows
                                             if (not label.startswith("recommended_") or _is_direct_choice(r))
                                             and (label not in ("model", "effort") or _is_current_record(r))))
+    summary["models_by_project"] = _project_counts((r["project"], _launched_model(r)) for r in rows)
+    summary["recommended_by_project"] = _project_counts((r["project"], _journal_label(r, "recommended_model")) for r in rows)
+    summary["policy"] = _local_policy(rows)
     summary.update({key: None for key in ("pending_events", "coalesced_events", "dropped_events", "last_delivery_age_seconds")})
     costs = [value for r in attempted if isinstance(r.get("usage"), dict)
              and isinstance(r["usage"].get("cost"), (int, float))
@@ -155,6 +163,78 @@ def local_data(rows, days=None, now=None, project=None, user=None, agent=None):
             "note": "Точные наблюдения локального журнала; отсутствующие поля не восстанавливаются."}
 
 
+def _local_project(row, cache):
+    """Recorded cohort, else the project resolved from the journal's cwd, else unknown."""
+    value = row.get("project")
+    if isinstance(value, str) and _PROJECT_RE.fullmatch(value):
+        return value
+    cwd = row.get("cwd")
+    if not isinstance(cwd, str) or not cwd:
+        return "unknown"
+    if cwd not in cache:
+        from router_telemetry import resolve_project
+        cache[cwd] = resolve_project(cwd, {})
+    return cache[cwd]
+
+
+def _launched_model(row):
+    """Submitted launch model under the same evidence rules as the exported calls counter."""
+    value = row.get("actual_model")
+    if not isinstance(value, str) or not _MODEL_ID_RE.fullmatch(value):
+        return None
+    reason = row.get("reason")
+    exact = (reason in ("choice", "policy") and row.get("jev_attempted") is True
+             and row.get("jev_outcome") == "success" and row.get("applied") is True and value == row.get("model"))
+    explicit = reason == "explicit" and row.get("model_source") == "specified"
+    return value if exact or explicit else None
+
+
+def _project_counts(pairs):
+    counts = Counter((project, model) for project, model in pairs if model)
+    return [{"project": project, "model": model, "calls": calls}
+            for (project, model), calls in sorted(counts.items(), key=lambda item: (item[0][0], -item[1], item[0][1]))]
+
+
+def _rate(value):
+    return _observed_number(value)
+
+
+def _local_policy(rows):
+    """Factor policy from journal fields, mirroring the exported policy counters."""
+    from router_dashboard import POLICY_ADJUSTMENTS, PRICE_SOURCES, policy_summary
+    outcome, agreement, level, model, adjustments = Counter(), Counter(), Counter(), Counter(), Counter()
+    for r in rows:
+        policy = r.get("policy")
+        if not isinstance(policy, dict) or not _jev_attempted(r):
+            continue
+        raw = policy.get("outcome")
+        result = "success" if raw == "success" else str(raw).removeprefix("error:")
+        result = result if result in ("success", "answers", "range", "options", "sum") else "unknown"
+        success = result == "success"
+        outcome[result] += 1
+        value = policy.get("agreement")
+        agreement[value if value in ("identical", "same_model", "other_model", "policy_higher", "policy_lower") else "unknown"] += 1
+        value = policy.get("level")
+        level[str(value) if success and not isinstance(value, bool) and value in (1, 2, 3, 4) else "none"] += 1
+        value = policy.get("model")
+        model[(value if isinstance(value, str) and _MODEL_ID_RE.fullmatch(value) else "unknown")
+              if success and value else "none"] += 1
+        if success:
+            for name in policy.get("adjustments") or ():
+                name = str(name).replace(":", "_")
+                if name in POLICY_ADJUSTMENTS:
+                    adjustments[name] += 1
+    totals, priced = {}, {}
+    for r in rows:
+        policy = r.get("policy") if isinstance(r.get("policy"), dict) else {}
+        for source in PRICE_SOURCES:
+            value = _rate(policy.get("output_rate") if source == "policy" else r.get(source + "_output_rate"))
+            if value is not None:
+                totals[source] = totals.get(source, 0) + value
+                priced[source] = priced.get(source, 0) + 1
+    return policy_summary(dict(outcome), dict(agreement), dict(level), dict(model), dict(adjustments), totals, priced)
+
+
 def _parse_time(value):
     if not isinstance(value, str): return None
     try: return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(dt.timezone.utc)
@@ -174,7 +254,7 @@ def _is_current_record(row):
 
 
 def _is_direct_choice(row):
-    return row.get("reason") == "choice" and row.get("jev_attempted") is True
+    return row.get("reason") in ("choice", "policy") and row.get("jev_attempted") is True
 
 
 def _is_successful_direct_choice(row):
@@ -198,11 +278,12 @@ def _jev_outcome(row):
 
 def _journal_label(row, label):
     """Map journal's core fields to the same selected/submitted contract as VM."""
+    source = "choice_" if row.get("reason") == "policy" else ""  # Jev's Choice, even when the policy launched
     if label == "recommended_model":
-        value = row.get(label, row.get("model") if _is_successful_direct_choice(row) else None)
+        value = row.get(label, row.get(source + "model") if _is_successful_direct_choice(row) else None)
         return value if isinstance(value, str) and _MODEL_ID_RE.fullmatch(value) and _is_successful_direct_choice(row) else None
     if label == "recommended_effort":
-        value = row.get(label, row.get("effort") if _is_direct_choice(row) else None)
+        value = row.get(label, row.get(source + "effort") if _is_direct_choice(row) else None)
         return "not_supported" if (value is None and _is_successful_direct_choice(row)
                                     and row.get("selected_effort_supported") is False) else value
     if label == "model":
@@ -247,18 +328,20 @@ def format_terminal(data):
             lines.append(f"Последняя проверка ({title}): {state}; возраст снимка {_fmt(values.get(scope + '_age_seconds'))} с.")
     lines.extend(["Учтены только сообщённые цены; неизвестная цена не равна нулю. Баланс и лимит — последние снимки; суммы аккаунта включают другие инструменты. Лимит ключа не равен кредитному балансу.", ""])
     lines.extend(["**Наблюдавшиеся версии hook**", "",
-                  "Область: instance/user/клиент, независимо от project. Последняя — по времени hook, а не по номеру релиза. Это не список установленных версий; неактивные и неотчитавшиеся установки неизвестны.",
+                  "Область: instance/user/клиент и фильтр project, если он задан; колонка «Проект» — проект, о котором сообщил hook (у рядов старых версий без этой метки — unknown). Последняя — по времени hook, а не по номеру релиза. Это не список установленных версий; неактивные и неотчитавшиеся установки неизвестны.",
                   "Версии плагина и вызвавшего hook клиента Claude Code/Codex показаны отдельно от модели; отсутствующая версия клиента неизвестна.",
                   "Reporter с несколькими наблюдавшимися версиями: " + _fmt(summary.get("hook_version_mixed_reporters")) + ".",
                   "Вызовы без метаданных reporter (фильтры маршрутизации): " + _fmt(summary.get("hook_version_metadata_gaps")) + ".", "",
-                  "| Instance / host / user / клиент | Плагин | Версия клиента | Возраст hook | Наблюдение |", "|---|---|---|---:|---|"])
+                  "| Instance / host / user / клиент | Проект | Плагин | Версия клиента | Возраст hook | Наблюдение |", "|---|---|---|---|---:|---|"])
     for row in summary.get("hook_versions", []):
         reporter = " / ".join(_clean(row.get(key)) for key in ("instance", "host", "user", "agent"))
         state = "последняя наблюдавшаяся" if row["latest_observed"] else "историческая"
-        lines.append(f"| {reporter} | {_clean(row.get('plugin_version'))} | {_clean(row.get('agent_version'))} | {_fmt(row.get('age_seconds'))} с | {state} |")
+        lines.append(f"| {reporter} | {_clean(row.get('project'))} | {_clean(row.get('plugin_version'))} | {_clean(row.get('agent_version'))} | {_fmt(row.get('age_seconds'))} с | {state} |")
     if not summary.get("hook_versions"):
-        lines.append("| нет наблюдений версий | неизвестно | неизвестно | нет данных | неизвестно |")
+        lines.append("| нет наблюдений версий | неизвестно | неизвестно | неизвестно | нет данных | неизвестно |")
     lines.append("")
+    lines.extend(_terminal_models(summary))
+    lines.extend(_terminal_policy(summary))
     for title, key in (("Выбор Jev: модели", "by_recommended_model"), ("Выбор Jev: effort", "by_recommended_effort"), ("Переданные модели", "by_model"), ("Переданный effort", "by_effort"), ("Проекты", "by_project"), ("Пользователи", "by_user"), ("Агенты", "by_agent"), ("Причины", "by_reason")):
         values = data.get("summary", {}).get(key, {}) or {}
         lines.append(f"**{title}**")
@@ -285,6 +368,54 @@ def format_terminal(data):
     lines.extend(["", "Локальный журнал: наблюдения; квантили по измеренным запросам." if source == "local" else
                   "VictoriaMetrics: оценки по полученным счётчикам; пропуски — не нули. Доля выбора не доказывает экономию."])
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _terminal_models(summary):
+    launched, recommended = summary.get("models_by_project"), summary.get("recommended_by_project")
+    cells = {}
+    for index, rows in enumerate((launched, recommended)):
+        for row in rows or ():
+            cells.setdefault((row.get("project"), row.get("model")), [None, None])[index] = _num(row.get("calls"))
+    def cell(value, source):
+        return _fmt(value) if value is not None else ("нет данных" if source is None else "—")
+    lines = ["**Модели по проектам**", "",
+             "Запущено — переданная при запуске модель (выбор Jev или применённая политика, либо указанная явно); рекомендовал Jev — прямой выбор Jev. «—» — не наблюдалось.", "",
+             "| Проект | Модель | Запущено | Рекомендовал Jev |", "|---|---|---:|---:|"]
+    for (project, model), (first, second) in sorted(cells.items(), key=lambda item: (str(item[0][0]), -sum(v or 0 for v in item[1]), str(item[0][1])))[:40]:
+        lines.append(f"| {_clean(project)} | {_clean(model)} | {cell(first, launched)} | {cell(second, recommended)} |")
+    if not cells:
+        lines.append("| нет данных | нет данных | нет данных | нет данных |")
+    return lines + [""]
+
+
+def _counts_line(counts, names=None):
+    if counts is None:
+        return "нет данных"
+    if not counts:
+        return "не наблюдалось"
+    return " · ".join(_clean((names or {}).get(name, name)) + " " + _fmt(_num(count))
+                      for name, count in sorted(counts.items(), key=lambda item: (-(_num(item[1]) or 0), str(item[0])))[:10])
+
+
+def _terminal_policy(summary):
+    policy = summary.get("policy") or {}
+    levels = {"1": "1 (лёгкий)", "2": "2 (стандартный)", "3": "3 (сильный)", "4": "4 (frontier)"}
+    lines = ["**Факторная политика**", "",
+             f"Решений за окно: {_fmt(_num(policy.get('decisions')))} · ошибки исхода: {_fmt(_num(policy.get('outcome_errors')))} ({_fmt(_num(policy.get('outcome_error_share')), '%')}).",
+             "Согласие с выбором Jev: " + _counts_line(policy.get("by_agreement")) + ".",
+             "Уровни: " + _counts_line(policy.get("by_level"), levels) + ".",
+             "Модели политики: " + _counts_line(policy.get("by_model")) + ".",
+             "Корректировки: " + _fmt(_num(policy.get("adjustments_total"))) + (
+                 " · " + _counts_line(policy.get("adjustments")) if policy.get("adjustments") else "") + "."]
+    average = policy.get("average_output_usd_per_mtok") or {}
+    priced = policy.get("priced_calls") or {}
+    parts = []
+    for source, title in (("choice", "выбор Jev"), ("policy", "политика"), ("selected", "выбранная к запуску")):
+        value = _num(average.get(source))
+        parts.append(f"{title} " + ("нет данных" if value is None else f"${value:,.3f}/Mtok ({_fmt(_num(priced.get(source)))} выз.)"))
+    lines.append("Средняя цена выхода за вызов: " + " · ".join(parts) + ".")
+    lines.append("policy_higher — политика хотела более сильную модель, чем выбрал Jev; policy_lower — выбор Jev дороже, чем политика сочла нужным. Цена — стандартный прайс API, экономический индикатор, не счёт.")
+    return lines + [""]
 
 
 def _date(value):

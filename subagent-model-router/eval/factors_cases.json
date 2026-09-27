@@ -1,0 +1,1203 @@
+{
+  "schema": "factors_cases/v1",
+  "policy_under_test": "factors_v1 (lib/router_factors.py)",
+  "note": "Synthetic, pre-registered labels. Do not relabel after observing answers.",
+  "cases": [
+    {
+      "id": "R01-deploy-read-en",
+      "group": "readonly_vs_execution",
+      "pair": "deploy",
+      "language": "en",
+      "style": "packet",
+      "description": "Inspect a staging deployment configuration without deploying it.",
+      "task": "TASK: Read deploy/staging.yaml and report the container image tag and the target namespace.\nROLE: Read-only release assistant.\nREAD: deploy/staging.yaml\nEDIT: none\nMUST_NOT: run kubectl, helm or any deployment command; change any file.\nOUTPUT: two lines, \"image: <tag>\" and \"namespace: <name>\".",
+      "expected": {
+        "min_level": 1,
+        "max_level": 2,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 0,
+          "scope": 0,
+          "impact": 0,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Quoting two values from one named file is lookup (reasoning 0) with exact file and output (spec 2); no check is stated, so a wrong value is caught only by reading the file (verification 0); read-only and harmless (impact 0). Rubric level 1."
+    },
+    {
+      "id": "R02-deploy-apply-en",
+      "group": "readonly_vs_execution",
+      "pair": "deploy",
+      "language": "en",
+      "style": "packet",
+      "description": "Make the same staging configuration live.",
+      "task": "TASK: Apply deploy/staging.yaml to the shared staging cluster and report the rollout status.\nROLE: Release operator; deployment to staging is authorized for this task.\nREAD: deploy/staging.yaml\nEDIT: none in the repository\nCHECKS: run `kubectl apply -f deploy/staging.yaml`, then `kubectl rollout status deployment/web -n staging --timeout=120s`; expected: \"successfully rolled out\".\nMUST_NOT: touch other namespaces or clusters.\nOUTPUT: the rollout status line.",
+      "expected": {
+        "min_level": 3,
+        "max_level": 4,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 2,
+          "scope": 0,
+          "impact": 2,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Running two given commands is mechanical (reasoning 0), fully specified (spec 2) with an exact expected status (verification 2), but a wrong apply breaks a shared system (impact 2): impact floor 3, and the verified discount does not apply at impact 2."
+    },
+    {
+      "id": "R03-deploy-read-ru",
+      "group": "readonly_vs_execution",
+      "pair": "deploy",
+      "language": "ru",
+      "style": "plain",
+      "description": "Посмотреть конфигурацию staging-развёртывания, ничего не развёртывая.",
+      "task": "Прочитай deploy/staging.yaml и сообщи тег образа контейнера и целевой namespace. Команды kubectl, helm и любые команды развёртывания не запускай, файлы не меняй. Ответ — две строки: «image: <тег>» и «namespace: <имя>».",
+      "expected": {
+        "min_level": 1,
+        "max_level": 2,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 0,
+          "scope": 0,
+          "impact": 0,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к R01: выписка двух значений из одного файла, только чтение. Уровень по рубрике 1."
+    },
+    {
+      "id": "R04-deploy-apply-ru",
+      "group": "readonly_vs_execution",
+      "pair": "deploy",
+      "language": "ru",
+      "style": "plain",
+      "description": "Выкатить ту же конфигурацию staging.",
+      "task": "Примени deploy/staging.yaml к общему staging-кластеру командой `kubectl apply -f deploy/staging.yaml` (развёртывание в staging для этой задачи разрешено), затем выполни `kubectl rollout status deployment/web -n staging --timeout=120s` и пришли строку статуса; ожидается «successfully rolled out». Другие namespace и кластеры не трогай.",
+      "expected": {
+        "min_level": 3,
+        "max_level": 4,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 2,
+          "scope": 0,
+          "impact": 2,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к R02: механическое выполнение заданных команд, но ошибка ломает общую систему (impact 2) — нижняя граница 3."
+    },
+    {
+      "id": "S01-export-preview-specified-en",
+      "group": "specified_vs_unspecified",
+      "pair": "export-preview",
+      "language": "en",
+      "style": "plain",
+      "description": "Small CLI feature with an exact specification and a test.",
+      "task": "Add a --dry-run flag to the export command in cli/export.py. When the flag is set, print the paths that would be exported, one per line, and exit with code 0 without writing any file. Add a test to tests/test_export.py that runs the command with --dry-run in a temporary directory and asserts that no files were created. Run `pytest tests/test_export.py`; all tests must pass.",
+      "expected": {
+        "min_level": 1,
+        "max_level": 2,
+        "effort_min": "medium",
+        "effort_max": "high",
+        "factors": {
+          "reasoning": 1,
+          "spec": 2,
+          "verification": 2,
+          "scope": 1,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Ordinary implementation under a stated specification (reasoning 1); behaviour, files and acceptance are exact (spec 2); a stated automated test (verification 2); two files of one component (scope 1); a wrong result wastes time locally (impact 1). Level 2, verified discount to 1."
+    },
+    {
+      "id": "S02-export-preview-unspecified-en",
+      "group": "specified_vs_unspecified",
+      "pair": "export-preview",
+      "language": "en",
+      "style": "plain",
+      "description": "The same feature stated only as a goal.",
+      "task": "Add a way to preview what the export command would do without writing anything. Keep `pytest` green.",
+      "expected": {
+        "min_level": 2,
+        "max_level": 3,
+        "effort_min": "high",
+        "effort_max": "xhigh",
+        "factors": {
+          "reasoning": 1,
+          "spec": 0,
+          "verification": 1,
+          "scope": 1,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Same ordinary feature (reasoning 1) but only the goal is given (spec 0); an existing suite is a partial check (verification 1); impact 1 gives level 2 with no discount; spec 0 raises effort from medium to high."
+    },
+    {
+      "id": "S03-export-preview-specified-ru",
+      "group": "specified_vs_unspecified",
+      "pair": "export-preview",
+      "language": "ru",
+      "style": "packet",
+      "description": "Небольшая функция CLI с точной спецификацией и тестом.",
+      "task": "TASK: Добавь флаг --dry-run в команду export в cli/export.py: при этом флаге выведи пути, которые были бы экспортированы, по одному на строку, и заверши работу с кодом 0, не записав ни одного файла.\nROLE: Исполнитель.\nEDIT: cli/export.py, tests/test_export.py\nCHECKS: добавь в tests/test_export.py тест, который запускает команду с --dry-run во временном каталоге и проверяет, что файлы не созданы; `pytest tests/test_export.py` — все тесты проходят.\nOUTPUT: краткий отчёт и вывод pytest.",
+      "expected": {
+        "min_level": 1,
+        "max_level": 2,
+        "effort_min": "medium",
+        "effort_max": "high",
+        "factors": {
+          "reasoning": 1,
+          "spec": 2,
+          "verification": 2,
+          "scope": 1,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к S01: полностью заданная обычная реализация с автотестом; уровень 2 со скидкой за проверяемость до 1."
+    },
+    {
+      "id": "S04-export-preview-unspecified-ru",
+      "group": "specified_vs_unspecified",
+      "pair": "export-preview",
+      "language": "ru",
+      "style": "packet",
+      "description": "Та же функция, заданная только целью.",
+      "task": "TASK: Сделай так, чтобы можно было заранее посмотреть, что сделает команда export, ничего не записывая.\nROLE: Исполнитель.\nCHECKS: `pytest` остаётся зелёным.",
+      "expected": {
+        "min_level": 2,
+        "max_level": 3,
+        "effort_min": "high",
+        "effort_max": "xhigh",
+        "factors": {
+          "reasoning": 1,
+          "spec": 0,
+          "verification": 1,
+          "scope": 1,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к S02: задана только цель (spec 0), частичная проверка — уровень 2, усилие поднято до high."
+    },
+    {
+      "id": "T01-duration-tested-en",
+      "group": "tested_vs_untested",
+      "pair": "duration-ms",
+      "language": "en",
+      "style": "packet",
+      "description": "Parser change with stated unit tests.",
+      "task": "TASK: Make parse_duration in lib/timefmt.py accept the \"ms\" suffix, so \"250ms\" returns 0.25 (seconds); existing suffixes keep working.\nROLE: Implementer.\nEDIT: lib/timefmt.py, tests/test_timefmt.py\nCHECKS: add test cases \"250ms\" -> 0.25 and \"1.5s\" -> 1.5; run `python3 -m unittest tests.test_timefmt`; expected result: OK.\nOUTPUT: summary of the change and the unittest result line.",
+      "expected": {
+        "min_level": 1,
+        "max_level": 2,
+        "effort_min": "medium",
+        "effort_max": "high",
+        "factors": {
+          "reasoning": 1,
+          "spec": 2,
+          "verification": 2,
+          "scope": 1,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Ordinary implementation under a stated specification (reasoning 1), exact files and result (spec 2), stated automated check (verification 2), one component (scope 1), local impact (1): level 2, verified discount to 1."
+    },
+    {
+      "id": "T02-duration-untested-en",
+      "group": "tested_vs_untested",
+      "pair": "duration-ms",
+      "language": "en",
+      "style": "packet",
+      "description": "The same parser change with no automated check.",
+      "task": "TASK: Make parse_duration in lib/timefmt.py accept the \"ms\" suffix, so \"250ms\" returns 0.25 (seconds); existing suffixes keep working.\nROLE: Implementer.\nEDIT: lib/timefmt.py, docs/timefmt.md (add \"250ms\" to the examples table)\nCHECKS: none; the module has no automated tests and none may be added. A maintainer will read the change.\nOUTPUT: summary of the change.",
+      "expected": {
+        "min_level": 2,
+        "max_level": 3,
+        "effort_min": "medium",
+        "effort_max": "high",
+        "factors": {
+          "reasoning": 1,
+          "spec": 2,
+          "verification": 0,
+          "scope": 1,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Same work, but a wrong result is caught only by a person reading it (verification 0), so the verified discount does not apply: level 2."
+    },
+    {
+      "id": "T03-duration-tested-ru",
+      "group": "tested_vs_untested",
+      "pair": "duration-ms",
+      "language": "ru",
+      "style": "plain",
+      "description": "Правка парсера с указанными юнит-тестами.",
+      "task": "Сделай, чтобы parse_duration в lib/timefmt.py принимала суффикс «ms»: «250ms» возвращает 0.25 (секунды), прежние суффиксы работают как раньше. Меняй lib/timefmt.py и tests/test_timefmt.py: добавь случаи «250ms» -> 0.25 и «1.5s» -> 1.5 и запусти `python3 -m unittest tests.test_timefmt`, ожидаемый результат — OK.",
+      "expected": {
+        "min_level": 1,
+        "max_level": 2,
+        "effort_min": "medium",
+        "effort_max": "high",
+        "factors": {
+          "reasoning": 1,
+          "spec": 2,
+          "verification": 2,
+          "scope": 1,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к T01: точная спецификация и автотест — уровень 2 со скидкой до 1."
+    },
+    {
+      "id": "T04-duration-untested-ru",
+      "group": "tested_vs_untested",
+      "pair": "duration-ms",
+      "language": "ru",
+      "style": "plain",
+      "description": "Та же правка парсера без автоматической проверки.",
+      "task": "Сделай, чтобы parse_duration в lib/timefmt.py принимала суффикс «ms»: «250ms» возвращает 0.25 (секунды), прежние суффиксы работают как раньше. Меняй lib/timefmt.py и docs/timefmt.md (добавь «250ms» в таблицу примеров). Автотестов у модуля нет, добавлять их нельзя; правку проверит сопровождающий, прочитав её.",
+      "expected": {
+        "min_level": 2,
+        "max_level": 3,
+        "effort_min": "medium",
+        "effort_max": "high",
+        "factors": {
+          "reasoning": 1,
+          "spec": 2,
+          "verification": 0,
+          "scope": 1,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к T02: ошибку поймает только читающий человек (verification 0) — скидки нет, уровень 2."
+    },
+    {
+      "id": "V01-review-branch-en",
+      "group": "review_vs_named_file",
+      "pair": "rate-limit",
+      "language": "en",
+      "style": "plain",
+      "description": "Independent acceptance review of a finished branch.",
+      "task": "Review the changes on branch feature/rate-limit against the requirements in docs/rate-limit-spec.md. Judge the correctness, regressions and security of the token-bucket limiter independently (do not rely only on the author's tests), and finish with a recommendation: approve or request changes, with reasons.",
+      "expected": {
+        "min_level": 4,
+        "max_level": 4,
+        "effort_min": "high",
+        "effort_max": "xhigh",
+        "factors": {
+          "reasoning": 2,
+          "spec": 1,
+          "verification": 0,
+          "scope": 1,
+          "impact": 1,
+          "review": true,
+          "review_depth": 2,
+          "prior_failure": false
+        }
+      },
+      "rationale": "An acceptance decision on finished work (review true) that must judge correctness, regressions and security independently (review_depth 2): review floor 4. Reasoning is judgment among tradeoffs (2; 3 is defensible because of the security angle, which changes only effort). Goal and approach given (spec 1)."
+    },
+    {
+      "id": "V02-edit-review-file-en",
+      "group": "review_vs_named_file",
+      "pair": "rate-limit",
+      "language": "en",
+      "style": "plain",
+      "description": "Mechanical edit of a file whose name contains 'review'.",
+      "task": "Edit docs/rate-limit-review.md: under the heading \"Testing\", add the checklist item \"- [ ] a burst of 100 requests is limited to the bucket size\". Change nothing else in the file.",
+      "expected": {
+        "min_level": 1,
+        "max_level": 2,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 0,
+          "scope": 0,
+          "impact": 0,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Work on a file named review, not an acceptance decision (review false). A fully specified one-line insertion (reasoning 0, spec 2, scope 0, impact 0): level 1."
+    },
+    {
+      "id": "V03-review-branch-ru",
+      "group": "review_vs_named_file",
+      "pair": "rate-limit",
+      "language": "ru",
+      "style": "packet",
+      "description": "Независимое приёмочное ревью готовой ветки.",
+      "task": "TASK: Проведи ревью изменений в ветке feature/rate-limit на соответствие требованиям docs/rate-limit-spec.md: независимо оцени корректность, регрессии и безопасность ограничителя token bucket (не полагайся только на тесты автора).\nROLE: Независимый ревьюер; код не меняй.\nREAD: docs/rate-limit-spec.md, diff ветки feature/rate-limit относительно main\nOUTPUT: решение «approve» или «request changes» с обоснованием.",
+      "expected": {
+        "min_level": 4,
+        "max_level": 4,
+        "effort_min": "high",
+        "effort_max": "xhigh",
+        "factors": {
+          "reasoning": 2,
+          "spec": 1,
+          "verification": 0,
+          "scope": 1,
+          "impact": 1,
+          "review": true,
+          "review_depth": 2,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к V01: приёмочное решение с независимой оценкой корректности и безопасности — review_depth 2, нижняя граница 4."
+    },
+    {
+      "id": "V04-edit-review-file-ru",
+      "group": "review_vs_named_file",
+      "pair": "rate-limit",
+      "language": "ru",
+      "style": "packet",
+      "description": "Механическая правка файла, в имени которого есть «review».",
+      "task": "TASK: В docs/rate-limit-review.md под заголовком «Testing» добавь пункт чек-листа «- [ ] всплеск из 100 запросов ограничивается размером корзины». Больше в файле ничего не меняй.\nROLE: Исполнитель.\nEDIT: docs/rate-limit-review.md",
+      "expected": {
+        "min_level": 1,
+        "max_level": 2,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 0,
+          "scope": 0,
+          "impact": 0,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к V02: правка файла с именем review без приёмочного решения — уровень 1."
+    },
+    {
+      "id": "P01-flaky-first-en",
+      "group": "prior_failure_vs_first",
+      "pair": "flaky-sync",
+      "language": "en",
+      "style": "packet",
+      "description": "Intermittent CI failure, first attempt.",
+      "task": "TASK: The integration test test_sync_resumes fails intermittently on CI (about one run in ten). Find the cause and fix it.\nROLE: Implementer.\nREAD: sync/, tests/integration/test_sync.py, CI logs in ci-logs/\nCHECKS: run `pytest tests/integration/test_sync.py::test_sync_resumes --count=50`; all 50 runs must pass.\nOUTPUT: root cause, summary of the fix, test result.",
+      "expected": {
+        "min_level": 3,
+        "max_level": 4,
+        "effort_min": "high",
+        "effort_max": "xhigh",
+        "factors": {
+          "reasoning": 2,
+          "spec": 1,
+          "verification": 2,
+          "scope": 1,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Diagnosing an unknown cause (reasoning 2): level 3. A failing test is not an earlier failed attempt at this work (prior_failure false). Goal and approach given (spec 1), so no verified discount."
+    },
+    {
+      "id": "P02-flaky-retry-failed-en",
+      "group": "prior_failure_vs_first",
+      "pair": "flaky-sync",
+      "language": "en",
+      "style": "packet",
+      "description": "The same flaky test after a failed fix.",
+      "task": "TASK: The integration test test_sync_resumes fails intermittently on CI (about one run in ten). Find the cause and fix it. A previous attempt added a retry decorator to the test; that attempt failed: the flake still reproduces, and the decorator has been reverted.\nROLE: Implementer.\nREAD: sync/, tests/integration/test_sync.py, CI logs in ci-logs/\nCHECKS: run `pytest tests/integration/test_sync.py::test_sync_resumes --count=50`; all 50 runs must pass.\nOUTPUT: root cause, summary of the fix, test result.",
+      "expected": {
+        "min_level": 4,
+        "max_level": 4,
+        "effort_min": "high",
+        "effort_max": "xhigh",
+        "factors": {
+          "reasoning": 2,
+          "spec": 1,
+          "verification": 2,
+          "scope": 1,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": true
+        }
+      },
+      "rationale": "Same diagnosis (level 3) plus an explicitly failed earlier attempt at this same work: prior-failure raise to 4."
+    },
+    {
+      "id": "P03-flaky-first-ru",
+      "group": "prior_failure_vs_first",
+      "pair": "flaky-sync",
+      "language": "ru",
+      "style": "plain",
+      "description": "Нестабильное падение в CI, первая попытка.",
+      "task": "Интеграционный тест test_sync_resumes периодически падает в CI (примерно один прогон из десяти). Найди причину и исправь. Смотри sync/, tests/integration/test_sync.py и логи CI в ci-logs/. Проверка: `pytest tests/integration/test_sync.py::test_sync_resumes --count=50` — все 50 прогонов должны пройти. В ответе — причина, суть исправления и результат теста.",
+      "expected": {
+        "min_level": 3,
+        "max_level": 4,
+        "effort_min": "high",
+        "effort_max": "xhigh",
+        "factors": {
+          "reasoning": 2,
+          "spec": 1,
+          "verification": 2,
+          "scope": 1,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к P01: поиск неизвестной причины — уровень 3; падающий тест — не прошлая неудачная попытка."
+    },
+    {
+      "id": "P04-flaky-retry-failed-ru",
+      "group": "prior_failure_vs_first",
+      "pair": "flaky-sync",
+      "language": "ru",
+      "style": "plain",
+      "description": "Тот же нестабильный тест после неудачного исправления.",
+      "task": "Интеграционный тест test_sync_resumes периодически падает в CI (примерно один прогон из десяти). Найди причину и исправь. Предыдущая попытка добавила к тесту декоратор повтора и не удалась: падение по-прежнему воспроизводится, декоратор откатили. Смотри sync/, tests/integration/test_sync.py и логи CI в ci-logs/. Проверка: `pytest tests/integration/test_sync.py::test_sync_resumes --count=50` — все 50 прогонов должны пройти. В ответе — причина, суть исправления и результат теста.",
+      "expected": {
+        "min_level": 4,
+        "max_level": 4,
+        "effort_min": "high",
+        "effort_max": "xhigh",
+        "factors": {
+          "reasoning": 2,
+          "spec": 1,
+          "verification": 2,
+          "scope": 1,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": true
+        }
+      },
+      "rationale": "Русская пара к P02: прямо сказано, что прежняя попытка той же работы провалилась — подъём до 4."
+    },
+    {
+      "id": "C01-lru-thread-safety-local-en",
+      "group": "local_vs_cross_component",
+      "pair": "thread-safety",
+      "language": "en",
+      "style": "plain",
+      "description": "Concurrency fix contained in one module.",
+      "task": "cache/lru.py is used from several threads, and concurrent get/put calls can corrupt its internal linked list. Make LRUCache thread-safe with a lock inside cache/lru.py, and add a stress test in tests/test_lru.py that calls get/put from 8 threads and checks the list invariants. Run `pytest tests/test_lru.py`.",
+      "expected": {
+        "min_level": 3,
+        "max_level": 4,
+        "effort_min": "xhigh",
+        "effort_max": "xhigh",
+        "factors": {
+          "reasoning": 3,
+          "spec": 1,
+          "verification": 1,
+          "scope": 1,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Reasoning about concurrency and data integrity (reasoning 3): level 3. Approach is given but details (lock granularity, invariants) are left (spec 1); the agent writes its own stress test (verification 1); one component (scope 1), so no frontier raise."
+    },
+    {
+      "id": "C02-session-thread-safety-cross-en",
+      "group": "local_vs_cross_component",
+      "pair": "thread-safety",
+      "language": "en",
+      "style": "plain",
+      "description": "The same concurrency fix spread across several components.",
+      "task": "The session cache is updated by the api service, the background worker and the CLI (packages cache/, api/, worker/ and cli/), which run as separate threads and processes, and concurrent updates lose writes. Make session updates safe with a file lock in cache/ that api/, worker/ and cli/ acquire around every update, and add a stress test in tests/test_sessions.py that runs writers from all three and checks that no update is lost. Run `pytest tests/test_sessions.py`.",
+      "expected": {
+        "min_level": 4,
+        "max_level": 4,
+        "effort_min": "xhigh",
+        "effort_max": "xhigh",
+        "factors": {
+          "reasoning": 3,
+          "spec": 1,
+          "verification": 1,
+          "scope": 2,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Same concurrency reasoning (3) across several components (scope 2): frontier_scope raises to 4."
+    },
+    {
+      "id": "C03-lru-thread-safety-local-ru",
+      "group": "local_vs_cross_component",
+      "pair": "thread-safety",
+      "language": "ru",
+      "style": "packet",
+      "description": "Исправление конкурентности внутри одного модуля.",
+      "task": "TASK: cache/lru.py используется из нескольких потоков, и параллельные get/put могут испортить внутренний связный список. Сделай LRUCache потокобезопасным с помощью блокировки внутри cache/lru.py.\nROLE: Исполнитель.\nEDIT: cache/lru.py, tests/test_lru.py\nCHECKS: добавь в tests/test_lru.py стресс-тест, который вызывает get/put из 8 потоков и проверяет инварианты списка; запусти `pytest tests/test_lru.py`.",
+      "expected": {
+        "min_level": 3,
+        "max_level": 4,
+        "effort_min": "xhigh",
+        "effort_max": "xhigh",
+        "factors": {
+          "reasoning": 3,
+          "spec": 1,
+          "verification": 1,
+          "scope": 1,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к C01: рассуждение о конкурентности (3) в одном компоненте — уровень 3."
+    },
+    {
+      "id": "C04-session-thread-safety-cross-ru",
+      "group": "local_vs_cross_component",
+      "pair": "thread-safety",
+      "language": "ru",
+      "style": "packet",
+      "description": "То же исправление конкурентности на несколько компонентов.",
+      "task": "TASK: Кэш сессий обновляют сервис api, фоновый worker и CLI (пакеты cache/, api/, worker/ и cli/), работающие в разных потоках и процессах, и при параллельных обновлениях записи теряются. Сделай обновления сессий безопасными с помощью файловой блокировки в cache/, которую api/, worker/ и cli/ берут вокруг каждого обновления.\nROLE: Исполнитель.\nEDIT: cache/, api/, worker/, cli/, tests/test_sessions.py\nCHECKS: добавь в tests/test_sessions.py стресс-тест с писателями из всех трёх компонентов, проверяющий, что ни одно обновление не потеряно; запусти `pytest tests/test_sessions.py`.",
+      "expected": {
+        "min_level": 4,
+        "max_level": 4,
+        "effort_min": "xhigh",
+        "effort_max": "xhigh",
+        "factors": {
+          "reasoning": 3,
+          "spec": 1,
+          "verification": 1,
+          "scope": 2,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к C02: конкурентность (3) на несколько компонентов (scope 2) — уровень 4."
+    },
+    {
+      "id": "D01-backups-list-en",
+      "group": "harmless_vs_data_loss",
+      "pair": "backups",
+      "language": "en",
+      "style": "packet",
+      "description": "List old backups without touching them.",
+      "task": "TASK: List the backup archives in /srv/backups older than 30 days (by mtime) and write their paths to out/old-backups.txt, one per line.\nROLE: Operator; read-only access to /srv/backups.\nCHECKS: `find /srv/backups -name '*.tar.zst' -mtime +30 | sort > out/old-backups.txt`; then `wc -l out/old-backups.txt` must equal the number of paths you report.\nMUST_NOT: delete, move or modify anything under /srv/backups.\nOUTPUT: the line count.",
+      "expected": {
+        "min_level": 1,
+        "max_level": 2,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 2,
+          "scope": 0,
+          "impact": 0,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "A mechanical listing with the exact command (reasoning 0, spec 2), an exact stated check (verification 2), harmless (impact 0): level 1 (the discount cannot go below 1)."
+    },
+    {
+      "id": "D02-backups-delete-en",
+      "group": "harmless_vs_data_loss",
+      "pair": "backups",
+      "language": "en",
+      "style": "packet",
+      "description": "Delete the same old backups.",
+      "task": "TASK: Delete the backup archives in /srv/backups older than 30 days (by mtime). Deletion is authorized; these archives have no other copy.\nROLE: Operator; write access to /srv/backups.\nCHECKS: `find /srv/backups -name '*.tar.zst' -mtime +30 -delete`; then `find /srv/backups -name '*.tar.zst' -mtime +30 | wc -l` must print 0.\nMUST_NOT: touch files other than *.tar.zst older than 30 days.\nOUTPUT: the number of deleted archives.",
+      "expected": {
+        "min_level": 3,
+        "max_level": 4,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 2,
+          "scope": 0,
+          "impact": 2,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Same mechanical command with an exact check, but a mistake destroys the only copy of data (impact 2): impact floor 3, no verified discount at impact 2."
+    },
+    {
+      "id": "D03-backups-list-ru",
+      "group": "harmless_vs_data_loss",
+      "pair": "backups",
+      "language": "ru",
+      "style": "plain",
+      "description": "Перечислить старые резервные копии, не трогая их.",
+      "task": "Перечисли архивы резервных копий в /srv/backups старше 30 дней (по mtime) и запиши их пути в out/old-backups.txt, по одному на строку: `find /srv/backups -name '*.tar.zst' -mtime +30 | sort > out/old-backups.txt`, затем `wc -l out/old-backups.txt` должен совпасть с числом путей в ответе. В /srv/backups ничего не удаляй, не перемещай и не меняй. В ответе — число строк.",
+      "expected": {
+        "min_level": 1,
+        "max_level": 2,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 2,
+          "scope": 0,
+          "impact": 0,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к D01: механический список с точной проверкой, безвредно — уровень 1."
+    },
+    {
+      "id": "D04-backups-delete-ru",
+      "group": "harmless_vs_data_loss",
+      "pair": "backups",
+      "language": "ru",
+      "style": "plain",
+      "description": "Удалить те же старые резервные копии.",
+      "task": "Удали архивы резервных копий в /srv/backups старше 30 дней (по mtime); удаление разрешено, других копий этих архивов нет: `find /srv/backups -name '*.tar.zst' -mtime +30 -delete`, затем `find /srv/backups -name '*.tar.zst' -mtime +30 | wc -l` должен вывести 0. Другие файлы не трогай. В ответе — число удалённых архивов.",
+      "expected": {
+        "min_level": 3,
+        "max_level": 4,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 2,
+          "scope": 0,
+          "impact": 2,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к D02: удаление единственных копий данных (impact 2) — нижняя граница 3."
+    },
+    {
+      "id": "W01-checklist-review-en",
+      "group": "review_depth",
+      "pair": "mr42",
+      "language": "en",
+      "style": "packet",
+      "description": "Acceptance check of a merge request against an explicit checklist.",
+      "task": "TASK: Check whether merge request !42 follows the contribution checklist in CONTRIBUTING.md: the title starts with a type prefix, an issue is linked, and CHANGELOG.md has an entry. Answer \"pass\" or \"fail\" and list the missing items.\nROLE: Checklist reviewer; do not change anything.\nREAD: CONTRIBUTING.md, merge request !42\nOUTPUT: pass or fail, and missing items.",
+      "expected": {
+        "min_level": 2,
+        "max_level": 3,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 0,
+          "scope": 0,
+          "impact": 0,
+          "review": true,
+          "review_depth": 0,
+          "prior_failure": false
+        }
+      },
+      "rationale": "A pass/fail acceptance decision on someone else's finished work (review true) limited to an explicit checklist (review_depth 0): review floor 2. Checking three listed items is lookup (reasoning 0)."
+    },
+    {
+      "id": "W02-behaviour-review-en",
+      "group": "review_depth",
+      "pair": "mr42",
+      "language": "en",
+      "style": "packet",
+      "description": "Acceptance review of a merge request against stated behaviour and tests.",
+      "task": "TASK: Check whether merge request !42 implements the behaviour described in issue #17 (retry on HTTP 503, at most 3 attempts) and whether its tests cover that behaviour and pass; recommend merge or no merge.\nROLE: Reviewer; do not change the code.\nREAD: issue #17, merge request !42\nCHECKS: run `pytest tests/test_client.py`.\nOUTPUT: merge or no merge, with reasons.",
+      "expected": {
+        "min_level": 3,
+        "max_level": 4,
+        "effort_min": "medium",
+        "effort_max": "high",
+        "factors": {
+          "reasoning": 1,
+          "spec": 1,
+          "verification": 1,
+          "scope": 1,
+          "impact": 1,
+          "review": true,
+          "review_depth": 1,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Acceptance decision (review true) on behaviour against stated requirements and tests (review_depth 1): review floor 3. Comparison under a stated specification (reasoning 1)."
+    },
+    {
+      "id": "W03-checklist-review-ru",
+      "group": "review_depth",
+      "pair": "mr42",
+      "language": "ru",
+      "style": "plain",
+      "description": "Приёмочная проверка merge request по явному чек-листу.",
+      "task": "Проверь, соответствует ли merge request !42 чек-листу из CONTRIBUTING.md: заголовок начинается с префикса типа, связан issue, в CHANGELOG.md есть запись. Ответь «pass» или «fail» и перечисли недостающие пункты. Ничего не меняй.",
+      "expected": {
+        "min_level": 2,
+        "max_level": 3,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 0,
+          "scope": 0,
+          "impact": 0,
+          "review": true,
+          "review_depth": 0,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к W01: решение pass/fail по явному чек-листу — review_depth 0, нижняя граница 2."
+    },
+    {
+      "id": "W04-behaviour-review-ru",
+      "group": "review_depth",
+      "pair": "mr42",
+      "language": "ru",
+      "style": "plain",
+      "description": "Приёмочное ревью merge request по заявленному поведению и тестам.",
+      "task": "Проверь, реализует ли merge request !42 поведение из issue #17 (повтор при HTTP 503, не больше 3 попыток), покрывают ли его тесты это поведение и проходят ли они (`pytest tests/test_client.py`), и порекомендуй: вливать или нет. Код не меняй.",
+      "expected": {
+        "min_level": 3,
+        "max_level": 4,
+        "effort_min": "medium",
+        "effort_max": "high",
+        "factors": {
+          "reasoning": 1,
+          "spec": 1,
+          "verification": 1,
+          "scope": 1,
+          "impact": 1,
+          "review": true,
+          "review_depth": 1,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к W02: поведение против требований и тестов — review_depth 1, нижняя граница 3."
+    },
+    {
+      "id": "F01-key-rotation-en",
+      "group": "frontier_security",
+      "pair": "key-rotation",
+      "language": "en",
+      "style": "plain",
+      "description": "Security change spanning several services.",
+      "task": "Implement signing-key rotation for access tokens across the auth service, the API gateway and the Python SDK. New tokens must be signed with the new key, tokens signed with the previous key must stay valid for 24 hours, and key material must never appear in logs. Decide how the gateway learns about a key change.",
+      "expected": {
+        "min_level": 4,
+        "max_level": 4,
+        "effort_min": "xhigh",
+        "effort_max": "xhigh",
+        "factors": {
+          "reasoning": 3,
+          "spec": 1,
+          "verification": 0,
+          "scope": 2,
+          "impact": 2,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Security and contracts between systems (reasoning 3) across several components (scope 2): frontier 4. A mistake can lock out users or leak keys (impact 2). No checks are stated (verification 0)."
+    },
+    {
+      "id": "F02-key-rotation-ru",
+      "group": "frontier_security",
+      "pair": "key-rotation",
+      "language": "ru",
+      "style": "packet",
+      "description": "Изменение безопасности, затрагивающее несколько сервисов.",
+      "task": "TASK: Реализуй ротацию ключа подписи access-токенов в сервисе auth, API-шлюзе и Python SDK: новые токены подписываются новым ключом, токены со старым ключом остаются действительными 24 часа, ключевой материал никогда не попадает в логи. Реши, как шлюз узнаёт о смене ключа.\nROLE: Исполнитель.\nEDIT: auth/, gateway/, sdk/python/",
+      "expected": {
+        "min_level": 4,
+        "max_level": 4,
+        "effort_min": "xhigh",
+        "effort_max": "xhigh",
+        "factors": {
+          "reasoning": 3,
+          "spec": 1,
+          "verification": 0,
+          "scope": 2,
+          "impact": 2,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к F01: безопасность и контракты между системами (3) на несколько компонентов — уровень 4."
+    },
+    {
+      "id": "A01-queue-adr-en",
+      "group": "design_tradeoff",
+      "pair": "queue-adr",
+      "language": "en",
+      "style": "packet",
+      "description": "Architecture decision written as one document.",
+      "task": "TASK: Choose between SQLite and PostgreSQL for the local job queue of the ingestion service and write the decision record docs/adr/007-job-queue.md comparing durability, operational burden, concurrent writers and migration cost; end with a recommendation.\nROLE: Architect; write only the ADR file.\nEDIT: docs/adr/007-job-queue.md\nOUTPUT: the ADR.",
+      "expected": {
+        "min_level": 3,
+        "max_level": 4,
+        "effort_min": "high",
+        "effort_max": "xhigh",
+        "factors": {
+          "reasoning": 2,
+          "spec": 1,
+          "verification": 0,
+          "scope": 0,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Choosing a design among tradeoffs (reasoning 2): level 3. Criteria are given, the method is not (spec 1); only a reader can catch a wrong recommendation (verification 0); one file (scope 0)."
+    },
+    {
+      "id": "A02-queue-adr-ru",
+      "group": "design_tradeoff",
+      "pair": "queue-adr",
+      "language": "ru",
+      "style": "plain",
+      "description": "Архитектурное решение, оформляемое одним документом.",
+      "task": "Выбери между SQLite и PostgreSQL для локальной очереди задач сервиса ingestion и напиши запись решения docs/adr/007-job-queue.md: сравни надёжность хранения, операционную нагрузку, конкурентных писателей и стоимость миграции, в конце дай рекомендацию. Меняй только этот файл.",
+      "expected": {
+        "min_level": 3,
+        "max_level": 4,
+        "effort_min": "high",
+        "effort_max": "xhigh",
+        "factors": {
+          "reasoning": 2,
+          "spec": 1,
+          "verification": 0,
+          "scope": 0,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к A01: выбор решения среди компромиссов (2) — уровень 3."
+    },
+    {
+      "id": "X01-translate-doc-en",
+      "group": "translation",
+      "pair": "setup-doc",
+      "language": "en",
+      "style": "plain",
+      "description": "Translate a setup guide.",
+      "task": "Translate docs/setup.ru.md into English and save the result as docs/setup.md. Keep the heading structure, code blocks and links unchanged; translate only the prose.",
+      "expected": {
+        "min_level": 1,
+        "max_level": 2,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 0,
+          "scope": 0,
+          "impact": 0,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Translation (reasoning 0), exact source, target and constraints (spec 2), only a reader catches errors (verification 0), one file, harmless: level 1."
+    },
+    {
+      "id": "X02-translate-doc-ru",
+      "group": "translation",
+      "pair": "setup-doc",
+      "language": "ru",
+      "style": "packet",
+      "description": "Перевести руководство по установке.",
+      "task": "TASK: Переведи docs/setup.md на русский и сохрани результат как docs/setup.ru.md.\nROLE: Переводчик.\nEDIT: docs/setup.ru.md\nMUST_NOT: менять структуру заголовков, блоки кода и ссылки; переводи только текст.",
+      "expected": {
+        "min_level": 1,
+        "max_level": 2,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 0,
+          "scope": 0,
+          "impact": 0,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к X01: перевод одного файла — уровень 1."
+    },
+    {
+      "id": "N01-rename-public-en",
+      "group": "rename_scope",
+      "pair": "fmt-row",
+      "language": "en",
+      "style": "packet",
+      "description": "Repository-wide mechanical rename with automated checks.",
+      "task": "TASK: Rename the public function fmt_row to format_row everywhere in the repository: it is defined in reports/table.py and imported by cli/, api/ and plugins/; update all call sites and the docs; keep no alias.\nROLE: Implementer.\nCHECKS: `grep -rn fmt_row .` prints nothing; `pytest` passes.\nOUTPUT: number of files changed and the pytest summary line.",
+      "expected": {
+        "min_level": 1,
+        "max_level": 2,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 2,
+          "scope": 2,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "A mechanical edit (reasoning 0) across several components (scope 2) with exact steps and automated checks (spec 2, verification 2). Broken imports waste time locally (impact 1): level 2, verified discount to 1; scope alone does not raise a level without reasoning 3."
+    },
+    {
+      "id": "N02-rename-public-ru",
+      "group": "rename_scope",
+      "pair": "fmt-row",
+      "language": "ru",
+      "style": "plain",
+      "description": "Механическое переименование по всему репозиторию с автопроверками.",
+      "task": "Переименуй публичную функцию fmt_row в format_row во всём репозитории: она определена в reports/table.py и импортируется в cli/, api/ и plugins/; обнови все места вызова и документацию, псевдоним не оставляй. Проверки: `grep -rn fmt_row .` ничего не выводит, `pytest` проходит. В ответе — число изменённых файлов и итоговая строка pytest.",
+      "expected": {
+        "min_level": 1,
+        "max_level": 2,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 2,
+          "scope": 2,
+          "impact": 1,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к N01: механическая правка на несколько компонентов с автопроверками — уровень 1."
+    },
+    {
+      "id": "E01-announce-draft-en",
+      "group": "external_message",
+      "pair": "announce",
+      "language": "en",
+      "style": "packet",
+      "description": "Draft a release announcement without sending it.",
+      "task": "TASK: Draft the announcement of release 2.3.0 for the #releases chat, listing the three entries under 2.3.0 in CHANGELOG.md, and save it to out/announce-2.3.0.txt.\nROLE: Writer.\nEDIT: out/announce-2.3.0.txt\nMUST_NOT: send, post or publish anything.",
+      "expected": {
+        "min_level": 1,
+        "max_level": 2,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 0,
+          "scope": 0,
+          "impact": 0,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Reformatting three changelog entries into a local file (reasoning 0, spec 2), harmless (impact 0): level 1."
+    },
+    {
+      "id": "E02-announce-send-en",
+      "group": "external_message",
+      "pair": "announce",
+      "language": "en",
+      "style": "packet",
+      "description": "Send the same release announcement to external subscribers.",
+      "task": "TASK: Post the announcement of release 2.3.0 to the #releases chat (about 400 subscribers, including external customers), listing the three entries under 2.3.0 in CHANGELOG.md. Posting is authorized.\nROLE: Release communicator.\nCHECKS: send with `scripts/notify.sh --channel releases --file out/announce-2.3.0.txt`.\nMUST_NOT: post to any other channel.",
+      "expected": {
+        "min_level": 3,
+        "max_level": 4,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 0,
+          "scope": 0,
+          "impact": 2,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Same mechanical text, but it reaches people outside (impact 2): impact floor 3."
+    },
+    {
+      "id": "E03-announce-draft-ru",
+      "group": "external_message",
+      "pair": "announce",
+      "language": "ru",
+      "style": "plain",
+      "description": "Подготовить анонс релиза, не отправляя его.",
+      "task": "Подготовь текст анонса релиза 2.3.0 для чата #releases: перечисли три пункта из раздела 2.3.0 в CHANGELOG.md и сохрани в out/announce-2.3.0.txt. Ничего не отправляй и не публикуй.",
+      "expected": {
+        "min_level": 1,
+        "max_level": 2,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 0,
+          "scope": 0,
+          "impact": 0,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к E01: локальный черновик, безвредно — уровень 1."
+    },
+    {
+      "id": "E04-announce-send-ru",
+      "group": "external_message",
+      "pair": "announce",
+      "language": "ru",
+      "style": "plain",
+      "description": "Отправить тот же анонс внешним подписчикам.",
+      "task": "Опубликуй анонс релиза 2.3.0 в чате #releases (около 400 подписчиков, среди них внешние клиенты): перечисли три пункта из раздела 2.3.0 в CHANGELOG.md и отправь командой `scripts/notify.sh --channel releases --file out/announce-2.3.0.txt`. Публикация разрешена; в другие каналы не пиши.",
+      "expected": {
+        "min_level": 3,
+        "max_level": 4,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 0,
+          "scope": 0,
+          "impact": 2,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к E02: сообщение уходит людям снаружи (impact 2) — нижняя граница 3."
+    },
+    {
+      "id": "Q01-long-context-lookup-en",
+      "group": "plain_long",
+      "pair": "long-lookup",
+      "language": "en",
+      "style": "plain",
+      "description": "Long background, small read-only question at the end.",
+      "task": "Some background first. Last quarter we moved CI from Jenkins to GitLab runners, and during the move the nightly database migration job was paused for two weeks, which the data team still remembers. The platform group now prefers that any change to runners, migrations or deploy scripts goes through a design review, and several people have opinions about whether we should drop Python 3.10 support next release. None of that is for you today. All I need right now: open pyproject.toml and tell me the value of requires-python. Do not change anything.",
+      "expected": {
+        "min_level": 1,
+        "max_level": 2,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 0,
+          "scope": 0,
+          "impact": 0,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "The authorized task is a single-value lookup in one named file (reasoning 0, spec 2, scope 0, impact 0); context about migrations, deploys and design reviews is explicitly not the task. Level 1."
+    },
+    {
+      "id": "Q02-long-context-lookup-ru",
+      "group": "plain_long",
+      "pair": "long-lookup",
+      "language": "ru",
+      "style": "plain",
+      "description": "Длинная предыстория, в конце маленький вопрос только на чтение.",
+      "task": "Сначала немного контекста. В прошлом квартале мы перенесли CI с Jenkins на раннеры GitLab, и во время переезда ночная миграция базы данных стояла две недели — команда данных до сих пор это помнит. Группа платформы теперь хочет, чтобы любые изменения раннеров, миграций и скриптов развёртывания проходили дизайн-ревью, а у нескольких человек есть мнения о том, отказываться ли от Python 3.10 в следующем релизе. Всё это сегодня не для тебя. Сейчас нужно только одно: открой pyproject.toml и скажи значение requires-python. Ничего не меняй.",
+      "expected": {
+        "min_level": 1,
+        "max_level": 2,
+        "effort_min": "low",
+        "effort_max": "medium",
+        "factors": {
+          "reasoning": 0,
+          "spec": 2,
+          "verification": 0,
+          "scope": 0,
+          "impact": 0,
+          "review": false,
+          "review_depth": null,
+          "prior_failure": false
+        }
+      },
+      "rationale": "Русская пара к Q01: разрешённая задача — поиск одного значения в одном файле; уровень 1."
+    }
+  ]
+}

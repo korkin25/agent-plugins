@@ -220,9 +220,20 @@ def normalize_config(data):
                     raise ConfigError(f"legacy {agent}.{key} must be removed; use {agent}.allowed_models")
                 ignored.append(f"{agent}.{key}")
         data[agent] = table
-    # Observability configuration cannot disable routing or silently restore a private journal.
+    # Observability and the shadow factor policy cannot disable routing; they are validated apart.
     telemetry_data = data.get("telemetry", {})
-    cfg = _merge(DEFAULTS, {k: v for k, v in data.items() if k != "telemetry"})
+    policy_data = data.get("policy", {})
+    from router_factors import DEFAULT_RANKS
+    ranks = {}
+    for agent in ("claude", "codex"):
+        table = data.get(agent)
+        if isinstance(table, dict) and "capability_rank" in table:
+            table = dict(table)
+            ranks[agent] = table.pop("capability_rank")
+            data[agent] = table
+        else:
+            ranks[agent] = DEFAULT_RANKS[agent]
+    cfg = _merge(DEFAULTS, {k: v for k, v in data.items() if k not in ("telemetry", "policy")})
     if not isinstance(cfg["enabled"], bool):
         raise ConfigError("enabled must be true or false")
     if cfg["mode"] not in ("active", "shadow"):
@@ -280,6 +291,12 @@ def normalize_config(data):
     except (ValueError, TypeError):
         cfg["telemetry"] = validate_config({"backend": "off"})
         cfg["_telemetry_error"] = "invalid telemetry configuration; collection disabled, routing unaffected"
+    from router_factors import validate as validate_policy
+    try:
+        cfg["policy"] = validate_policy(policy_data, ranks)
+    except (ValueError, TypeError) as exc:
+        cfg["policy"] = validate_policy({"mode": "off"}, {agent: {} for agent in ranks})
+        cfg["_policy_error"] = f"invalid factor policy configuration ({exc}); factor policy disabled, routing unaffected"
     if ignored:
         cfg["_migration_warning"] = "Ignored removed settings: " + ", ".join(ignored) + "; migrate using config.example.toml"
     return cfg
@@ -418,7 +435,8 @@ def parse_response(raw, questions, header_request_id=None):
         raise JevError("json")
     try:
         answers = data.get("answers")
-        if not isinstance(answers, dict) or set(answers) != {"selection"}:
+        # The Choice is mandatory; missing factor answers only disable the factor policy.
+        if not isinstance(answers, dict) or "selection" not in answers or set(answers) - set(questions):
             raise JevError("answers")
         answer = answers["selection"]
         if not isinstance(answer, dict) or answer.get("type") != "choice":
@@ -447,7 +465,10 @@ def parse_response(raw, questions, header_request_id=None):
     request_id = header_request_id or data.get("id")
     result = {
         "choice": choice,
-        "answers": {"selection": {"type": "choice", "choice": choice, "probabilities": table}},
+        "answers": {"selection": {"type": "choice", "choice": choice, "probabilities": table,
+                                  "confidence": answer.get("confidence") if _is_probability(answer.get("confidence")) else None}},
+        # Factor answers are validated by the policy code; a bad one never voids the Choice.
+        "factor_answers": {k: v for k, v in answers.items() if k != "selection"},
         "jev_model": data.get("model") if isinstance(data.get("model"), str) else None,
         "request_id": request_id[:200] if isinstance(request_id, str) and request_id else None,
     }
@@ -1230,8 +1251,29 @@ def base_record(event, agent):
     return record
 
 
-def apply_selection(cfg, agent, tool_input, selected, record):
-    record.update(model=selected["model"], effort=selected["effort"], reason="choice")
+def evaluate_policy(cfg, agent, options, result, choice_option):
+    """(record fields, option or None): factor recommendation next to the direct Choice."""
+    import router_factors as rf
+    policy = cfg["policy"]
+    ranks = policy["ranks"].get(agent, {})
+    info = {"policy": rf.POLICY, "mode": policy["mode"]}
+    try:
+        factors = rf.parse(result.get("factor_answers"))
+    except rf.PolicyError as exc:
+        return dict(info, outcome="error:" + exc.kind), None
+    assessment = rf.assess(factors, policy)
+    option_id, details = rf.select(assessment, options, ranks)
+    option = options.get(option_id)
+    info.update(assessment, outcome="success", factors=factors, rank_status=details["status"],
+                agreement=rf.compare(option, choice_option, ranks))
+    if option is not None:
+        info.update(model=option["model"], effort=option["effort"], output_rate=rf.output_rate(option),
+                    price_ratio=rf.price_ratio(option, options))
+    return info, option
+
+
+def apply_selection(cfg, agent, tool_input, selected, record, reason="choice"):
+    record.update(model=selected["model"], effort=selected["effort"], reason=reason)
     for key in ("model_catalog_value", "model_catalog_resolved_id", "model_catalog_source", "price_reference", "selected_effort_supported"):
         if key in selected:
             record[key] = selected[key]
@@ -1270,6 +1312,13 @@ def decision_notice(record):
     message = f'{NAME}: "{label}" — {action}: {choice}; {record["reason"]}'
     if record["mode"] == "shadow":
         message += "; launch arguments unchanged"
+    policy = record.get("policy") or {}
+    if policy.get("outcome") == "success":
+        tag = "applied" if record["reason"] == "policy" else "shadow"
+        target = "model=" + safe(policy.get("model")) if policy.get("model") else "unranked"
+        if policy.get("effort"):
+            target += ", effort=" + safe(policy["effort"])
+        message += f"; factor policy ({tag}): level {policy['level']}, {target}"
     return message
 
 
@@ -1331,6 +1380,9 @@ def handle_event(event, agent):
     try:
         options = selection_options(cfg, agent)
         questions = selection_questions(options, agent, record["visible_task_estimate"])
+        if cfg["policy"]["mode"] != "off":
+            from router_factors import questions as factor_questions
+            questions.update(factor_questions())  # one request: speculative fan-out, no extra call
         record["jev_attempted"] = True
         result = ask_jev(cfg, key, state, questions)
         record["jev_outcome"] = "success"
@@ -1343,9 +1395,18 @@ def handle_event(event, agent):
                   latency_ms=result["latency_ms"], answers=result["answers"])
     if result.get("usage"):
         record["usage"] = result["usage"]
+    from router_factors import output_rate, price_ratio
+    record.update(choice_model=selected["model"], choice_effort=selected["effort"],
+                  choice_output_rate=output_rate(selected), choice_price_ratio=price_ratio(selected, options))
+    reason = "choice"
+    if cfg["policy"]["mode"] != "off":
+        record["policy"], policy_option = evaluate_policy(cfg, agent, options, result, selected)
+        if cfg["policy"]["mode"] == "active" and policy_option is not None:
+            selected, reason = policy_option, "policy"
+    record.update(selected_output_rate=output_rate(selected), selected_price_ratio=price_ratio(selected, options))
     record["task_input_cost_estimate"] = estimate_input_cost(record["visible_task_estimate"], selected["price_reference"])
     try:
-        output, record = apply_selection(cfg, agent, tool_input, selected, record)
+        output, record = apply_selection(cfg, agent, tool_input, selected, record, reason)
     except JevError as exc:
         return None, dict(record, reason="error:" + exc.kind)
     # systemMessage is user-facing in both hosts; additionalContext only informs the model.
@@ -1542,7 +1603,11 @@ def cmd_explain(text, description, agent="codex"):
         return 1
     try:
         options = selection_options(cfg, agent)
-        result = ask_jev(cfg, key, state, selection_questions(options, agent, estimated_request(state)))
+        questions = selection_questions(options, agent, estimated_request(state))
+        if cfg["policy"]["mode"] != "off":
+            from router_factors import questions as factor_questions
+            questions.update(factor_questions())
+        result = ask_jev(cfg, key, state, questions)
     except JevError as exc:
         print(f"Selection failed: error:{exc.kind} ({exc.latency_ms} ms)", file=sys.stderr)
         return 1
@@ -1551,6 +1616,16 @@ def cmd_explain(text, description, agent="codex"):
     print(f"Jev selected model={selected['model']}, effort={selected['effort']}; "
           f"{result['latency_ms']} ms; request_id={result['request_id']}")
     print(json.dumps(result["answers"], ensure_ascii=False))
+    if cfg["policy"]["mode"] != "off":
+        policy, _option = evaluate_policy(cfg, agent, options, result, selected)
+        if policy["outcome"] == "success":
+            print(f"Factor policy ({policy['mode']}): level {policy['level']}, model={policy.get('model') or 'unranked'}, "
+                  f"effort={policy.get('effort')}; agreement with Jev choice: {policy['agreement']}; "
+                  f"adjustments: {', '.join(policy['adjustments']) or 'none'}")
+            print(json.dumps({k: {x: v[x] for x in ('level', 'confidence') if x in v} or v
+                              for k, v in policy["factors"].items()}, ensure_ascii=False))
+        else:
+            print(f"Factor policy unavailable: {policy['outcome']}")
     if cfg["mode"] == "shadow":
         print("Shadow recommendation; launch arguments unchanged.")
     return 0
@@ -1798,6 +1873,15 @@ def cmd_check(live):
     print(f"Claude Code subagent types: {', '.join(shown['claude']['route_types'])}")
     print("Claude Code model allowlist: " + (", ".join(shown["claude"]["allowed_models"]) or "entire supported native catalog"))
     print("Claude Code effort allowlist: " + (", ".join(shown["claude"]["efforts"]) or "every supported native level"))
+    policy = shown["policy"]
+    print(f"Factor policy: {policy['mode']} (confidence {policy['min_confidence']}/{policy['strict_confidence']})")
+    for agent in ("claude", "codex"):
+        ranks = policy["ranks"].get(agent) or {}
+        print(f"  {agent} capability ranks: " + (", ".join(f"{m}={r}" for m, r in sorted(ranks.items(), key=lambda i: (i[1], i[0])))
+                                                 or "none — policy recommends no model (unranked)"))
+    if shown.get("_policy_error"):
+        print(shown["_policy_error"])
+        ok = False
     _print_claude_check(shown)
     _print_codex_check(shown)
     key_file = os.path.expanduser(shown["key_file"])

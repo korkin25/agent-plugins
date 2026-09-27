@@ -115,6 +115,18 @@ Sources: [Claude frontmatter](https://code.claude.com/docs/en/sub-agents#support
 [effort support and overrides](https://code.claude.com/docs/en/model-config#adjust-effort-level),
 [hook updatedInput](https://code.claude.com/docs/en/hooks#pretooluse-decision-control).
 
+## Factor policy (0.6.0)
+
+The same Jev request carries eight atomic Score/Noul questions about the task (reasoning, spec, verification,
+scope, impact, review, review depth, prior failure). Code turns them into a capability level 1–4 and picks the
+cheapest model whose `capability_rank` meets it, then an effort; prices never reach Jev. Default
+`policy.mode = "shadow"` only records the pick and its `agreement` with the Choice; `active` launches it with
+`reason="policy"`; `off` omits the questions. Codex has no default ranks: without them the policy records the
+level but recommends no model. A malformed policy config or factor answer disables only the policy. When the
+user asks whether the router is economical, answer from agreement shares (`policy_lower` = candidate savings,
+`policy_higher` = candidate under-routing), average output price per call by source and models by project —
+as references, not invoices or proven savings.
+
 ## Prelaunch notice
 
 A successful choice emits a top-level `systemMessage` with a bounded, redacted task label and the chosen
