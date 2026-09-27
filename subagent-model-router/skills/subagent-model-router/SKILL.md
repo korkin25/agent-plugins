@@ -121,8 +121,8 @@ The same Jev request carries eight atomic Score/Noul questions about the task (r
 scope, impact, review, review depth, prior failure). Code turns them into a capability level 1–4 and picks the
 cheapest model whose `capability_rank` meets it, then an effort; prices never reach Jev. Default
 `policy.mode = "shadow"` only records the pick and its `agreement` with the Choice; `active` launches it with
-`reason="policy"`; `off` omits the questions. Codex has no default ranks: without them the policy records the
-level but recommends no model. A malformed policy config or factor answer disables only the policy. When the
+`reason="policy"`; `off` omits the questions. Codex default ranks (0.6.1) cover the described, priced catalogue
+models; unranked models (previews, codex-auto-review) are never picked. Among adequate models the cheapest wins. A malformed policy config or factor answer disables only the policy. When the
 user asks whether the router is economical, answer from agreement shares (`policy_lower` = candidate savings,
 `policy_higher` = candidate under-routing), average output price per call by source and models by project —
 as references, not invoices or proven savings.

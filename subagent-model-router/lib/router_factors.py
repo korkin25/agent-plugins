@@ -69,7 +69,13 @@ NOULS = tuple(name for name, q in QUESTIONS.items() if q["type"] == "noul")
 
 DEFAULTS = {"mode": "shadow", "min_confidence": 0.6, "strict_confidence": 0.8,
             "review_threshold": 0.5, "prior_failure_threshold": 0.5}
-DEFAULT_RANKS = {"claude": {"haiku": 1, "sonnet": 2, "opus": 3, "fable": 4}, "codex": {}}
+# Ranks follow the native catalogue purpose text and standard prices (checked 2026-09-27); models without
+# a description or a price (daybreak previews, codex-auto-review) stay unranked and are never picked.
+DEFAULT_RANKS = {
+    "claude": {"haiku": 1, "sonnet": 2, "opus": 3, "fable": 4},
+    "codex": {"gpt-6-luna": 1, "gpt-5.6-luna": 1, "gpt-5.6-terra": 2, "gpt-5.4": 2, "gpt-5.5": 2,
+              "gpt-6-sol": 3, "gpt-5.6-sol": 3, "gpt-6-astra": 4},
+}
 # Effort class per reasoning level; raised one step for an underspecified task.
 EFFORT_BY_REASONING = ("low", "medium", "high", "xhigh")
 
@@ -242,8 +248,9 @@ def select(assessment, options, ranks):
     def cost(model):
         rates = [output_rate(options[oid]) for oid in by_model[model].values()]
         known = [rate for rate in rates if rate is not None]
-        # Unknown prices are not free: they sort after every known price of the same rank.
-        return (ranked[model], min(known) if known else math.inf, model)
+        # Cheapest adequate model wins even when it is more capable; rank only breaks price ties.
+        # Unknown prices are not free: they sort after every known price.
+        return (min(known) if known else math.inf, ranked[model], model)
 
     model = min(eligible, key=cost)
     effort = _effort_for(list(by_model[model]), assessment["effort_class"])
