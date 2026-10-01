@@ -5,7 +5,14 @@ The backlog from the [2026-10 audit](docs/router-audit-2026-10.md).
 - Each item names the finding ids or report sections it closes, the files to touch, and one acceptance check.
 - Paths are relative to this directory, and `bin` means `bin/subagent-model-router`.
 - Line numbers refer to version 0.6.1.
-- Refuted and dropped findings (CORE-15, N4, SUP-15, SUP-17) are deliberately left out. N4 has one residual item, under P3.
+- Refuted and dropped findings (CORE-15, N4, SUP-15, SUP-17) are deliberately left out. Only the N4 residual
+  (undetected `maxEffortLevel` and effort caps) remains: intended against effective effort is recorded under P0
+  "Record decision provenance", and the `check` warning is under P3.
+- Priority follows severity: high findings are P0, medium findings P1, low findings P2 or P3. Research items N3
+  and N5–N8 carry benefit ratings rather than severities and follow the research audit's priority or higher. A low
+  finding sits higher when the eval depends on it (CORE-03/TEL-05, TEL-06, TEL-07, TEL-11, CORE-17), when it shares
+  a task or a failure with a higher one (SUP-01 and SUP-14 with SUP-05, SUP-09 with SUPV-N1, CORE-08 with N1, TEL-10
+  with TEL-09), or when it is part of the one documentation pass.
 
 ## P0: do first
 
@@ -27,18 +34,23 @@ be cheaper at the same quality.
 - [ ] **Build the paired strategy eval.**
   - Closes: [TEL-03][s33], [backlog item 1][s41], [N6][s33], [N3][s31], [§6.2][s62].
   - Files: `eval/` (a new strategy runner and its README).
-  - Accept: the runner executes arms A0, F-light/F-mid/F-frontier, A1-sweep, A2, A3, A4, C1, C2 and N3 on a fixture
-    set with fake clients. Per arm it reports cost-of-pass, pass rate, p50/p90 wall time and escalation rate.
+  - Accept: the runner executes arms A0, F-light/F-mid/F-frontier, A1-sweep, A2 (`medium` and `low` starts), A3,
+    A4, C1, C2 and N3 on a fixture set with fake clients. Per arm it reports cost-of-pass, pass rate, p50/p90 wall
+    time and escalation rate.
 - [ ] **Assemble the frozen task set.**
   - Closes: [§6.2][s62], [§6.4][s64].
   - Files: `eval/` (task packets and their checks).
   - Accept: 100–200 delegation packets, each with an automated pass/fail check. Consent is recorded for any packet
     drawn from user sessions.
 - [ ] **Add a static-default mode with escalation.**
-  - Closes: [N6][s33], [§5.2][s52].
+  - Closes: [N6][s33], [§5.2][s52], [§6.1][s61] (item 6).
   - Files: `bin`, `config.example.toml`, `README.md`, tests.
-  - Accept: in static mode the fake Jev receives 0 requests, and each launch gets the configured per-client model
-    and effort. The escalation path is defined and tested.
+  - Accept:
+    - in static mode the fake Jev receives 0 requests, and each launch gets the configured per-client model and
+      effort;
+    - the escalation signal is chosen and documented (the [§5.2][s52] open design point), and a test shows that a
+      launch carrying it gets the next configured step (for example `medium` to `high`);
+    - in shadow mode the decision record carries the static A1 decision next to the Jev decision (test).
 - [ ] **Remove the CORE-01 prompt asymmetry.**
   - Closes: [CORE-01][s31], [N3][s31], [§5.5][s55].
   - Files: `bin` (`apply_selection`, :1284-1291; :1047-1048), `agents/effort-*.md`, `README.md` (:36-42), tests.
@@ -66,6 +78,11 @@ These fix the defaults and the data the eval depends on.
   - Files: `bin` (:706-715, :1066), `lib/router_factors.py` (`_effort_for`), tests.
   - Accept: with a catalog that offers `ultra`/`max`, neither the Choice options nor the policy clamp contain them
     by default (test).
+- [ ] **Gate Haiku.**
+  - Closes: [N5][s31].
+  - Files: `lib/router_factors.py` (:75), `bin` (option building), `config.example.toml` (:36), tests.
+  - Accept: `haiku` is offered only for verified, low-impact tasks (test). The eval reports its pass rate as a
+    separate stratum.
 - [ ] **Gate the Choice on confidence.**
   - Closes: [backlog items 4 and 7d][s41].
   - Files: `bin` (:469, :1389), `config.example.toml`, tests.
@@ -74,8 +91,8 @@ These fix the defaults and the data the eval depends on.
 - [ ] **Report price status in `check` and retry with backoff.**
   - Closes: [SUP-01][s35].
   - Files: `lib/router_model_prices.py` (:267-280, :338-347), `bin` (:1775-1783), tests.
-  - Accept: `check` prints the price status of each model and never says "ready" while prices are unknown.
-    Retries follow 15 min / 1 h / 6 h (test).
+  - Accept: `check` prints the price status of each model and never says "ready" while prices are unknown, and the
+    decision record carries the price status of each offered model. Retries follow 15 min / 1 h / 6 h (test).
 - [ ] **Make the price parser robust.**
   - Closes: [SUP-05][s35], [SUP-14][s35].
   - Files: `lib/router_model_prices.py` (:26-30, :67-87, :154-169, :331), tests.
@@ -87,6 +104,12 @@ These fix the defaults and the data the eval depends on.
     tests.
   - Accept: a test with 30 projects per agent still delivers the cost, latency and error counters, and no event is
     dropped whole.
+- [ ] **Shrink VM telemetry.**
+  - Closes: [TEL-09][s38], [TEL-10][s38].
+  - Files: `lib/router_telemetry.py` (:395, :509, :614-624), `lib/router_terminal.py` (:248),
+    `grafana/subagent-model-router.json`, tests.
+  - Accept: a test shows the series per event falling from about 154 to about 10 counters plus one histogram, with
+    no `rule:*` reasons and no tier label left.
 - [ ] **Split the VM calls query.**
   - Closes: [TEL-01][s34].
   - Files: `lib/router_dashboard.py` (:21, :46-47, :264), tests.
@@ -119,8 +142,9 @@ These fix the defaults and the data the eval depends on.
 - [ ] **Move `codex plugin list` off the prompt path.**
   - Closes: [SUPV-N1][s32], [SUP-09][s32].
   - Files: `lib/router_update_notice.py` (:146, :236, :260-266, :277-286), tests.
-  - Accept: under a fake `codex` that sleeps 1 s, the update-notice hook median stays near 60 ms after a cwd
-    change, and no fsync happens per prompt (test or benchmark).
+  - Accept: under a fake `codex` that sleeps 1 s, the update-notice hook median stays under 100 ms after a cwd
+    change (baseline about 55–60 ms; the synchronous probe adds about 1 s), and no fsync happens per prompt (test
+    or benchmark).
 - [ ] **Re-run the effort sweep on model and price changes.**
   - Closes: [§6.4][s64].
   - Files: `eval/` (results).
@@ -133,17 +157,13 @@ These fix the defaults and the data the eval depends on.
 
 Hook-path cost and policy quality.
 
-- [ ] **Gate Haiku.**
-  - Closes: [N5][s31].
-  - Files: `lib/router_factors.py` (:75), `bin` (option building), `config.example.toml` (:36), tests.
-  - Accept: `haiku` is offered only for verified, low-impact tasks (test). The eval reports its pass rate as a
-    separate stratum.
 - [ ] **Add a Jev circuit breaker and shorten the timeout.**
   - Closes: [CORE-02][s32].
   - Files: `bin` (:258-260, :507-571, :1380-1393), `config.example.toml` (:12), tests.
   - Accept:
     - with a hung fake Jev, the next hook within about 120 s returns in under 100 ms;
-    - the default timeout is about 1.5 s (test).
+    - a test asserts the new default timeout, set above the production-size p90 from "Measure the production
+      request shape" (the audit suggests about 1.5 s; the 0.72 s eval p90 comes from smaller requests).
 - [ ] **Make `enabled = false` a true early exit.**
   - Closes: [CORE-05][s36], [SUP-02][s36].
   - Files: `bin` (:1327, :1370-1371, :1478-1487, :1516-1520, :1558-1559), tests.
@@ -151,7 +171,7 @@ Hook-path cost and policy quality.
 - [ ] **Cut hook start-up cost.**
   - Closes: [CORE-07][s32], [SUP-07][s32].
   - Files: `bin` (:22, :288, :336), `hooks/hooks.json` (:5, :15), a new thin launcher.
-  - Accept: in the sandboxed benchmark, the non-agent hook median falls from 55 ms to about 35 ms. The target is
+  - Accept: in the sandboxed benchmark, the non-agent hook median falls from 55 ms to 35 ms or less. The target is
     derived from the estimated −20 ms of a thin launcher.
 - [ ] **Remove redundant per-call work and write stdout first.**
   - Closes: [CORE-13][s32], [CORE-14][s32], [TEL-11][s32].
@@ -183,12 +203,6 @@ Hook-path cost and policy quality.
   - Accept:
     - with a failing Codex catalog, 20 spawns within 10 minutes start at most 1 refresh;
     - SessionStart no longer forces a refresh (test).
-- [ ] **Shrink VM telemetry.**
-  - Closes: [TEL-09][s38], [TEL-10][s38].
-  - Files: `lib/router_telemetry.py` (:395, :509, :614-624), `lib/router_terminal.py` (:248),
-    `grafana/subagent-model-router.json`, tests.
-  - Accept: a test shows the series per event falling from about 154 to about 10 counters plus one histogram, with
-    no `rule:*` reasons and no tier label left.
 - [ ] **Surface telemetry delivery failures.**
   - Closes: [TEL-04][s34], [TEL-16][s34].
   - Files: `lib/router_telemetry.py` (:360, :665-666, :750-752, :763, :811-813), `bin` (:1494-1495), tests.
@@ -247,8 +261,8 @@ Hook-path cost and policy quality.
 - [ ] **Sample shadow routing.**
   - Closes: [CORE-19][s32].
   - Files: `bin`, `config.example.toml` (:5), tests.
-  - Accept: in shadow mode with sample rate r, the fake Jev sees about r × launches, and no `systemMessage` is shown
-    (test).
+  - Accept: in shadow mode with sample rate r and a fixed seed, the number of requests the fake Jev sees is within
+    three binomial standard deviations of r × launches, and no `systemMessage` is shown (test).
 - [ ] **Fix and cut the Grafana dashboard.**
   - Closes: [TEL-08][s34], [TEL-13][s34], [TEL-09][s38].
   - Files: `grafana/subagent-model-router.json` (panel 11 at :704, panel 51),

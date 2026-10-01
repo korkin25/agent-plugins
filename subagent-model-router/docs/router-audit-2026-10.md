@@ -6,7 +6,8 @@ This report replaces the earlier research note on other Jev-based routers. Its u
 Conventions:
 
 - Paths are relative to `subagent-model-router/`. `bin` means `bin/subagent-model-router`.
-- `[V]` marks a claim backed by a vendor page or paper that the web fact-check confirmed.
+- `[V]` marks a claim the research audit read on a vendor page or paper (an official or primary source). The
+  web fact-check re-confirmed only a subset of them; [§9](#9-sources) lists which.
 - `[U]` marks a claim with no external confirmation: an inference, an estimate, a second-hand number, or a
   recommendation.
 - "Measured" means it was measured in this repository, in sandboxed repros or in the shipped eval data.
@@ -42,11 +43,12 @@ Conventions:
 
 **Headline conclusions.**
 
-1. **There is no evidence that per-call Jev routing beats a static default** (TEL-03).
+1. **There is no evidence that per-call Jev routing beats a static default** (TEL-03, unverified).
    - The default Choice path has never been evaluated, and neither has the code-owned `select()`.
    - The factor eval is in-sample, and its bands are circular.
-   - Jev itself is cheap: about $0.00003–0.00004 and 0.4–0.6 s per launch (measured). The open question is
-     whether its decisions are worth anything.
+   - Jev itself is cheap: about $0.00003–0.00004 and 0.4–0.6 s per call, measured on the smaller eval
+     requests. At production request size the estimate is about $0.00015–0.0002 and 0.6–1.0 s [U]. The open
+     question is whether its decisions are worth anything.
 2. **One high-severity bug: CORE-01.**
    - A routed Claude launch with an effort replaces the built-in general-purpose system prompt with the
      two-sentence body of the effort agent.
@@ -62,7 +64,7 @@ Conventions:
    - `gpt-6.1-sol`, the vendor's recommended subagent model, is never picked.
    - `ultra` and `max` can be launched both through the Choice and through the policy's effort clamp.
 5. **Cost-per-solved-task cannot be measured yet.**
-   - No per-launch outcome or cost is joined to a decision (N8).
+   - No per-launch outcome or cost is joined to a decision (N8, unverified).
    - Decisions carry no provenance hash (backlog item 2).
    - On the VictoriaMetrics backend, events can be dropped whole, cost included, once the series cap fills
      (TEL-02). The main stats query can also go blank (TEL-01).
@@ -215,7 +217,7 @@ Each group lists finding ids, file:line evidence and the recommended fix. The wo
 
 ### 3.1 Prompt and routing correctness
 
-- **CORE-01 (high), N3.** Evidence:
+- **CORE-01 (high), N3 (unverified).** Evidence:
   - `bin:1284-1291` (`apply_selection`) sets `subagent_type` to `subagent-model-router:effort-<level>` whenever
     the selected effort is not None.
   - `bin:1047-1048` offers `(model, None)` for models without effort support.
@@ -288,7 +290,9 @@ Each group lists finding ids, file:line evidence and the recommended fix. The wo
 
   **Fix:**
   - After a timeout, write a skip marker for about 120 s.
-  - Lower the default timeout to about 1.5 s. Measured Jev latency: p90 0.72 s, max 0.90 s.
+  - Lower the default timeout to about 1.5 s. Measured Jev latency on the smaller eval requests: p90 0.72 s,
+    max 0.90 s. At production size it is estimated at 0.6–1.0 s [U], so confirm the value against the
+    production-size measurement first.
 - **CORE-03, TEL-05 (low).** Evidence:
   - `lib/router_factors.py:70` (default `shadow`), `bin:1383-1385` and `bin:1402-1405`,
     `config.example.toml:25`, README:123.
@@ -316,7 +320,7 @@ Each group lists finding ids, file:line evidence and the recommended fix. The wo
   - Import lazily.
   - Merge update-notice and telemetry-kick into one process.
   - Anchor the matcher.
-- **CORE-13, CORE-14, TEL-11 (low).** Evidence:
+- **CORE-13, CORE-14, TEL-11 (low; TEL-11 unverified).** Evidence:
   - `bin:1351` and `bin:1481` both load the config.
   - The price cache is parsed twice (`lib/router_model_prices.py:248`, `:344`).
   - Effort definitions are read from disk (`bin:1014-1026`, called at `bin:1053`, `bin:1288` and `bin:1431`).
@@ -478,7 +482,7 @@ Each group lists finding ids, file:line evidence and the recommended fix. The wo
   - The `lib/router_factors.py:1-7` docstring says prices never reach Jev.
 - **CORE-05 / SUP-02:** README:236 says `enabled = false` turns the router off "Entirely".
 - **SUP-19:** SKILL.md:162 is incomplete.
-- **TEL-14:** README:304-307 omits the factor eval.
+- **TEL-14 (unverified):** README:304-307 omits the factor eval.
 - **Research gap D (unverified):** `check --live` probes Codex options whatever the agent (near `bin:1903-1913`).
 - **Fix:** one documentation pass, plus a test that greps for the phrases that were removed.
 
@@ -496,9 +500,9 @@ Each group lists finding ids, file:line evidence and the recommended fix. The wo
 | Forced refresh, second `load_config`, separate telemetry-kick command, `route_types` | SUP-03, CORE-13, CORE-07, CORE-09 | see above | about 45 |
 | `visible_task` and per-task USD in the Choice request | CORE-04 | `bin:1120-1175` | 30–80 |
 | Dead tier telemetry | TEL-10 | `lib/router_telemetry.py:395`, `:509`, `:614-624`; `lib/router_terminal.py:248` | not counted |
-| Optional dashboard extras: OpenRouter balance probe, browser server, HTML renderer | monitoring weight (TEL-09 context) | telemetry audit | about 900 code + 500 test (could move behind an option instead) |
-| Grafana dashboard cut from 68 panels to about 15; VM telemetry cut to about 10 counters plus one histogram | TEL-09 | `grafana/subagent-model-router.json` (3,463 lines) | not estimated |
-| Legacy tier eval | TEL-17 | `eval/run.py` | 131, plus its case file and README |
+| Optional dashboard extras: OpenRouter balance probe, browser server, HTML renderer | monitoring weight (TEL-09 context; unverified) | telemetry audit | about 900 code + 500 test (could move behind an option instead) |
+| Grafana dashboard cut from 68 panels to about 15; VM telemetry cut to about 10 counters plus one histogram | TEL-09 (unverified) | `grafana/subagent-model-router.json` (3,463 lines) | not estimated |
+| Legacy tier eval | TEL-17 (unverified) | `eval/run.py` | 131, plus its case file and README |
 | **Total** | | | **about 3,200–3,400 lines**, of which about 1,400 are the optional dashboard extras |
 
 There is also a conditional candidate. Once the eval picks a winner, one of the two decision mechanisms can go:
@@ -539,13 +543,13 @@ backlog. Its verdict still holds: neither project replaces this plugin's hook.
 | Item | Verdict | Reason |
 |---|---|---|
 | 1. Eval for the direct Choice | **adopt now** (P0), extended | It is the largest gap (TEL-03, gap A), and every active-mode decision depends on it. Carry over the method: label "does a stronger tier change the outcome", use a prompt-length baseline and a judge that sees answers in both orders, and verify the model that actually served each request. Corrected control: random allocation that matches the evaluated router's **selected-tier distribution** [P6], not "share-matched content-blind allocation". |
-| 2. Provenance hashes (options, instruction plus policy) | **adopt now** (P0) | Only `state_sha256` exists (`bin:394`, `bin:1247`, `bin:1378`). Eval and stats need to tell catalog, price and prompt changes apart. Check VM label cardinality before adding a hash-prefix label. |
-| 3. Strip harness noise from the text sent to Jev | **adopt later**, measure first | Unverified benefit. Subagent prompts are written by the parent model. Counting the blocks needs journal access, which is personal data and needs consent. |
-| 4. Confidence gate on the Choice | **adopt now** (P1) | Confidence is parsed (`bin:469`), but the choice is always applied (`bin:1389`). Gate on the probability of the option actually applied. The threshold needs eval data. Reference points [U]: JevRouter `min_confidence` 0.55; jev-router never downgrades below 0.3. |
+| 2. Provenance hashes (options, instruction plus policy) | **adopt now** (P0) | Only `state_sha256` exists (`bin:394`, `bin:1247`, `bin:1378`). Eval and stats need to tell catalog, price and prompt changes apart. Hash the sorted options (model, effort, purpose, price) and, separately, the instruction text plus the `[policy]` config; write both to the journal. Check VM label cardinality before adding a hash-prefix label. |
+| 3. Strip harness noise from the text sent to Jev | **adopt later**, measure first | jev-router strips `<system-reminder>`, `<environment_context>` and `<current_datetime>`; its author reports that reminders blunt Jev's confidence [U]. Unverified benefit. Subagent prompts are written by the parent model. Counting the blocks needs journal access, which is personal data and needs consent. |
+| 4. Confidence gate on the Choice | **adopt now** (P1) | Confidence is parsed (`bin:469`), but the choice is always applied (`bin:1389`). Gate on the probability of the option actually applied. Candidate low-confidence actions: leave the launch unchanged, take the factor-policy pick, or move to the next more capable option; measure how often each would fire. The threshold needs eval data. Reference points [U]: JevRouter `min_confidence` 0.55; jev-router never downgrades below 0.3. |
 | 5. Cache switch cost in the price model | **drop** the parent-switch part; the rest goes to N7 (**adopt later**) | [C3] [V]: a fresh subagent's first request does not read the parent's cache, and the parent's cache is unaffected. jev-router's "about 11 turns to repay a cache write" applies only to main-session switching. |
 | 6A. Two-stage Choice | **drop** | Two calls inside a 3 s budget double latency. |
-| 6B. Choice over models plus a Score for effort | **adopt later**, only as an arm of item 1 | Model and effort interact. The factor policy already maps effort to the nearest level. |
-| 7a. Model request parsed from task text | **drop** | The parent can already pass `model` (Claude) or `model`/`reasoning_effort` (Codex), and the hook skips explicit values (`bin:1342`). Document that instead. |
+| 6B. Choice over models plus a Score for effort | **adopt later**, only as an arm of item 1 | The option set is every (model, effort) pair: 4 Claude aliases × up to 5 efforts, and Codex grows with each release. Model and effort interact. The factor policy already maps effort to the nearest level. |
+| 7a. Model request parsed from task text | **drop** | The parent can already pass `model` (Claude) or `model`/`reasoning_effort` (Codex), and the hook skips explicit values (`bin:1338` for Claude, `bin:1342` for Codex). Document that instead. |
 | 7b. Keep the last N Jev request bodies | **drop** (opt-in at most) | They contain task text, which is personal data. This conflicts with the journal's privacy design. |
 | 7c. Catalog `max_input_tokens` / `created_at` | **adopt later** `max_input_tokens` as a hard filter; **drop** `created_at` | Haiku 4.5 has 200K context, against 1M for the others [A2]. |
 | 7d. Override record (`fallback.type/reason`) | **adopt later**, together with the item-4 gate | Only needed once options are filtered after Jev answers. Today there is only `override_source="model_catalog"` (`bin:1334`). |
@@ -572,6 +576,10 @@ backlog. Its verdict still holds: neither project replaces this plugin's hook.
 **JevRouter** (TypeScript, MIT, 88/88 offline tests):
 
 - It is "not a tool interception layer" and does not switch the host model.
+- Its features that we already cover: an HTTPS-or-loopback endpoint check (ours: `_check_endpoint`,
+  `bin:169-180`), Choice answer validation, the raw answer kept (the journal `answers`, with probabilities and
+  confidence), a state hash (`state_sha256`), and several questions in one request (the 8 factor questions next
+  to the Choice).
 - Its README benchmark measures tool choice only: 38–44% position hits on Toolathlon, against 24% for DeepSeek
   V4.1 Flash, at about 1/7 of the cost [U].
 - Our answer validation (`bin:428-479`) is stricter:
@@ -631,6 +639,12 @@ Coexisting with this plugin works mechanically, but three conflicts remain:
 - defaulting to the most expensive tier on failure;
 - silent writes outside the project.
 
+**Deliberately not carried over.** The rest of the previous note's jev-router internals (turn detection,
+tool-loop pinning, unrouted auxiliary calls, behaviour after `--resume`, per-process status files, its list of
+other defects) and its observability, eval and state comparison rows. They describe another project and change
+no decision here. The full note remains in git history at commit `8d64156`
+(`subagent-model-router/docs/jev-routers-research.md`).
+
 **Fact-check correction.** The [P6] abstract says: "Fixed-tier baselines and selected-tier distributions are
 therefore necessary controls in router evaluation." "Share-matched content-blind allocation" is only one
 router's comparison point. Every eval arm in this report cites the correct pairing.
@@ -661,9 +675,10 @@ The goal is cheaper and faster subagent runs at the same quality.
 
 ### 5.2 Static defaults plus escalation versus per-call Jev routing
 
-- **Measured:** the Jev call is cheap, and its decision value is unknown (TEL-03). A subagent run costs cents to
-  dollars, about 350× a Jev call even for a 10k/1k-token Haiku run. The cost of a wrong decision therefore
-  dwarfs the cost of the call.
+- **Measured:** the Jev call is cheap, and its decision value is unknown (TEL-03). At [A1] prices even a
+  10k/1k-token Haiku run costs $0.015, about 350× an eval-size Jev call (about 75–100× the production-size
+  estimate [U]); real subagent runs cost cents to dollars [U]. The cost of a wrong decision therefore dwarfs the
+  cost of the call.
 - **Priors [V]:**
   - [A5]: "a multi-model configuration that looked cheaper than the default single model cost more than that same
     model at lower effort".
@@ -677,10 +692,11 @@ The goal is cheaper and faster subagent runs at the same quality.
   - Keep the Jev Choice and the factor policy in shadow, sampled, until one of them passes the promotion rule in
     [§6.3](#63-promotion-rule).
   - If neither passes, ship A1/A2.
-  - Removing Jev from the critical path also saves 0.4–0.6 s per spawn, and up to 3 s when Jev hangs.
+  - Removing Jev from the critical path also saves 0.4–0.6 s per spawn at eval request size (an estimated
+    0.6–1.0 s at production size [U]), and up to 3 s when Jev hangs.
 - **Open design point [U].** The inputs do not define how the hook observes a failure. The research proposes
   "raise one step when the parent re-launches after a failed check". The mechanisms available today:
-  - the parent passes an explicit `model`, which the hook respects (`bin:1342`);
+  - the parent passes an explicit `model`, which the hook respects (`bin:1338` for Claude, `bin:1342` for Codex);
   - the parent picks an effort agent directly, which runs unrouted at that effort (CORE-11).
 
 ### 5.3 Per-client defaults
@@ -694,6 +710,9 @@ The goal is cheaper and faster subagent runs at the same quality.
 | Read-only exploration | built-in Explore (not routed; it inherits the main model capped at Opus and skips CLAUDE.md) | built-in `explorer` on `gpt-6-luna` at `high`, read-only | [C1]; [O3] vendor example [V] |
 | Review | Opus 5.5 at `medium`, escalating effort [U] | `gpt-6.1-sol` at `medium` | [O3] vendor reviewer example [V]; Claude side [U] |
 | Not offered by default | `max` effort [U] | `ultra`, `max` (N2) | [O2] "Ultra uses subagents"; [A5] `xhigh` costs 2.5× for +1.4 points |
+
+The `medium` start is the vendor prior [A5] [O3]. [A5]'s cheapest cascade starts at `low` instead, so A1-sweep
+and the two A2 variants in [§6.2](#62-metric-and-arms) decide between a `low` and a `medium` start [U].
 
 Per-token price effects [V] [A1] [O1]:
 
@@ -835,7 +854,8 @@ Recommended handling:
 
    Analysing the user's own journal and telemetry needs their explicit consent.
 3. **`hook_ms` in the local journal** (TEL-07).
-4. **No silent loss of cost data** on the VM backend (TEL-02, TEL-04), and a working calls query (TEL-01).
+4. **No silent loss of cost data** on the VM backend (TEL-02), and a working calls query (TEL-01). TEL-04 is low
+   after verification (a realistic payload is about 1.15 MB, under the 2 MiB cap), so its fix can follow in P2.
 5. **Per-model price status** in the decision record and in `check` (SUP-01, SUP-05). Otherwise cost keys silently
    fall back to rank.
 6. **In shadow, the static A1 decision written next to the Jev decision**, so that disagreement rates can be
@@ -861,7 +881,7 @@ up to 9.7× between runs [P8].
 | A0 | no routing (inherit) | today's no-plugin baseline |
 | F-light / F-mid / F-frontier | fixed tier for every task (F-mid equals A1) | fixed-tier baselines [P6] [A5] |
 | A1-sweep | the A1 model at `low`, `medium` and `high` | effort sweep; the curve to beat [A5] |
-| A2 | A1 at `low`, escalating to `high` on a failed check | cascade [A5] [P7] |
+| A2 | A1 escalating one step along the [§5.3](#53-per-client-defaults) ladder on a failed check, in two variants: started at `medium` (A2-mid, the recommended default) and at `low` (A2-low, [A5]'s low-then-`high` cascade) | cascade [A5] [P7] |
 | A3 | factor policy | candidate |
 | A4 | Jev direct Choice | candidate |
 | C1 | random allocation matching A4's selected-tier distribution | content-blind control [P6] |
@@ -910,9 +930,10 @@ The full checklist, with files and acceptance criteria, is [TODO.md](../TODO.md)
 - **P1, correctness of defaults and of the data:**
   - Codex ranks;
   - excluding `ultra`/`max`;
+  - the Haiku gate;
   - the confidence gate;
   - price status and parser robustness;
-  - VM series pruning and the calls query;
+  - no whole-event drops at the VM series cap, fewer series per event, and the calls query;
   - `hook_ms`;
   - measuring the production request;
   - a held-out factor set;
@@ -928,9 +949,7 @@ The full checklist, with files and acceptance criteria, is [TODO.md](../TODO.md)
   - the blended cost key;
   - the policy effort floor;
   - refresh rate limits;
-  - VM series shrink;
-  - delivery-failure reporting;
-  - the Haiku gate.
+  - delivery-failure reporting.
 - **P3, cleanup:**
   - dead code;
   - walkers and caches;
@@ -942,6 +961,7 @@ The full checklist, with files and acceptance criteria, is [TODO.md](../TODO.md)
   - local stats;
   - the legacy eval;
   - optional dashboard extras;
+  - removing the losing decision mechanism, once the eval picks a winner;
   - splitting `bin`;
   - `max_input_tokens`;
   - measuring harness noise.
@@ -1004,7 +1024,8 @@ under 1 ms.
 - timeout case 3.07 s; a 503 followed by a retry 2.09 s;
 - worst case about 8.1 s, inside the 10 s hook timeout.
 
-A typical routed launch adds about 0.7–1.1 s; 3.1 s when Jev hangs.
+A typical routed launch adds about 0.7–1.1 s (an estimate [U]: about 0.08 s local plus the estimated 0.6–1.0 s
+production-size Jev call); 3.1 s when Jev hangs (measured).
 
 **I/O per routed call:**
 
@@ -1102,8 +1123,23 @@ The evals do not show:
 
 ## 9. Sources
 
-All accessed 2026-10-02. The fact-check confirmed every vendor and paper claim used above, except the corrected
-[P6] wording.
+All accessed 2026-10-02. The web fact-check re-confirmed:
+
+- the [A1] and [O1] price tables, the Claude Code aliases and default efforts ([C2], [A2]);
+- the [A5] figures quoted here: 92.8% at $0.22 against 92.3% at $1.19, 87.4% at $0.12 for `low`, "start with
+  Claude Opus 5.5 at its default effort (`medium`)", the multi-model comparison, the low-then-`high` cascade
+  (about 97% at $0.17 against 95.3% at $0.29), the 2.8× memo cost and the 44–58% task-budget cuts;
+- [C1] (the body becomes the system prompt; plugin restrictions; model precedence), the [C2] effort precedence
+  and `maxEffortLevel`, the [C3] non-fork cache behaviour and the [C4] `async_launched` payload;
+- [O2] (GPT-5.5 leaves Codex on 2026-10-14; 6.1 Sol is near-Astra; "Ultra uses subagents") and [O3] (start
+  with `gpt-6.1-sol`; luna for lighter subagent work; precedence);
+- [P6] (constant tiers; Always-Mid), [P7] and [P8].
+
+It found one wrong quote, the [P6] "necessary controls" pairing, corrected in [§4.2](#42-facts-carried-over). The
+other `[V]` claims rest on the research audit's own reading of the source and were not re-checked: the [A5]
+effort-sweep figures and WideSearch tail share, the [O8] ladder, the [O3] explorer and reviewer examples, the
+Haiku 4.5 facts ([A2], [A4]), the Codex retirement, deprecation and promotion dates, the [C3] effort-cache
+behaviour, [C6], [O7], and `gpt-6.1-sol` defaulting to `medium`.
 
 - [A1] https://platform.claude.com/docs/en/about-claude/pricing
 - [A2] https://platform.claude.com/docs/en/models/overview
