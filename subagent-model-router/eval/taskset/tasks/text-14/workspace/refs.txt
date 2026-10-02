@@ -1,0 +1,15 @@
+Reference list collected from three draft chapters (unsorted, mixed citation styles)
+
+- Okafor, Chidi N.; Lindqvist, Elin; Brandt, Matthias. 2021. "Thermal drift in low-cost strain gauges." Journal of Sensor Engineering 14 (3): 201-15.
+- H. J. van der Berg and A. Moreau, "Fatigue behaviour of bonded aluminium joints," International Journal of Adhesion Studies, vol. 8, no. 1, pp. 45-9, 2019.
+- Lindqvist E, van der Berg HJ. Moisture uptake in epoxy adhesives. Journal of Applied Polymer Testing. 2020;31(6):1123-31.
+- Chen, W., Haddad, R., Ibarra, L., & Novak, P. (2020). Edge filtering for vibration monitoring. Mechanical Systems Letters, 5(4), 310-322.
+- Moreau, Anne. 2016. "Creep of structural adhesives at elevated temperature." Journal of Applied Polymer Testing 27 (2): 455-70.
+- da Silva, M., & Brandt, M. (2022). Adhesive curing under humidity cycles. International Journal of Adhesion Studies, 11(2), 150-163.
+- R. Haddad, "A survey of strain measurement in composite beams," Composites Review, vol. 22, no. 1, pp. 1-34, 2017.
+- Brandt M, Okafor CN. Calibration transfer between sensor batches. Journal of Sensor Engineering. 2023;16(2):88-104.
+- Ibarra, L., Chen, W., Okafor, C. N., Moreau, A., & Lindqvist, E. (2024). Open datasets for structural health monitoring. Data in Engineering, 2(1), 12-27.
+- von Essen, Karl; Lindqvist, Elin. 2018. "Ultrasonic inspection of thick laminates." Composites Review 23 (4): 512-30.
+- W. Chen and P. Novak, "Spectral methods for bearing diagnostics," Mechanical Systems Letters, vol. 3, no. 2, pp. 99-112, 2018.
+- Lindqvist, E., & van der Berg, H. J. (2020). Moisture uptake in epoxy adhesives. Journal of Applied Polymer Testing, 31(6), 1123-1131.
+- Novak P, Haddad R, Ibarra L. Low-power wireless nodes for bridge monitoring. Mechanical Systems Letters. 2021;6(1):1-18.

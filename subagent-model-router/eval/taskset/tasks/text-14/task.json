@@ -1,0 +1,20 @@
+{
+  "id": "text-14",
+  "domain": "text",
+  "difficulty": 3,
+  "title": "Normalise, deduplicate and sort a mixed-style reference list",
+  "language": "en",
+  "outputs": [
+    "references.txt"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": [
+    "reformat",
+    "citations",
+    "sorting",
+    "deduplication",
+    "unicode-dash"
+  ],
+  "notes": "13 input entries in four citation styles (Chicago, IEEE, Vancouver, APA); the Lindqvist 2020 paper appears twice (Vancouver with 1123-31 and APA with 1123-1131), leaving 12 works. Expected list is rendered from structured data and asserted equal to a hand-written list. Traps: initials from full names and from run-together 'HJ'/'CN'; et al. for 4 and 5 authors but not 3; particles sort under d/v; Chen 2018 before Chen 2020; abbreviated ranges 201-15, 45-9, 455-70, 512-30, 1123-31; en dash."
+}

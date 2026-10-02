@@ -1,0 +1,18 @@
+{
+  "id": "math-14",
+  "domain": "math",
+  "difficulty": 3,
+  "title": "Colourings of a 12-slot rotating tray with no equal neighbours",
+  "language": "en",
+  "outputs": [
+    "answer.txt"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": [
+    "combinatorics",
+    "circular-arrangements",
+    "burnside"
+  ],
+  "notes": "Traps: the ring closes (slot 12 touches slot 1), and some valid fillings repeat under rotation by 3 or 6 slots, so dividing the 804 valid fillings by 12 (67) is wrong; Burnside gives 70. broken/: 67 divides by 12, 91 ignores the wrap-around adjacency and divides by 12, 41 also identifies mirror images."
+}

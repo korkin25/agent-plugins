@@ -1,0 +1,1 @@
+On 2027-01-14 an expired TLS certificate on load balancer lb-east-2 took the payment API down for about 45 minutes, and 1,284 payment requests failed. Tomas Adeyemi deployed a new certificate manually. No card data was exposed.

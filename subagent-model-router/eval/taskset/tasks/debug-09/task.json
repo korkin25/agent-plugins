@@ -1,0 +1,19 @@
+{
+  "id": "debug-09",
+  "domain": "debug",
+  "difficulty": 2,
+  "title": "Sales report repeats regions",
+  "language": "en",
+  "outputs": [
+    "sales_report.py"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 15,
+  "tags": [
+    "python",
+    "itertools",
+    "groupby",
+    "aggregation"
+  ],
+  "notes": "summarize() runs itertools.groupby over rows that are not sorted by region, so every run of a region becomes its own group. Broken variants: merging the duplicates in report() only (summarize() still repeats regions), keeping one group per region (drops the other groups' sales)."
+}

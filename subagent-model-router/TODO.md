@@ -40,12 +40,13 @@ The queue's `todo` field names the item by its exact bold title, so a title neve
   - Accept: the runner executes arms A0, F-light/F-mid/F-frontier, A1-sweep, A2 (`medium` and `low` starts), A3,
     A4, C1, C2 and N3 on a fixture set with fake clients. Per arm it reports cost-of-pass, pass rate, p50/p90 wall
     time and escalation rate.
-- [ ] **Assemble the frozen task set, stage 1: 10 tasks.**
+- [x] **Assemble the frozen task set, stage 1: 50 tasks in four domains.**
   - Closes: [§6.2][s62] (the set, in part).
   - Files: `eval/taskset/` (tasks, `MANIFEST.json`; `taskset.py` and its README when a public dataset joins).
-  - Accept: `MANIFEST.json` lists at least 10 tasks that meet the stage-1 spread of
-    [eval/taskset/README.md](eval/taskset/README.md#stages): every domain, difficulties 1–3, at least one task in
-    Russian. `tests/test_taskset.py` passes. A task is written here or taken from a public dataset whose task and
+  - Accept: `MANIFEST.json` lists at least 50 tasks that meet the stage-1 spread of
+    [eval/taskset/README.md](eval/taskset/README.md#stages): `math`, `code`, `debug` and `text`, at least 8 each,
+    difficulties 1–3 across the set, at least 10 tasks in Russian; every task reviewed by someone other than its
+    author. `tests/test_taskset.py` passes. A task is written here or taken from a public dataset whose task and
     tests are reachable by direct links under a license that allows redistribution; such a task is vendored with its
     source pinned. Consent is recorded for any packet drawn from user sessions.
 - [ ] **Add a static-default mode with escalation.**
@@ -71,23 +72,19 @@ The queue's `todo` field names the item by its exact bold title, so a title neve
   - Closes: [§6.2][s62] (first real run).
   - Files: `eval/` (the strategy runner, its README, a results directory), `eval/taskset/` (retirements only).
   - Accept:
-    - the strategy runner runs the arms on the stage-1 tasks with real clients, one repeat, with the task set hidden
-      from the subagents under test;
+    - the strategy runner runs the arms on every stage-1 task with real clients, one repeat, with the task set hidden
+      from the subagents under test; a smaller smoke run comes first;
     - before any paid launch, the arms × tasks × repeats and the estimated cost are stated and the owner approves
       them;
     - every defect the run exposes is fixed: in the runner by a change with a test, in a task by retiring it;
     - the run's report (cost-of-pass, pass rate, p50/p90 wall time, escalation rate per arm, and the set hash) is
       committed.
-- [ ] **Grow the frozen task set, stage 2: 50 tasks.**
-  - Closes: [§6.2][s62] (the set, in part).
-  - Files: `eval/taskset/`.
-  - Accept: `MANIFEST.json` lists at least 50 tasks that meet the stage-2 spread (at least 5 per domain, each domain
-    covering difficulties 1–3, at least 5 in Russian); `tests/test_taskset.py` passes; merged tasks are unchanged.
-- [ ] **Grow the frozen task set, stage 3: 190 tasks.**
+- [ ] **Grow the frozen task set, stage 2: 190 tasks in all domains.**
   - Closes: [§6.2][s62], [§6.4][s64].
   - Files: `eval/taskset/`.
-  - Accept: `MANIFEST.json` lists at least 190 tasks that meet the stage-3 spread (at least 20 per domain, each domain
-    covering difficulties 1–3, at least 19 in Russian); `tests/test_taskset.py` passes; merged tasks are unchanged.
+  - Accept: `MANIFEST.json` lists at least 190 tasks that meet the stage-2 spread (all eight domains, at least 20
+    each, each domain covering difficulties 1–3, at least 19 in Russian); `tests/test_taskset.py` passes; merged
+    tasks are unchanged.
 
 ## P1
 

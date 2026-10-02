@@ -1,0 +1,8 @@
+SKU,Item,Location,Qty,Unit price (EUR),Notes
+HX-1001,"Hinge, 3"" brass","Aisle 4, Bay B",240,1.85,
+HX-1002,Cabinet handle,"Aisle 4, Bay C",120,3.40,discontinued after Q3
+PL-2210,Plywood sheet 18 mm,Yard,35,42.00,"""B/BB"" grade"
+PL-2215,Plywood sheet 12 mm,Yard,0,31.50,"reorder, supplier: Fenwick Timber"
+TL-0310,Cordless drill,Tool room,6,"1,249.00",serial numbers in the tool log
+TL-0311,"Drill bits, set of 12",Tool room,14,18.90,
+GL-0042,Wood glue 1 L,Shelf 2,48,6.75,keep above 5 °C

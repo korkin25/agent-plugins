@@ -1,0 +1,18 @@
+{
+  "id": "math-17",
+  "domain": "math",
+  "difficulty": 3,
+  "title": "Squares of any tilt on a pegboard with two missing pegs",
+  "language": "en",
+  "outputs": [
+    "answer.txt"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": [
+    "geometry",
+    "lattice-squares",
+    "counting"
+  ],
+  "notes": "Traps: tilted squares count too, and each square must be counted once. broken/: 332 counts only axis-parallel squares, 1336 counts axis-parallel squares twice, 1020 ignores the two missing pegs."
+}

@@ -1,0 +1,22 @@
+{
+  "id": "text-11",
+  "domain": "text",
+  "difficulty": 3,
+  "title": "Шесть взаимодействующих правок в договоре: термин, даты, перенумерация, ссылки",
+  "language": "ru",
+  "outputs": [
+    "dogovor_red.txt"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": [
+    "rewrite",
+    "numbered-edits",
+    "renumbering",
+    "cross-references",
+    "dates",
+    "exact-text",
+    "russian"
+  ],
+  "notes": "Expected text is produced by the generator's edit() and cross-checked by 20 independent assertions written from a second reading of pravki.txt. Traps: the table lists five case forms of Исполнител* (three occur: Исполнитель, Исполнителя, Исполнителе) and a lowercase 'исполнителя' stays; dates in section 7 stay while all others change, and three dates end a sentence (no double period); clause 4.3 is deleted and references to 4.4/4.5 must be renumbered without chaining (4.5->4.4->4.3); the 30-day phrase changes in 3.2 only, not in 5.1; 'В случае если' at a sentence start becomes 'Если'. Comparison collapses whitespace only."
+}

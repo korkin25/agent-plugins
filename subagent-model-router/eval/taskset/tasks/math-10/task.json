@@ -1,0 +1,18 @@
+{
+  "id": "math-10",
+  "domain": "math",
+  "difficulty": 2,
+  "title": "Count integers with two prescribed remainders, coprime to 30",
+  "language": "en",
+  "outputs": [
+    "answer.txt"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": [
+    "number-theory",
+    "modular-arithmetic",
+    "crt",
+    "coprimality"
+  ]
+}

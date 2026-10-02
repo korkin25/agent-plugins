@@ -1,0 +1,1 @@
+On 2027-01-14 the payment API failed from 09:02 to 09:49 UTC, an outage of 47 minutes in which 1,284 payment requests failed. Cause: an expired TLS certificate on lb-east-2. Tomas Adeyemi deployed a new certificate.

@@ -1,0 +1,11 @@
+{
+  "invoice_number": "INV-2027-0412",
+  "po_number": "PO-88317",
+  "supplier": "Kestrel Bay Maintenance LLC",
+  "issue_date": "2027-03-03",
+  "due_date": "2027-04-02",
+  "total_amount": 4675.0,
+  "tax_amount": 425.0,
+  "currency": "USD",
+  "status": "unpaid"
+}

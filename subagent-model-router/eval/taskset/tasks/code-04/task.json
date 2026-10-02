@@ -1,0 +1,12 @@
+{
+  "id": "code-04",
+  "domain": "code",
+  "difficulty": 1,
+  "title": "Top k words by frequency with alphabetical tie-break",
+  "language": "en",
+  "outputs": ["wordfreq.py"],
+  "source": "synthetic",
+  "check_timeout_seconds": 40,
+  "tags": ["python", "text", "counting", "sorting"],
+  "notes": "Hidden tests cover ties that must be ordered alphabetically rather than by first occurrence, words joined by punctuation or digits, non-ASCII letters as separators, k <= 0, k beyond the vocabulary, and that the entries are tuples."
+}

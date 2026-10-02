@@ -1,0 +1,18 @@
+{
+  "id": "debug-03",
+  "domain": "debug",
+  "difficulty": 1,
+  "title": "Согласование с числом: «11 файл» вместо «11 файлов»",
+  "language": "ru",
+  "outputs": [
+    "plural.py"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 15,
+  "tags": [
+    "python",
+    "russian",
+    "pluralization"
+  ],
+  "notes": "choose_form ignores the 11-14 exception for both the one and the few forms. Broken variants: special-casing 11, fixing 11 but not 12-14, switching to n % 100 (breaks 21, 22)."
+}

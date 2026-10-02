@@ -1,0 +1,12 @@
+{
+  "id": "code-07",
+  "domain": "code",
+  "difficulty": 2,
+  "title": "Parse and format compact duration strings",
+  "language": "en",
+  "outputs": ["durations.py"],
+  "source": "synthetic",
+  "check_timeout_seconds": 40,
+  "tags": ["python", "parsing", "validation", "formatting"],
+  "notes": "Hidden tests cover repeated and out-of-order units, garbage between components, non-ASCII digits and underscores in numbers, Unicode whitespace, zero and very large values, negative input to format_duration and the parse/format round trip."
+}

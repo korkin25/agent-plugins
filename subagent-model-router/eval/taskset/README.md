@@ -29,15 +29,16 @@ dataset likewise needs its own `source` value and fields that pin where it came 
 
 ## Stages
 
-The set grows in stages, each a task of the [P0 queue](../../queues/p0.toml): 10 tasks to debug the bench on, then 50,
-then 190. `tests/test_taskset.py` holds a set at or past a stage's size to that stage's spread:
+The set grows in stages, each a task of the [P0 queue](../../queues/p0.toml). Stage 1 is the portion the bench is
+debugged on: reviewed tasks in four domains. Stage 2 grows the set to 190: it adds the other four domains and
+difficulty 3 in every domain. `tests/test_taskset.py` holds a set at or past a stage's size to that stage's spread:
 
-| Stage | Tasks | Per domain | Each domain covers difficulties | In Russian |
-|---|---|---|---|---|
-| 1 | 10 | at least 1 | any; the set as a whole covers 1, 2 and 3 | at least 1 |
-| 2 | 50 | at least 5 | 1, 2 and 3 | at least 5 |
-| 3 | 190 | at least 20 | 1, 2 and 3 | at least 19 |
+| Stage | Tasks | Domains | Per domain | Each domain covers difficulties | In Russian |
+|---|---|---|---|---|---|
+| 1 | 50 | `math`, `code`, `debug`, `text` | at least 8 | any; the set as a whole covers 1, 2 and 3 | at least 10 |
+| 2 | 190 | all eight | at least 20 | 1, 2 and 3 | at least 19 |
 
+Stage 1 holds a few tasks more than its size, so the bench may retire a defective one without breaking the stage.
 Merged tasks never change ([Freezing](#freezing)), so a stage only adds tasks.
 
 ## Layout
