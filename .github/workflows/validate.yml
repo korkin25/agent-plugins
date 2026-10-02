@@ -7,9 +7,11 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same branch or pull request cancels the run still in progress.
+# A newer push to the same branch or pull request cancels the run still in progress. Every push to main gets a
+# group of its own and runs to the end: a run checks only the files its own push changed, and the task queues
+# (subagent-model-router/queues) take a merge as done only when its own run is green.
 concurrency:
-  group: validate-${{ github.ref }}
+  group: validate-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:

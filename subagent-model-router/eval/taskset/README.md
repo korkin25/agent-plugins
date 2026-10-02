@@ -23,8 +23,22 @@ Difficulty: `1` — one step, no trap; a small model at low effort should pass. 
 `3` — a long chain, an edge case most first attempts miss, or a long input; a frontier model at medium effort may
 still fail sometimes.
 
-All tasks are synthetic. None is drawn from a user's session, so no consent is involved; a packet drawn from real
-sessions may join only with the user's recorded consent and a new `source` value.
+The tasks so far are synthetic. None is drawn from a user's session, so no consent is involved; a packet drawn from
+real sessions may join only with the user's recorded consent and a new `source` value. A task taken from a public
+dataset likewise needs its own `source` value and fields that pin where it came from.
+
+## Stages
+
+The set grows in stages, each a task of the [P0 queue](../../queues/p0.toml): 10 tasks to debug the bench on, then 50,
+then 190. `tests/test_taskset.py` holds a set at or past a stage's size to that stage's spread:
+
+| Stage | Tasks | Per domain | Each domain covers difficulties | In Russian |
+|---|---|---|---|---|
+| 1 | 10 | at least 1 | any; the set as a whole covers 1, 2 and 3 | at least 1 |
+| 2 | 50 | at least 5 | 1, 2 and 3 | at least 5 |
+| 3 | 190 | at least 20 | 1, 2 and 3 | at least 19 |
+
+Merged tasks never change ([Freezing](#freezing)), so a stage only adds tasks.
 
 ## Layout
 

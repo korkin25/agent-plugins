@@ -1,5 +1,5 @@
-"""The frozen task set in eval/taskset: its manifest matches the files, its spread covers every domain and
-difficulty, and every task's check fails untouched work, passes the solution and fails every broken variant."""
+"""The frozen task set in eval/taskset: its manifest matches the files, its spread meets the rule of the stage it
+has reached, and every task's check fails untouched work, passes the solution and fails every broken variant."""
 from __future__ import annotations
 
 import importlib.util
@@ -11,6 +11,15 @@ from collections import Counter
 from pathlib import Path
 
 TASKSET = Path(__file__).resolve().parent.parent / "eval" / "taskset"
+
+# The set grows in stages (README, "Stages"); a set at or past a stage's size meets that stage's spread:
+# (size, tasks per domain, difficulties every domain covers, tasks in Russian).
+STAGES = [
+    (10, 1, set(), 1),
+    (50, 5, {1, 2, 3}, 5),
+    (190, 20, {1, 2, 3}, 19),
+]
+MAX_TASKS = 200
 
 
 def load_module():
@@ -36,15 +45,19 @@ class TaskSetTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
     def test_size_and_spread(self):
-        self.assertGreaterEqual(len(self.metas), 100)
-        self.assertLessEqual(len(self.metas), 200)
+        self.assertLessEqual(len(self.metas), MAX_TASKS)
+        reached = [stage for stage in STAGES if len(self.metas) >= stage[0]]
+        if not reached:
+            return
+        size, per_domain, levels, russian = reached[-1]
         by_domain = Counter(m["domain"] for m in self.metas)
         for domain in self.ts.DOMAINS:
-            with self.subTest(domain=domain):
-                self.assertGreaterEqual(by_domain[domain], 8)
-                levels = {m["difficulty"] for m in self.metas if m["domain"] == domain}
-                self.assertEqual(levels, {1, 2, 3})
-        self.assertGreaterEqual(sum(m["language"] == "ru" for m in self.metas), 8)
+            with self.subTest(stage=size, domain=domain):
+                self.assertGreaterEqual(by_domain[domain], per_domain)
+                self.assertLessEqual(levels, {m["difficulty"] for m in self.metas if m["domain"] == domain})
+        with self.subTest(stage=size):
+            self.assertEqual({m["difficulty"] for m in self.metas}, {1, 2, 3})
+            self.assertGreaterEqual(sum(m["language"] == "ru" for m in self.metas), russian)
 
     def test_every_task_validates(self):
         jobs = os.environ.get("TASKSET_JOBS", str(min(4, os.cpu_count() or 1)))

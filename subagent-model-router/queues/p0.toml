@@ -1,0 +1,185 @@
+# The P0 backlog of subagent-model-router (TODO.md, "P0: do first") as a task-panes queue.
+# How a queue task is done, checked and cleaned up: README.md here.
+#
+#   task-panes check subagent-model-router/queues/p0.toml
+#   task-panes dry-run subagent-model-router/queues/p0.toml
+#   task-panes start subagent-model-router/queues/p0.toml --attach
+
+session = "router-p0"
+panes = 3
+poll_seconds = 60
+worktree_exists = "resume"
+
+# Temporary files of a task live in /var/tmp/agent-plugins-router-p0/<slug>/ (0700): the worktree in wt/, the
+# agent's TMPDIR in tmp/. `queue_check.py prune` removes the directory once the task is done and merged.
+slug = "{id_lower}-{name}"
+worktree = "/var/tmp/agent-plugins-{session}/{slug}/wt"
+branch = "p0/{name}"
+
+prompt = """
+You work on task {id} of the subagent-model-router P0 queue: {title}.
+
+Worktree: {worktree}, branch {branch}, made from origin/main. Work only there. Temporary files go only to $TMPDIR.
+
+Read first: subagent-model-router/queues/README.md, then the item **{todo}** in subagent-model-router/TODO.md
+and the audit sections it links, and the CLAUDE.md and AGENTS.md files of the repository and of the plugin.
+Repository files are written in English.
+
+The task is done when origin/main has all of this; the runner checks it and trusts nothing else:
+1. a merge commit whose message has the line `Queue-Task: {id}`;
+2. the TODO item **{todo}** checked as `- [x]`, its title unchanged;
+3. every GitHub check on that merge commit green.
+Check it yourself with: python3 -B subagent-model-router/queues/queue_check.py done
+
+Work:
+- Meet the item's acceptance criteria and add the tests they name; run the router's tests
+  (python3 -B subagent-model-router/tests/run_parallel.py) and any others your change touches.
+- Ask the owner in this pane, and wait, when a decision is theirs: scope beyond the item, anything that costs money,
+  an ambiguity the item and the audit do not settle.
+- Merge when the work is complete:
+    git fetch origin && git rebase origin/main      # then run the tests again
+    git switch --detach origin/main
+    git merge --no-ff {branch} -m "Merge {branch}: <one-line summary>" -m "Queue-Task: {id}"
+    git push origin HEAD:main
+  If the push is rejected, `git switch {branch}`, rebase on the new origin/main, test and merge again. Never force-push.
+- If CI fails on the merge, fix it on {branch} (`git switch -C {branch} origin/main`) and merge again with the same
+  `Queue-Task: {id}` line: the newest such commit counts.
+- Do not read ~/.config/subagent-model-router, the router's journal, state or telemetry, or other personal data."""
+
+[commands]
+refresh = "git fetch --quiet origin main; python3 -B queue_check.py prune p0.toml"
+done = "python3 -B queue_check.py done"
+prepare = '''
+umask 077
+root="$(git rev-parse --show-toplevel)" || exit 1
+mkdir -p "$(dirname "$TP_WORKTREE")/tmp" || exit 1
+if git -C "$root" rev-parse --verify --quiet "refs/heads/$TP_BRANCH" >/dev/null; then
+  git -C "$root" worktree add "$TP_WORKTREE" "$TP_BRANCH"
+else
+  git -C "$root" worktree add -b "$TP_BRANCH" "$TP_WORKTREE" origin/main
+fi
+'''
+
+[agents.claude]
+command = ["claude", "--dangerously-skip-permissions", "--session-id", "{session_id}", "{prompt}"]
+
+[agents.codex]
+command = ["codex", "--dangerously-bypass-approvals-and-sandbox", "-C", "{worktree}", "{prompt}"]
+prompt_prefix = """
+Start every subagent with spawn_agent and fork_turns="none", each with a self-contained task package."""
+
+[sandbox]
+# The worktree's git data lives in the main checkout's .git: commits, fetches and the merge write there.
+writable = ["{queue_dir}/../../.git"]
+tmpdir = "/var/tmp/agent-plugins-{session}/{slug}/tmp"
+
+[vars]
+taskset_rules = """
+How the task set grows:
+- Read subagent-model-router/eval/taskset/README.md in full first: the format, "Stages", "Freezing" and
+  "Writing a task". tests/test_taskset.py holds the set to the spread of the stage it has reached.
+- A task is written here, or taken from a public dataset whose task statement and tests are reachable by a direct
+  URL under a license that allows redistribution. A taken task is vendored into its task directory; its upstream
+  URL, license and the sha256 of every fetched file are recorded. Add a new `source` value and the fields that pin
+  the origin to taskset.py, its validation and the README in the same change. Its check runs offline.
+- Expected values are computed by independent code (brute force where possible), never by hand.
+- The local branch eval/taskset-candidates holds unreviewed drafts (math, code, debug, text) from an earlier
+  authoring run. Review a draft against the README before reusing it; drop it when it is wrong or unfair.
+- Every new task is reviewed by someone other than its author (a subagent with a fresh context) before it merges.
+- Merged tasks never change: a defective merged task is retired as "Freezing" says.
+- Finish with `taskset.py validate -j 4` passing, then bump `version` and run `taskset.py manifest --write`."""
+
+[[tasks]]
+id = "P0-01"
+name = "taskset-10"
+title = "Frozen task set, stage 1: 10 tasks"
+todo = "Assemble the frozen task set, stage 1: 10 tasks."
+min_tasks = 10
+extra_prompt = """
+Stage 1 is the set the bench is debugged on (task P0-08), so prefer tasks whose checks are quick and unambiguous.
+The set already has math-01; add at least nine more so that every domain has a task.
+
+{taskset_rules}"""
+
+[[tasks]]
+id = "P0-02"
+name = "provenance"
+title = "Record decision provenance"
+todo = "Record decision provenance."
+
+[[tasks]]
+id = "P0-03"
+name = "factors-off"
+title = "Turn shadow factor questions off by default"
+todo = "Turn shadow factor questions off by default, or sample them."
+
+[[tasks]]
+id = "P0-04"
+name = "core-01"
+title = "Remove the CORE-01 prompt asymmetry"
+todo = "Remove the CORE-01 prompt asymmetry."
+depends_on = ["P0-02"]
+
+[[tasks]]
+id = "P0-05"
+name = "cost-join"
+title = "Join per-launch cost and outcome by agent_id"
+todo = "Join per-launch cost and outcome by `agent_id`."
+depends_on = ["P0-02"]
+
+[[tasks]]
+id = "P0-06"
+name = "static-default"
+title = "Static-default mode with escalation"
+todo = "Add a static-default mode with escalation."
+depends_on = ["P0-02", "P0-03", "P0-04"]
+
+[[tasks]]
+id = "P0-07"
+name = "strategy-eval"
+title = "Paired strategy eval"
+todo = "Build the paired strategy eval."
+depends_on = ["P0-01", "P0-05", "P0-06"]
+extra_prompt = """
+The runner takes its tasks from eval/taskset through taskset.py (`prepare`, `check`) and records the manifest's set
+hash with every result. Subjects under test must not see eval/taskset (eval/taskset/README.md, "Running the set").
+This task builds and tests the runner with fake clients only: it makes no paid launch."""
+
+[[tasks]]
+id = "P0-08"
+name = "bench-smoke"
+title = "Debug the bench on the stage-1 set"
+todo = "Debug the bench on the stage-1 set."
+depends_on = ["P0-07"]
+extra_prompt = """
+This is the first run with real clients, and it costs money. Before any paid launch, write in this pane the arms,
+the tasks, the repeats, the clients and models, and the estimated cost with how you estimated it; then wait for
+the owner's explicit go-ahead. Start with the smallest run that exercises every part of the runner.
+The sandbox mounts only the state of the agent CLI running this pane: if the run needs the other client, say so
+and ask the owner how to proceed. A defective task is retired, never edited. The committed report holds no secrets."""
+
+[[tasks]]
+id = "P0-09"
+name = "taskset-50"
+title = "Frozen task set, stage 2: 50 tasks"
+todo = "Grow the frozen task set, stage 2: 50 tasks."
+min_tasks = 50
+depends_on = ["P0-08"]
+extra_prompt = """
+Use what P0-08 learned about the tasks (its committed report) when you choose what to add.
+
+{taskset_rules}"""
+
+[[tasks]]
+id = "P0-10"
+name = "taskset-190"
+title = "Frozen task set, stage 3: 190 tasks"
+todo = "Grow the frozen task set, stage 3: 190 tasks."
+min_tasks = 190
+depends_on = ["P0-09"]
+extra_prompt = """
+Stage 3 adds 140 tasks. You may merge them in batches: every batch merge carries the `Queue-Task: {id}` line, and
+only the last one checks the TODO item.
+
+{taskset_rules}"""
+
