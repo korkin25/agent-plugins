@@ -5,11 +5,12 @@
   queue_check.py prune QUEUE   # in `refresh`: remove the worktree and temp directory of every finished task
 
 A task is done when, on origin/main (fetch first):
-- a commit message has the line `Queue-Task: <id>` — the task's merge; the newest such commit counts;
+- a commit on its first-parent line has the message line `Queue-Task: <id>` — the task's merge; the newest counts;
 - the TODO item named by the task's `todo` field is checked in subagent-model-router/TODO.md;
 - the task set's MANIFEST.json lists at least `min_tasks` tasks, when the task has that field;
-- every GitHub check run on that merge commit finished as success, neutral or skipped. A later commit's runs do not
-  count: a run checks only the files its own push changed.
+- every GitHub Actions run on main for that merge commit finished as success, neutral or skipped. A later commit's
+  runs do not count: validate.yml checks what a push changed, and for a Queue-Task merge that is everything since
+  the task's first merge.
 
 Exit 0 done, 1 not yet, 2 a broken setup; the last line of output says why.
 """
@@ -45,7 +46,9 @@ class Broken(Exception):
 
 
 def git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(cwd or REPO), *args], capture_output=True, text=True, timeout=60)
+    # Agents can write refs/replace in the shared .git (the sandbox makes it writable): read the real commits.
+    return subprocess.run(["git", "--no-replace-objects", "-C", str(cwd or REPO), *args], capture_output=True,
+                          text=True, timeout=60)
 
 
 def show(path: str) -> str:
@@ -56,9 +59,9 @@ def show(path: str) -> str:
 
 
 def merge_commit(task_id: str) -> str:
-    """The newest commit on origin/main whose message has the line `Queue-Task: <task_id>`."""
+    """The newest commit on the first-parent line of origin/main whose message has the line `Queue-Task: <id>`."""
     line = f"Queue-Task: {task_id}"
-    proc = git("log", MAIN, "-F", f"--grep={line}", "--format=%H%x1f%B%x1e")
+    proc = git("log", MAIN, "--first-parent", "-F", f"--grep={line}", "--format=%H%x1f%B%x1e")
     if proc.returncode != 0:
         raise Broken(f"git log {MAIN}: {proc.stderr.strip()}")
     for record in proc.stdout.split("\x1e"):
@@ -80,9 +83,12 @@ def todo_checked(title: str) -> None:
 
 def manifest_size(minimum: int) -> None:
     try:
-        count = len(json.loads(show(MANIFEST)).get("tasks", {}))
-    except (ValueError, AttributeError) as exc:
+        data = json.loads(show(MANIFEST))
+    except ValueError as exc:
         raise NotYet(f"{MANIFEST} on {MAIN} is not valid JSON: {exc}") from None
+    if not isinstance(data, dict) or not isinstance(data.get("tasks"), dict):
+        raise NotYet(f"{MANIFEST} on {MAIN} has no `tasks` object")
+    count = len(data["tasks"])
     if count < minimum:
         raise NotYet(f"{MANIFEST} on {MAIN} lists {count} tasks, this task needs {minimum}")
 
@@ -95,29 +101,40 @@ def github_repo() -> str:
     return f"{match.group(1)}/{match.group(2)}"
 
 
-def fetch_checks(sha: str) -> tuple[str, str]:
-    """("success" | "failure" | "pending" | "unknown", detail) from GitHub's check runs."""
-    url = f"https://api.github.com/repos/{github_repo()}/commits/{sha}/check-runs?per_page=100"
+def fetch_runs(sha: str) -> tuple[str, str]:
+    """("success" | "failure" | "pending" | "unknown", detail) from the GitHub Actions runs on main for `sha`.
+
+    Workflow runs, not check runs: a run waiting for its concurrency group is listed before it has any check run."""
+    url = f"https://api.github.com/repos/{github_repo()}/actions/runs?head_sha={sha}&per_page=100"
     request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
                                                    "User-Agent": "agent-plugins-queue-check"})
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
-            runs = json.load(response).get("check_runs", [])
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+            data = json.load(response)
+        runs = data["workflow_runs"]
+        total = data.get("total_count", len(runs))
+    except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError) as exc:
         return "unknown", f"cannot read CI state: {exc}"
-    latest: dict[str, dict] = {}
-    for run in runs:  # a re-run adds a run with the same name; the newest one counts
-        if run.get("name") not in latest or run.get("id", 0) > latest[run["name"]].get("id", 0):
-            latest[run.get("name")] = run
+    if total > len(runs):
+        return "unknown", f"{total} runs on {sha[:12]}, more than one page"
+    latest: dict[object, dict] = {}
+    for run in runs:
+        if run.get("head_branch") != "main":  # the same commit pushed to another branch has runs of its own
+            continue
+        key = run.get("workflow_id")  # a re-run reuses its run; a dispatch adds one, and the newest counts
+        if key not in latest or run.get("id", 0) > latest[key].get("id", 0):
+            latest[key] = run
     if not latest:
-        return "pending", "no check runs yet"
-    waiting = sorted(n for n, r in latest.items() if r.get("status") != "completed")
+        return "pending", "no workflow runs on main yet"
+    names = {key: run.get("name") or str(key) for key, run in latest.items()}
+    waiting = sorted(names[k] for k, r in latest.items() if r.get("status") != "completed")
     if waiting:
         return "pending", "running: " + ", ".join(waiting)
-    failed = sorted(f"{n} ({r.get('conclusion')})" for n, r in latest.items() if r.get("conclusion") not in GREEN)
+    failed = sorted(f"{names[k]} ({r.get('conclusion')})" for k, r in latest.items()
+                    if r.get("conclusion") not in GREEN)
     if failed:
         return "failure", "not green: " + ", ".join(failed)
-    return "success", f"{len(latest)} check runs green"
+    return "success", f"{len(latest)} workflow runs green"
 
 
 def cache_dir() -> Path:
@@ -126,7 +143,7 @@ def cache_dir() -> Path:
 
 
 def ci_state(sha: str) -> tuple[str, str]:
-    """fetch_checks with a cache: a green answer is final, any other is reused for PENDING_TTL seconds."""
+    """fetch_runs with a cache: a green answer is final, any other is reused for PENDING_TTL seconds."""
     path = cache_dir() / f"{sha}.json"
     try:
         cached = json.loads(path.read_text())
@@ -134,7 +151,7 @@ def ci_state(sha: str) -> tuple[str, str]:
             return cached["state"], cached["detail"]
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    state, detail = fetch_checks(sha)
+    state, detail = fetch_runs(sha)
     try:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         path.write_text(json.dumps({"state": state, "detail": detail, "at": time.time()}))
@@ -148,8 +165,8 @@ def ci_green(sha: str) -> str:
     if state == "success":
         return f"CI green on {sha[:12]}"
     if state == "failure":
-        raise NotYet(f"CI {detail} on {sha[:12]}: fix it and merge again with the Queue-Task line, "
-                     "or have the owner re-run a cancelled run")
+        raise NotYet(f"CI {detail} on {sha[:12]}: fix a failure and merge again with the Queue-Task line; "
+                     "ask the owner to re-run a cancelled run")
     raise NotYet(f"CI on {sha[:12]}: {detail}")
 
 
@@ -188,17 +205,37 @@ def cmd_done() -> int:
         return 2
 
 
-def remove_task_dir(root: Path, slug: str) -> bool:
-    """Delete <TEMP_ROOT>/<session dir>/<slug> and the session dir once it is empty; nothing else."""
-    root = root.resolve()
-    if root.name != slug or root.parent.parent != TEMP_ROOT.resolve():
-        return False
-    shutil.rmtree(root)
+def task_dir(paths) -> Path | None:
+    """<TEMP_ROOT>/<session dir>/<slug>, the directory holding the task's worktree; None when it lies elsewhere."""
+    root = paths.worktree.parent.resolve()
+    if root.name == paths.slug and root.parent.parent == TEMP_ROOT.resolve():
+        return root
+    return None
+
+
+def finished(queue) -> set[str]:
+    """Tasks the runner has recorded as done, so their panes are closed. dry-run and status run `refresh` too."""
     try:
-        root.parent.rmdir()
-    except OSError:
-        pass
-    return True
+        state = json.loads((queue.state_dir / "state.json").read_text(encoding="utf-8"))
+        return {task_id for task_id, st in state["tasks"].items()
+                if isinstance(st, dict) and st.get("status") == "done" and not st.get("pane")}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return set()
+
+
+def unsaved(worktree: Path, branch: str) -> str | None:
+    """Why removing the worktree and the branch would lose work, or None."""
+    status = git("status", "--porcelain", cwd=worktree)
+    if status.returncode != 0:
+        return f"git status failed: {status.stderr.strip()}"
+    if status.stdout.strip():
+        return "uncommitted changes"
+    head = git("rev-parse", "--verify", "--quiet", "HEAD", cwd=worktree).stdout.strip()
+    tip = git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").stdout.strip()
+    for what, sha in (("the worktree's HEAD", head), (f"branch {branch}", tip)):
+        if sha and git("merge-base", "--is-ancestor", sha, MAIN).returncode != 0:
+            return f"{what} has commits not on {MAIN}"
+    return None
 
 
 def cmd_prune(queue_path: str) -> int:
@@ -210,29 +247,31 @@ def cmd_prune(queue_path: str) -> int:
     except QueueError as exc:
         print(exc)
         return 2
+    done = finished(queue)
     for task in queue.tasks:
         paths = queue.paths(task)
-        if not paths.worktree.exists():
+        if task.id not in done or not paths.worktree.exists():
             continue
         try:
             verdict(task.id, task.fields)
         except (NotYet, Broken):
             continue
-        if git("status", "--porcelain", cwd=paths.worktree).stdout.strip():
-            print(f"{task.id}: kept {paths.worktree}: uncommitted changes")
-            continue
-        tip = git("rev-parse", "--verify", "--quiet", f"refs/heads/{paths.branch}").stdout.strip()
-        if tip and git("merge-base", "--is-ancestor", tip, MAIN).returncode != 0:
-            print(f"{task.id}: kept {paths.worktree}: branch {paths.branch} has commits not on {MAIN}")
+        root = task_dir(paths)
+        reason = unsaved(paths.worktree, paths.branch) if root else f"not in a task directory below {TEMP_ROOT}"
+        if reason:
+            print(f"{task.id}: kept {paths.worktree}: {reason}")
             continue
         removed = git("worktree", "remove", str(paths.worktree))
         if removed.returncode != 0:
             print(f"{task.id}: kept {paths.worktree}: {removed.stderr.strip()}")
             continue
-        if tip:
-            git("branch", "-D", paths.branch)
-        gone = remove_task_dir(paths.worktree.parent, paths.slug)
-        print(f"{task.id}: removed {paths.worktree}" + (f" and {paths.worktree.parent}" if gone else ""))
+        git("branch", "-D", paths.branch)
+        shutil.rmtree(root, ignore_errors=True)
+        try:
+            root.parent.rmdir()  # the session directory, once its last task is gone
+        except OSError:
+            pass
+        print(f"{task.id}: removed {paths.worktree}, branch {paths.branch} and {root}")
     return 0
 
 

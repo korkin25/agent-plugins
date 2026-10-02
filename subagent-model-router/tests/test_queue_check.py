@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -62,12 +63,12 @@ class GitFixture(unittest.TestCase):
         self.enterContext(mock.patch.object(qc, "REPO", self.repo))
         self.ci = {}  # sha -> (state, detail); missing means pending
         self.fetches = []
-        self.enterContext(mock.patch.object(qc, "fetch_checks", self.fake_checks))
+        self.enterContext(mock.patch.object(qc, "fetch_runs", self.fake_runs))
         self.commit({qc.TODO: TODO_TEXT, qc.MANIFEST: manifest(1)}, "start")
 
-    def fake_checks(self, sha):
+    def fake_runs(self, sha):
         self.fetches.append(sha)
-        return self.ci.get(sha, ("pending", "no check runs yet"))
+        return self.ci.get(sha, ("pending", "no workflow runs on main yet"))
 
     def run_git(self, cwd, *args):
         proc = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True)
@@ -107,6 +108,31 @@ class QueueDoneTests(GitFixture):
             qc.merge_commit("P0-1")
         self.assertTrue(qc.merge_commit("P0-10"))
 
+    def test_only_the_first_parent_line_counts(self):
+        """A marker on a branch commit that a merge brought in is not the task's merge: CI ran on the merge."""
+        self.run_git(self.repo, "switch", "--quiet", "-c", "side")
+        self.commit({"side.txt": "x"}, "work\n\nQueue-Task: P0-01", push=False)
+        self.run_git(self.repo, "switch", "--quiet", "main")
+        self.run_git(self.repo, "merge", "--quiet", "--no-ff", "side", "-m", "Merge side")
+        self.run_git(self.repo, "push", "--quiet", "origin", "HEAD:main")
+        self.run_git(self.repo, "fetch", "--quiet", "origin")
+        with self.assertRaises(qc.NotYet):
+            qc.merge_commit("P0-01")
+
+    def test_a_replace_ref_cannot_forge_a_merge(self):
+        """The sandbox leaves .git writable: refs/replace could show a green commit with a forged message and TODO."""
+        base = self.run_git(self.repo, "rev-parse", "HEAD")
+        sha = self.commit({"x.txt": "x"}, "An ordinary commit")
+        self.ci[sha] = ("success", "green")
+        self.run_git(self.repo, "switch", "--quiet", "--detach", base)
+        forged = self.commit({qc.TODO: TODO_TEXT.replace("- [ ] **Open item.**", "- [x] **Open item.**")},
+                             "Merge\n\nQueue-Task: P0-01", push=False)
+        self.run_git(self.repo, "replace", sha, forged)
+        self.assertIn("Queue-Task: P0-01", self.run_git(self.repo, "log", "-1", "--format=%B", "origin/main"))
+        code, reason = self.done("P0-01", todo="Open item.")
+        self.assertEqual(code, 1, reason)
+        self.assertIn("not merged", reason)
+
     def test_a_marker_on_an_unpushed_commit_does_not_count(self):
         self.commit({}, "Merge\n\nQueue-Task: P0-01", push=False)
         self.assertEqual(self.done("P0-01")[0], 1)
@@ -121,7 +147,7 @@ class QueueDoneTests(GitFixture):
     def test_pending_and_failed_ci_are_not_done(self):
         sha = self.commit({}, "Merge\n\nQueue-Task: P0-01")
         code, reason = self.done("P0-01")
-        self.assertEqual((code, "no check runs yet" in reason), (1, True))
+        self.assertEqual((code, "no workflow runs" in reason), (1, True))
         qc.cache_dir().joinpath(f"{sha}.json").unlink()
         self.ci[sha] = ("failure", "not green: validate (failure)")
         code, reason = self.done("P0-01")
@@ -160,6 +186,10 @@ class QueueDoneTests(GitFixture):
         self.ci[sha] = ("success", "green")
         self.assertEqual(self.done("P0-01", min_tasks=10)[0], 0)
         self.assertEqual(self.done("P0-01", min_tasks="ten")[0], 2)
+        self.commit({qc.MANIFEST: "[]"}, "Merge\n\nQueue-Task: P0-01")
+        code, reason = self.done("P0-01", min_tasks=10)
+        self.assertEqual(code, 1)
+        self.assertIn("no `tasks` object", reason)
 
     def test_without_tp_id_the_setup_is_broken(self):
         with mock.patch.dict(os.environ, {}, clear=False):
@@ -181,48 +211,64 @@ class QueueDoneTests(GitFixture):
         self.assertEqual(mode, 0o700)
 
 
-class CheckRunsTests(unittest.TestCase):
-    """fetch_checks reads GitHub's check-runs answer; the network is replaced by canned answers."""
+class WorkflowRunsTests(unittest.TestCase):
+    """fetch_runs reads GitHub's workflow runs for a commit; the network is replaced by canned answers."""
 
-    def answer(self, runs):
-        body = io.BytesIO(json.dumps({"check_runs": runs}).encode())
+    def answer(self, runs, total=None):
+        data = {"total_count": len(runs) if total is None else total, "workflow_runs": runs}
         response = mock.MagicMock()
-        response.__enter__.return_value = body
+        response.__enter__.return_value = io.BytesIO(json.dumps(data).encode())
         with mock.patch.object(qc, "github_repo", return_value="owner/repo"), \
                 mock.patch.object(qc.urllib.request, "urlopen", return_value=response) as urlopen:
-            result = qc.fetch_checks("abc123")
-        self.assertIn("/repos/owner/repo/commits/abc123/check-runs", urlopen.call_args[0][0].full_url)
+            result = qc.fetch_runs("abc123")
+        self.assertIn("/repos/owner/repo/actions/runs?head_sha=abc123", urlopen.call_args[0][0].full_url)
         return result
 
     @staticmethod
-    def run_(name, run_id, status="completed", conclusion="success"):
-        return {"name": name, "id": run_id, "status": status, "conclusion": conclusion}
+    def run_(workflow, run_id, status="completed", conclusion="success", branch="main"):
+        return {"name": f"wf{workflow}", "workflow_id": workflow, "id": run_id, "status": status,
+                "conclusion": conclusion, "head_branch": branch}
 
     def test_all_green(self):
-        runs = [self.run_("validate", 1), self.run_("linux", 2, conclusion="skipped"),
-                self.run_("mac", 3, conclusion="neutral")]
-        self.assertEqual(self.answer(runs)[0], "success")
+        runs = [self.run_(1, 10), self.run_(2, 11, conclusion="skipped"), self.run_(3, 12, conclusion="neutral")]
+        self.assertEqual(self.answer(runs), ("success", "3 workflow runs green"))
 
-    def test_no_runs_or_a_running_one_is_pending(self):
+    def test_no_run_or_an_unfinished_one_is_pending(self):
         self.assertEqual(self.answer([])[0], "pending")
-        self.assertEqual(self.answer([self.run_("validate", 1, "in_progress", None)])[0], "pending")
+        for status in ("queued", "pending", "waiting", "in_progress"):
+            with self.subTest(status=status):
+                runs = [self.run_(1, 10), self.run_(2, 11, status, None)]
+                self.assertEqual(self.answer(runs), ("pending", "running: wf2"))
 
     def test_a_failed_or_cancelled_run_is_not_green(self):
-        self.assertEqual(self.answer([self.run_("validate", 1, conclusion="failure")])[0], "failure")
-        state, detail = self.answer([self.run_("validate", 1, conclusion="cancelled")])
+        self.assertEqual(self.answer([self.run_(1, 10, conclusion="failure")])[0], "failure")
+        state, detail = self.answer([self.run_(1, 10), self.run_(2, 11, conclusion="cancelled")])
         self.assertEqual(state, "failure")
-        self.assertIn("cancelled", detail)
+        self.assertIn("wf2 (cancelled)", detail)
 
-    def test_the_newest_run_of_a_name_counts(self):
-        runs = [self.run_("validate", 2), self.run_("validate", 1, conclusion="failure")]
+    def test_the_newest_run_of_a_workflow_counts(self):
+        runs = [self.run_(1, 11), self.run_(1, 10, conclusion="failure")]
         self.assertEqual(self.answer(runs)[0], "success")
-        runs = [self.run_("validate", 1), self.run_("validate", 2, conclusion="failure")]
+        runs = [self.run_(1, 10), self.run_(1, 11, conclusion="failure")]
         self.assertEqual(self.answer(runs)[0], "failure")
 
-    def test_an_unreachable_api_is_unknown(self):
+    def test_runs_of_other_branches_do_not_count(self):
+        self.assertEqual(self.answer([self.run_(1, 10, branch="p0/x")])[0], "pending")
+        runs = [self.run_(1, 10), self.run_(2, 11, conclusion="failure", branch="p0/x")]
+        self.assertEqual(self.answer(runs)[0], "success")
+
+    def test_more_than_a_page_is_unknown(self):
+        self.assertEqual(self.answer([self.run_(1, 10)], total=101)[0], "unknown")
+
+    def test_an_unreachable_api_or_a_strange_answer_is_unknown(self):
         with mock.patch.object(qc, "github_repo", return_value="owner/repo"), \
                 mock.patch.object(qc.urllib.request, "urlopen", side_effect=urllib.error.URLError("down")):
-            self.assertEqual(qc.fetch_checks("abc123")[0], "unknown")
+            self.assertEqual(qc.fetch_runs("abc123")[0], "unknown")
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.BytesIO(b'{"message": "API rate limit exceeded"}')
+        with mock.patch.object(qc, "github_repo", return_value="owner/repo"), \
+                mock.patch.object(qc.urllib.request, "urlopen", return_value=response):
+            self.assertEqual(qc.fetch_runs("abc123")[0], "unknown")
 
     def test_the_repository_comes_from_origin(self):
         for url in ("git@github.com:korkin25/agent-plugins.git", "https://github.com/korkin25/agent-plugins",
@@ -243,8 +289,10 @@ class PruneTests(GitFixture):
         self.enterContext(mock.patch.object(qc, "TEMP_ROOT", self.temp_root))
         self.session = self.temp_root / "agent-plugins-q"
         self.queue = self.tmp / "q.toml"
+        self.state = self.tmp / "state"
         self.queue.write_text(f"""
 session = "q"
+state_dir = "{self.state}"
 slug = "{{id_lower}}"
 worktree = "{self.temp_root}/agent-plugins-{{session}}/{{slug}}/wt"
 branch = "q/{{slug}}"
@@ -259,6 +307,11 @@ id = "T3"
 [[tasks]]
 id = "T4"
 """)
+
+    def runner_state(self, **tasks: dict) -> None:
+        """state.json as the runner writes it: a done task has its pane closed."""
+        self.state.mkdir(exist_ok=True)
+        (self.state / "state.json").write_text(json.dumps({"tasks": tasks}))
 
     def worktree(self, slug: str) -> Path:
         path = self.session / slug / "wt"
@@ -276,6 +329,7 @@ id = "T4"
         for task in ("T1", "T2", "T3"):
             sha = self.commit({}, f"Merge\n\nQueue-Task: {task}")
             self.ci[sha] = ("success", "green")
+        self.runner_state(**{t: {"status": "done", "pane": None} for t in ("T1", "T2", "T3", "T4")})
         done_clean, dirty, unmerged, not_done = (self.worktree(s) for s in ("t1", "t2", "t3", "t4"))
         (dirty / "notes.txt").write_text("work in progress")
         (unmerged / "extra.txt").write_text("x")
@@ -294,20 +348,68 @@ id = "T4"
         for path in (dirty, unmerged, not_done):
             self.assertTrue(path.is_dir())
 
+    def test_a_commit_on_a_detached_head_is_kept(self):
+        sha = self.commit({}, "Merge\n\nQueue-Task: T1")
+        self.ci[sha] = ("success", "green")
+        self.runner_state(T1={"status": "done", "pane": None})
+        path = self.worktree("t1")
+        self.run_git(path, "switch", "--quiet", "--detach")
+        (path / "late.txt").write_text("x")
+        self.run_git(path, "add", "late.txt")
+        self.run_git(path, "commit", "--quiet", "-m", "after the merge")
+        report = self.prune()
+        self.assertIn("T1: kept", report)
+        self.assertIn("worktree's HEAD has commits not on origin/main", report)
+        self.assertTrue((path / "late.txt").is_file())
+
+    def test_a_task_the_runner_has_not_closed_is_untouched(self):
+        """dry-run and status run refresh too: a merged task whose pane is open, or that the runner has not
+        recorded as done, keeps its worktree."""
+        sha = self.commit({}, "Merge\n\nQueue-Task: T1")
+        self.ci[sha] = ("success", "green")
+        sha = self.commit({}, "Merge\n\nQueue-Task: T2")
+        self.ci[sha] = ("success", "green")
+        paths = [self.worktree("t1"), self.worktree("t2"), self.worktree("t3")]
+        self.assertEqual(self.prune(), "")  # no state.json at all
+        self.runner_state(T1={"status": "running", "pane": "%3"}, T2={"status": "done", "pane": "%4"},
+                          T3={"status": "done", "pane": None})
+        self.assertEqual(self.prune(), "")  # T3 is not merged
+        for path in paths:
+            self.assertTrue(path.is_dir())
+
     def test_the_session_directory_goes_with_its_last_task(self):
         sha = self.commit({}, "Merge\n\nQueue-Task: T1")
         self.ci[sha] = ("success", "green")
+        self.runner_state(T1={"status": "done", "pane": None})
         self.worktree("t1")
         self.prune()
         self.assertFalse(self.session.exists())
         self.assertTrue(self.temp_root.is_dir())
 
     def test_a_directory_outside_the_temp_root_is_never_deleted(self):
-        outside = self.tmp / "elsewhere" / "t1"
-        outside.mkdir(parents=True)
-        self.assertFalse(qc.remove_task_dir(outside, "t1"))
-        self.assertFalse(qc.remove_task_dir(self.session / "other", "t1"))
+        paths = mock.Mock()
+        for worktree, slug, expected in (
+            (self.session / "t1" / "wt", "t1", self.session / "t1"),
+            (self.tmp / "elsewhere" / "s" / "t1" / "wt", "t1", None),
+            (self.session / "other" / "wt", "t1", None),
+            (self.temp_root / "t1" / "wt", "t1", None),
+        ):
+            with self.subTest(worktree=worktree):
+                paths.worktree, paths.slug = worktree, slug
+                self.assertEqual(qc.task_dir(paths), expected and expected.resolve())
+
+        sha = self.commit({}, "Merge\n\nQueue-Task: T1")
+        self.ci[sha] = ("success", "green")
+        self.runner_state(T1={"status": "done", "pane": None})
+        outside = self.tmp / "elsewhere" / "q" / "t1" / "wt"
+        self.queue.write_text(self.queue.read_text().replace(f"{self.temp_root}/agent-plugins-{{session}}",
+                                                             f"{self.tmp}/elsewhere/{{session}}"))
+        (outside.parent / "tmp").mkdir(parents=True)
+        self.run_git(self.repo, "worktree", "add", "--quiet", "-b", "q/t1", str(outside), "origin/main")
+        report = self.prune()
+        self.assertIn(f"not in a task directory below {self.temp_root}", report)
         self.assertTrue(outside.is_dir())
+        self.assertIn(str(outside), self.run_git(self.repo, "worktree", "list"))
 
 
 class P0QueueTests(unittest.TestCase):
@@ -324,7 +426,8 @@ class P0QueueTests(unittest.TestCase):
     def test_every_task_names_a_todo_item(self):
         for task in self.queue.tasks:
             with self.subTest(task=task.id):
-                self.assertIn(f"- [ ] **{task.fields['todo']}**", self.todo)
+                # An item stays an item once a task checks it.
+                self.assertRegex(self.todo, rf"- \[[ xX]\] \*\*{re.escape(task.fields['todo'])}\*\*")
 
     def test_every_p0_item_is_a_task(self):
         p0 = self.todo.split("## P0", 1)[1].split("\n## ", 1)[0]
@@ -364,7 +467,8 @@ class P0QueueTests(unittest.TestCase):
                     self.queue.sandbox_for(task, agent, "sid")
 
     def test_stage_sizes_match_the_task_set_rule(self):
-        spec = importlib.util.spec_from_file_location("test_taskset_stages", Path(__file__).with_name("test_taskset.py"))
+        path = Path(__file__).with_name("test_taskset.py")
+        spec = importlib.util.spec_from_file_location("test_taskset_stages", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         sizes = [int(t.fields["min_tasks"]) for t in self.queue.tasks if "min_tasks" in t.fields]

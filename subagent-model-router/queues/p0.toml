@@ -2,7 +2,7 @@
 # How a queue task is done, checked and cleaned up: README.md here.
 #
 #   task-panes check subagent-model-router/queues/p0.toml
-#   task-panes dry-run subagent-model-router/queues/p0.toml
+#   task-panes dry-run --no-refresh subagent-model-router/queues/p0.toml
 #   task-panes start subagent-model-router/queues/p0.toml --attach
 
 session = "router-p0"
@@ -22,14 +22,16 @@ You work on task {id} of the subagent-model-router P0 queue: {title}.
 Worktree: {worktree}, branch {branch}, made from origin/main. Work only there. Temporary files go only to $TMPDIR.
 
 Read first: subagent-model-router/queues/README.md, then the item **{todo}** in subagent-model-router/TODO.md
-and the audit sections it links, and the CLAUDE.md and AGENTS.md files of the repository and of the plugin.
-Repository files are written in English.
+and the audit sections it links. Repository files are written in English.
 
 The task is done when origin/main has all of this; the runner checks it and trusts nothing else:
-1. a merge commit whose message has the line `Queue-Task: {id}`;
+1. a merge commit on main whose message has the line `Queue-Task: {id}`;
 2. the TODO item **{todo}** checked as `- [x]`, its title unchanged;
-3. every GitHub check on that merge commit green.
+3. for a task that grows the task set, subagent-model-router/eval/taskset/MANIFEST.json listing at least the size
+   this prompt names;
+4. every GitHub Actions run on that merge commit green.
 Check it yourself with: python3 -B subagent-model-router/queues/queue_check.py done
+CI takes minutes and the check shares a limit of 60 GitHub API calls an hour: run it at most every five minutes.
 
 Work:
 - Meet the item's acceptance criteria and add the tests they name; run the router's tests
@@ -41,13 +43,16 @@ Work:
     git switch --detach origin/main
     git merge --no-ff {branch} -m "Merge {branch}: <one-line summary>" -m "Queue-Task: {id}"
     git push origin HEAD:main
-  If the push is rejected, `git switch {branch}`, rebase on the new origin/main, test and merge again. Never force-push.
+  Push each merge on its own: CI runs on the pushed commit. If the push is rejected, `git switch {branch}`,
+  rebase on the new origin/main, test and merge again. Never force-push.
 - If CI fails on the merge, fix it on {branch} (`git switch -C {branch} origin/main`) and merge again with the same
-  `Queue-Task: {id}` line: the newest such commit counts.
+  `Queue-Task: {id}` line: the newest such commit counts. A cancelled run is not yours to fix: a new merge would
+  not redo it (a release runs only for the push that bumps a version), so ask the owner to re-run it.
 - Do not read ~/.config/subagent-model-router, the router's journal, state or telemetry, or other personal data."""
 
 [commands]
-refresh = "git fetch --quiet origin main; python3 -B queue_check.py prune p0.toml"
+# The explicit refspec resets origin/main whatever the clone's fetch config says.
+refresh = "git fetch --quiet origin +refs/heads/main:refs/remotes/origin/main; python3 -B queue_check.py prune p0.toml"
 done = "python3 -B queue_check.py done"
 prepare = '''
 umask 077
@@ -97,7 +102,7 @@ todo = "Assemble the frozen task set, stage 1: 10 tasks."
 min_tasks = 10
 extra_prompt = """
 Stage 1 is the set the bench is debugged on (task P0-08), so prefer tasks whose checks are quick and unambiguous.
-The set already has math-01; add at least nine more so that every domain has a task.
+The set already has math-01; add at least nine more so that every domain has a task. Target size: {min_tasks} tasks.
 
 {taskset_rules}"""
 
@@ -166,7 +171,8 @@ todo = "Grow the frozen task set, stage 2: 50 tasks."
 min_tasks = 50
 depends_on = ["P0-08"]
 extra_prompt = """
-Use what P0-08 learned about the tasks (its committed report) when you choose what to add.
+Use what P0-08 learned about the tasks (its committed report) when you choose what to add. Target size: {min_tasks}
+tasks.
 
 {taskset_rules}"""
 
@@ -178,8 +184,8 @@ todo = "Grow the frozen task set, stage 3: 190 tasks."
 min_tasks = 190
 depends_on = ["P0-09"]
 extra_prompt = """
-Stage 3 adds 140 tasks. You may merge them in batches: every batch merge carries the `Queue-Task: {id}` line, and
-only the last one checks the TODO item.
+Stage 3 adds 140 tasks; target size: {min_tasks} tasks. You may merge them in batches: every batch merge carries
+the `Queue-Task: {id}` line, and only the last one checks the TODO item.
 
 {taskset_rules}"""
 
