@@ -1,0 +1,11 @@
+{
+  "id": "math-01",
+  "domain": "math",
+  "difficulty": 1,
+  "title": "Count multiples of 3 or 5 that are not multiples of 15",
+  "language": "en",
+  "outputs": ["answer.txt"],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": ["counting", "inclusion-exclusion"]
+}
