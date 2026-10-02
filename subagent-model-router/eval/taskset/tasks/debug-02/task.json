@@ -1,0 +1,18 @@
+{
+  "id": "debug-02",
+  "domain": "debug",
+  "difficulty": 1,
+  "title": "Expense totals stop at a row with no amount yet",
+  "language": "en",
+  "outputs": [
+    "expenses.py"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 15,
+  "tags": [
+    "python",
+    "csv",
+    "validation"
+  ],
+  "notes": "parse_amount rejects blank amounts; blank includes whitespace-only cells. Broken variants: treating only the empty string as blank, swallowing every bad amount as 0."
+}

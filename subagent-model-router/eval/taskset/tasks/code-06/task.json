@@ -1,0 +1,12 @@
+{
+  "id": "code-06",
+  "domain": "code",
+  "difficulty": 1,
+  "title": "Canonical Roman numerals in both directions",
+  "language": "en",
+  "outputs": ["roman.py"],
+  "source": "synthetic",
+  "check_timeout_seconds": 40,
+  "tags": ["python", "parsing", "validation"],
+  "notes": "Hidden tests cover the full 1..3999 round trip, out-of-range values for to_roman, and non-canonical, lower-case, padded and random letter strings that from_roman must reject."
+}

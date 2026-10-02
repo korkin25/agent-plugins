@@ -1,0 +1,18 @@
+{
+  "id": "debug-01",
+  "domain": "debug",
+  "difficulty": 1,
+  "title": "Roman numerals: 1944 comes out as MCMXXXXIV",
+  "language": "en",
+  "outputs": [
+    "roman.py"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 15,
+  "tags": [
+    "python",
+    "lookup-table",
+    "roman-numerals"
+  ],
+  "notes": "The numeral table lacks the subtractive pairs CD and XL; the report shows only XL. Broken variants: special-casing 1944, adding XL but not CD."
+}

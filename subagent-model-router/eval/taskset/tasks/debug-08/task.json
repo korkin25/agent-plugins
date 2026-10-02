@@ -1,0 +1,19 @@
+{
+  "id": "debug-08",
+  "domain": "debug",
+  "difficulty": 2,
+  "title": "Due dates ignore weekends inside the span",
+  "language": "en",
+  "outputs": [
+    "workdays.py"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 15,
+  "tags": [
+    "python",
+    "dates",
+    "business-days",
+    "holidays"
+  ],
+  "notes": "add_business_days adds n calendar days and only then skips forward to a business day, so weekends and holidays inside the span are not skipped. Broken variants: a weeks-and-days formula with a +2 weekend correction that ignores holidays inside the span, a single +2 bump when the span crosses one weekend (wrong for longer spans and holidays)."
+}

@@ -1,0 +1,20 @@
+{
+  "id": "text-03",
+  "domain": "text",
+  "difficulty": 3,
+  "title": "Extract the amended commercial terms of a maintenance agreement into JSON",
+  "language": "en",
+  "outputs": [
+    "terms.json"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": [
+    "extraction",
+    "json",
+    "contract",
+    "amendments",
+    "dates"
+  ],
+  "notes": "Traps: the Effective Date 04/03/2027 is day/month/year by clause 1.2 -> 2027-03-04, not April 3; clause 14 replaces the fee GBP 12,500 with 11,800 and the notice 90 with 60 days; the cap is 12 x the amended fee = 141,600, not 150,000. Distractors: 30 days in clause 11.2, 8 hours outside Business Days, GBP 95/hour, the parent company Brightwater Systems Holdings plc. Names are compared case-insensitively."
+}

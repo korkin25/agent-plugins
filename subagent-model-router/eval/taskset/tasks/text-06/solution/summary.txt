@@ -1,0 +1,1 @@
+On 2027-01-14 the public payment API was down for 47 minutes and 1,284 payment requests failed. The root cause was an expired TLS certificate on load balancer lb-east-2, whose automatic renewal had been failing silently. Tomas Adeyemi restored service by deploying a new certificate. No card data was exposed, and failed requests can be retried safely.

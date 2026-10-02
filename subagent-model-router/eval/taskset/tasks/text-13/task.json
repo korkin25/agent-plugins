@@ -1,0 +1,19 @@
+{
+  "id": "text-13",
+  "domain": "text",
+  "difficulty": 2,
+  "title": "Перенумерация четырёхуровневого плана по отступам",
+  "language": "ru",
+  "outputs": [
+    "plan_new.md"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": [
+    "reformat",
+    "outline",
+    "renumbering",
+    "russian"
+  ],
+  "notes": "Expected numbering is computed by the generator and asserted equal to a hand-written list of 23 numbers. Traps: stale old numbers with gaps, a duplicate and a wrong parent (4.2.1. under 4.1.); titles that start with digits ('3D-печать', '1С: интеграция' with Cyrillic С, '2027 год', '12 месяцев'); four levels. Broken variants: counters not reset per parent, number swallowed from the title by a greedy [\\d. ]+ pattern, no trailing dot."
+}

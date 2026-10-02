@@ -1,0 +1,17 @@
+{
+  "id": "math-12",
+  "domain": "math",
+  "difficulty": 2,
+  "title": "Lattice points strictly inside a large triangle",
+  "language": "en",
+  "outputs": [
+    "answer.txt"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": [
+    "geometry",
+    "lattice-points",
+    "picks-theorem"
+  ]
+}

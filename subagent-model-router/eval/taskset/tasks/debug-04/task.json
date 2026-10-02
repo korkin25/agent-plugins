@@ -1,0 +1,18 @@
+{
+  "id": "debug-04",
+  "domain": "debug",
+  "difficulty": 1,
+  "title": "Pager drops the last partial page",
+  "language": "en",
+  "outputs": [
+    "pager.py"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 15,
+  "tags": [
+    "python",
+    "pagination",
+    "off-by-one"
+  ],
+  "notes": "page_count floors instead of rounding up. Broken variants: floor + 1 (an empty extra page for exact multiples and one page for an empty list), special-casing 25 items at 10 a page."
+}

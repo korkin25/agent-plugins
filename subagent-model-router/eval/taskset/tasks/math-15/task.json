@@ -1,0 +1,18 @@
+{
+  "id": "math-15",
+  "domain": "math",
+  "difficulty": 3,
+  "title": "Parity of the card that pushes a running total past 20",
+  "language": "en",
+  "outputs": [
+    "answer.txt"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": [
+    "probability",
+    "stopping-rule",
+    "exact-fraction"
+  ],
+  "notes": "Trap: the boundary. Stopping when the total reaches 20 (>= 20) instead of exceeding it gives 1381/2520; the naive symmetry argument (five even, five odd cards) gives 1/2."
+}

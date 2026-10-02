@@ -1,0 +1,19 @@
+{
+  "id": "text-01",
+  "domain": "text",
+  "difficulty": 1,
+  "title": "Extract invoice fields from a supplier email into JSON",
+  "language": "en",
+  "outputs": [
+    "invoice.json"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": [
+    "extraction",
+    "json",
+    "normalization",
+    "invoice"
+  ],
+  "notes": "Expected values read twice from email.txt: total 4,675.00 (not the 4,250.00 subtotal), tax 425.00, issue 3 March 2027, due 2 April 2027 (net 30), no payment received -> unpaid. The check compares strings after trimming, the supplier name case-insensitively, and numbers within 0.005."
+}

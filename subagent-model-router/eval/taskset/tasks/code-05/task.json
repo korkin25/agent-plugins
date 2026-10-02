@@ -1,0 +1,12 @@
+{
+  "id": "code-05",
+  "domain": "code",
+  "difficulty": 1,
+  "title": "Position of the first bracket error",
+  "language": "en",
+  "outputs": ["brackets.py"],
+  "source": "synthetic",
+  "check_timeout_seconds": 40,
+  "tags": ["python", "parsing", "stack"],
+  "notes": "Hidden tests cover crossed brackets of different kinds, mismatches after unclosed openers, several unclosed openers (the leftmost one is the answer), deep nesting and non-ASCII text around the brackets."
+}

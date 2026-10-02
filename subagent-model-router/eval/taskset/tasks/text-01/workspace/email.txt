@@ -1,0 +1,32 @@
+From: Accounts Receivable <billing@kestrelbay-maint.example>
+To: Accounts Payable <ap@orchidline-studios.example>
+Date: Wed, 3 Mar 2027 09:14:22 +0000
+Subject: Invoice INV-2027-0412 for February maintenance
+
+Hello,
+
+Please find attached invoice INV-2027-0412, issued on 3 March 2027, for the
+preventive maintenance visits we carried out at your Dockside studio during
+February 2027 (your purchase order PO-88317).
+
+Summary of charges:
+
+  Preventive maintenance, 6 visits      USD 3,900.00
+  Replacement air filters, 14 units     USD   350.00
+  Subtotal                              USD 4,250.00
+  Sales tax (10%)                       USD   425.00
+  Total due                             USD 4,675.00
+
+Our payment terms are net 30, so the invoice is due on 2 April 2027. As of
+today we have not received any payment against this invoice; if you have
+already sent it, please disregard this reminder.
+
+If you have questions about the visits themselves, please contact our field
+coordinator, Marta Ilves, on extension 214.
+
+Kind regards,
+
+Daniel Okonkwo
+Billing Specialist
+Kestrel Bay Maintenance LLC
+14 Quarry Road, Port Avalon

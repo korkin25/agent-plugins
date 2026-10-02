@@ -1,0 +1,17 @@
+{
+  "id": "math-11",
+  "domain": "math",
+  "difficulty": 2,
+  "title": "Раскладка 30 жетонов по пяти коробкам с ограничениями",
+  "language": "ru",
+  "outputs": [
+    "answer.txt"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": [
+    "combinatorics",
+    "bounded-compositions",
+    "parity"
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "id": "text-05",
+  "domain": "text",
+  "difficulty": 2,
+  "title": "Classify expense lines into budget categories with precedence rules",
+  "language": "en",
+  "outputs": [
+    "labels.csv"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": [
+    "classification",
+    "csv",
+    "precedence-rules"
+  ],
+  "notes": "32 lines; each has exactly one label once the precedence rules are applied. Trap lines: hotel breakfast, client dinner and the in-flight sandwich are meals (P1); the course library subscription is training (P2); the conference ticket with lunch is training (P3); the docking station delivery charge is hardware while the contract courier and invoice postage are office (P4). Labels are compared case-insensitively; no tolerance."
+}

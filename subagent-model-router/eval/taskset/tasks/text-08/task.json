@@ -1,0 +1,21 @@
+{
+  "id": "text-08",
+  "domain": "text",
+  "difficulty": 3,
+  "title": "Сводка решений инвестиционного комитета: только одобренные проекты, бюджеты в тыс. руб.",
+  "language": "ru",
+  "outputs": [
+    "svodka_resheniy.txt"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": [
+    "summary",
+    "word-limit",
+    "overridden-decision",
+    "unit-conversion",
+    "dates",
+    "russian"
+  ],
+  "notes": "Approved at the end: ПР-11 (4,75 млн -> 4750 тыс., 15 июня 2027 -> 15.06.2027, Лаптев), ПР-13 (2 300 тыс. corrected to 2,65 млн -> 2650 тыс., ISO 2027-09-01 -> 01.09.2027, Гусейнова), ПР-15 (1 200 000 руб. -> 1200 тыс., 30.11.2027, Зимин); sum 8,6 млн matches 3.2. Traps: ПР-16 is approved in 2.6 but overturned in 3.1; ПР-12 rejected, ПР-14 deferred; three budget units; three date formats. The check joins digit groups split by single spaces, folds case and ё for surname stems, and bans the codes of the other projects, the budgets 3100 and 5200 (not 900: it equals the carried-over remainder 0,9 млн, which the summary may mention), the date 01.08.2027, 2300 and the stem 'голос'."
+}
