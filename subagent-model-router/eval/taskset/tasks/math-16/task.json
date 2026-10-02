@@ -15,5 +15,5 @@
     "lcm-gcd",
     "double-counting"
   ],
-  "notes": "Traps: a <= b makes the pairs unordered but keeps a = b = 12!; halving the 10395 ordered pairs without the diagonal gives 5181. broken/: 10363 counts ordered pairs, 5181 loses the pair (12!, 12!), 5198 ignores gcd > 1."
+  "notes": "Traps: a <= b makes the pairs unordered but keeps a = b = 12!; of the 10363 ordered pairs with gcd > 1, halving those off the diagonal gives 5181. broken/: 10363 counts ordered pairs, 5181 loses the pair (12!, 12!), 5198 ignores gcd > 1."
 }

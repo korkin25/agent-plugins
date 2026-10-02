@@ -110,6 +110,9 @@ def bad_amounts_are_still_errors():
         ("category,amount\nfood,1.234\n", "error: line 2: bad amount '1.234'"),
         ("category,amount\nfood,\nfood,--5\nfood,7\n", "error: line 3: bad amount '--5'"),
         ("category,amount\nfood, \nfood,n/a\n", "error: line 3: bad amount 'n/a'"),
+        ("category,amount\nfood,4\nfood,-\n", "error: line 3: bad amount '-'"),
+        ("category,amount\nfood,\nfood,.\nfood,2\n", "error: line 3: bad amount '.'"),
+        ("category,amount\nfood,-.\n", "error: line 2: bad amount '-.'"),
     ]
     for text, message in cases:
         proc = run_tool(text)

@@ -88,21 +88,19 @@ How the task set grows:
   URL, license and the sha256 of every fetched file are recorded. Add a new `source` value and the fields that pin
   the origin to taskset.py, its validation and the README in the same change. Its check runs offline.
 - Expected values are computed by independent code (brute force where possible), never by hand.
-- The local branch eval/taskset-candidates holds unreviewed drafts (math, code, debug, text) from an earlier
-  authoring run. Review a draft against the README before reusing it; drop it when it is wrong or unfair.
 - Every new task is reviewed by someone other than its author (a subagent with a fresh context) before it merges.
 - Merged tasks never change: a defective merged task is retired as "Freezing" says.
 - Finish with `taskset.py validate -j 4` passing, then bump `version` and run `taskset.py manifest --write`."""
 
 [[tasks]]
 id = "P0-01"
-name = "taskset-10"
-title = "Frozen task set, stage 1: 10 tasks"
-todo = "Assemble the frozen task set, stage 1: 10 tasks."
-min_tasks = 10
+name = "taskset-stage1"
+title = "Frozen task set, stage 1: 50 tasks in four domains"
+todo = "Assemble the frozen task set, stage 1: 50 tasks in four domains."
+min_tasks = 50
 extra_prompt = """
-Stage 1 is the set the bench is debugged on (task P0-08), so prefer tasks whose checks are quick and unambiguous.
-The set already has math-01; add at least nine more so that every domain has a task. Target size: {min_tasks} tasks.
+Stage 1 is the set the bench is debugged on (task P0-08): math, code, debug and text, so prefer tasks whose checks
+are quick and unambiguous. Target size: {min_tasks} tasks; the spread is in the README's "Stages".
 
 {taskset_rules}"""
 
@@ -159,33 +157,25 @@ depends_on = ["P0-07"]
 extra_prompt = """
 This is the first run with real clients, and it costs money. Before any paid launch, write in this pane the arms,
 the tasks, the repeats, the clients and models, and the estimated cost with how you estimated it; then wait for
-the owner's explicit go-ahead. Start with the smallest run that exercises every part of the runner.
+the owner's explicit go-ahead. Start with the smallest run that exercises every part of the runner; then run the
+arms on every stage-1 task (the tasks MANIFEST.json lists when this task starts), with its own estimate and go-ahead.
 The sandbox mounts only the state of the agent CLI running this pane: if the run needs the other client, say so
 and ask the owner how to proceed. A defective task is retired, never edited. The committed report holds no secrets."""
 
 [[tasks]]
 id = "P0-09"
-name = "taskset-50"
-title = "Frozen task set, stage 2: 50 tasks"
-todo = "Grow the frozen task set, stage 2: 50 tasks."
-min_tasks = 50
+name = "taskset-stage2"
+title = "Frozen task set, stage 2: 190 tasks in all domains"
+todo = "Grow the frozen task set, stage 2: 190 tasks in all domains."
+min_tasks = 190
 depends_on = ["P0-08"]
 extra_prompt = """
-Use what P0-08 learned about the tasks (its committed report) when you choose what to add. Target size: {min_tasks}
-tasks.
-
-{taskset_rules}"""
-
-[[tasks]]
-id = "P0-10"
-name = "taskset-190"
-title = "Frozen task set, stage 3: 190 tasks"
-todo = "Grow the frozen task set, stage 3: 190 tasks."
-min_tasks = 190
-depends_on = ["P0-09"]
-extra_prompt = """
-Stage 3 adds 140 tasks; target size: {min_tasks} tasks. You may merge them in batches: every batch merge carries
-the `Queue-Task: {id}` line, and only the last one checks the TODO item.
+Stage 2 is the rest of the set; target size: {min_tasks} tasks, spread as the README's "Stages" says. Stage 1 has
+only math, code, debug and text, and its code and debug tasks stop at difficulty 2. Add first the domains it lacks
+(logic, tooling, review, data), then difficulty 3 for code and debug, then fill every domain and the Russian share.
+Use what P0-08 learned about the tasks (its committed report) when you choose what to add.
+You may merge in batches: every batch merge carries the `Queue-Task: {id}` line, and only the last one checks the
+TODO item.
 
 {taskset_rules}"""
 

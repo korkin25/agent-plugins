@@ -53,6 +53,8 @@ MODULE = "roman"
 def run(module):
     for n in [0, -1, -3999, 4000, 4001, 10000]:
         yield f"to-out-of-range-{n}", attempt(module.to_roman, n)
+    for n in [4.0, 3999.0, 2.5, "12", None, [5]]:
+        yield f"to-not-int-{n!r}", attempt(module.to_roman, n)
     for n in [1, 4, 9, 14, 40, 90, 400, 900, 1994, 2024, 3888, 3999]:
         yield f"to-{n}", attempt(module.to_roman, n)
     roundtrip = []

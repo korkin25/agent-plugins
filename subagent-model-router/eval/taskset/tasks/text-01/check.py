@@ -55,7 +55,7 @@ def check(workdir: Path) -> None:
         if key in NUMBERS:
             if isinstance(got, bool) or not isinstance(got, (int, float)):
                 raise Fail(f"{key} is not a JSON number: {got!r}")
-            if abs(got - want) > 0.005:
+            if not abs(got - want) <= 0.005:  # also rejects NaN and Infinity
                 raise Fail(f"{key} is {got}, which does not match the email")
         elif not isinstance(got, str):
             raise Fail(f"{key} is not a string: {got!r}")

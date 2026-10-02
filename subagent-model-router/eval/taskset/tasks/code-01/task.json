@@ -8,5 +8,5 @@
   "source": "synthetic",
   "check_timeout_seconds": 40,
   "tags": ["python", "intervals", "sorting"],
-  "notes": "Hidden tests cover empty input, touching intervals (shared end point), intervals one apart that must stay separate, unsorted and nested input, ValueError on start > end, and that the argument is not mutated."
+  "notes": "Hidden tests cover empty input, touching intervals (shared end point), intervals one apart that must stay separate, unsorted and nested input, ValueError on start > end, that the argument is not mutated, and that the result is a new list of tuples (not lists, not the argument itself)."
 }

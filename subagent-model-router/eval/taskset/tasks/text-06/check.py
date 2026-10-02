@@ -47,6 +47,8 @@ FORBIDDEN = [
     ("a merchant name", r"(?i)bramblewood|corvid|lumen"),
     ("the internal ticket number", r"(?i)OPS-?\s*4471|\b4471\b"),
     ("a clock time", r"\b\d{1,2}:\d{2}\b"),
+    ("a clock time", r"(?i)(?<![\w.,:-])\d{1,2}(?:[:.]\d{2})?\s?[ap]\.?m(?![a-z])"),
+    ("a clock time", r"(?i)(?<![\w.,:-])\d{1,2}(?:[:.h]?\d{2})?\s?(?:UTC|GMT)\b"),
 ]
 
 

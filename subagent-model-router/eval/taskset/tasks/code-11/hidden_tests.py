@@ -110,6 +110,7 @@ def run(module):
         "diamond": (["d", "c", "b", "a"], [("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")]),
         "duplicate-edges": (["a", "b", "c"], [("b", "a"), ("b", "a"), ("c", "b"), ("c", "b")]),
         "duplicate-node": (["a", "b", "a"], []),
+        "duplicate-and-cycle": (["a", "b", "a"], [("a", "b"), ("b", "a")]),
         "unknown-source": (["a"], [("q", "a")]),
         "unknown-and-cycle": (["a", "b"], [("a", "b"), ("b", "a"), ("b", "c")]),
         "self-loop": (["a", "b"], [("a", "b"), ("b", "b")]),

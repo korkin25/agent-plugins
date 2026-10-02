@@ -1,28 +1,28 @@
 {
-  "version": 1,
+  "version": 2,
   "frozen": "2026-10-02",
   "retired": {},
   "tasks": {
     "code-01": {
-      "sha256": "cc7f2479fc67101c7611e132ce32942a21622628e54be6303f36678f67e81608",
+      "sha256": "09e7e2b684ccb03c9c565257dc5eb1012e72cf71e4c4d172614c006f12ada7ee",
       "domain": "code",
       "difficulty": 1,
       "language": "en"
     },
     "code-02": {
-      "sha256": "c081909cb509b88eb325422f870554b2b8812f52253b2113b44ce6bcd3de7bf8",
+      "sha256": "7f5a5d02de46b1d385386d5b0a3c9c2e820a576aa67b529a5d6577d289978eb4",
       "domain": "code",
       "difficulty": 1,
       "language": "ru"
     },
     "code-03": {
-      "sha256": "169dcaac7be481a0f0d224e72c28b66808cfb40b00c8b8a33c7aabd7cfcd019d",
+      "sha256": "3d436ec6694d42069d0fdb3aa9d496a455a9df2b5fde7e3f12df76b1d9d749c0",
       "domain": "code",
       "difficulty": 1,
       "language": "en"
     },
     "code-04": {
-      "sha256": "fd1b1cf4e66c522ade77028ddb6b89630f6745c350f662708493966574824e27",
+      "sha256": "c164e25614e8bb093104dddb6fa7faac43cb2c42fcc6d51693ed2fbd9028abf3",
       "domain": "code",
       "difficulty": 1,
       "language": "en"
@@ -34,13 +34,13 @@
       "language": "en"
     },
     "code-06": {
-      "sha256": "4f05d833b7ae8202e4e7aa13de56fa1acaec3962f8b86861f566c02749983347",
+      "sha256": "ed52a1cf8ac0d450e679b64b6ab523cdcff6dbb3f1bca7037cc37dcf8d39f5be",
       "domain": "code",
       "difficulty": 1,
       "language": "en"
     },
     "code-07": {
-      "sha256": "a0aeab781e72d176aaa7767d2674a0de90c197ba5232802443d3387a1b9d7d25",
+      "sha256": "4e93bae0fa57f2ffb39269c23fc01cb9ce9503b1e3baf4515f33adfea8fe74c0",
       "domain": "code",
       "difficulty": 2,
       "language": "en"
@@ -52,19 +52,19 @@
       "language": "en"
     },
     "code-09": {
-      "sha256": "aaa059ccc0398bc24988d3b07b96e191c9257aae5dfd2b26e73615e42bc45a3d",
+      "sha256": "e23d1afe62c690f530950525924257b612ef9a04ba67b7a5cca79c05c67452ca",
       "domain": "code",
       "difficulty": 2,
       "language": "en"
     },
     "code-10": {
-      "sha256": "f2b1455fc85f091c7d619e93e098c4119f289e2eab9007409371c79616e033ac",
+      "sha256": "954f00ec4325189798af80f83ce6da851c209d02f3cfad2f1085c02c39932fe3",
       "domain": "code",
       "difficulty": 2,
       "language": "ru"
     },
     "code-11": {
-      "sha256": "997f6415cb86afd6b7fb64c4dbc2d1f8790454e9e15284da49b815131e30d815",
+      "sha256": "64c57eee4297bd4b3cfb02011ae7a31ebdaf17af84a22ce5bfac8ec34a43993d",
       "domain": "code",
       "difficulty": 2,
       "language": "en"
@@ -76,7 +76,7 @@
       "language": "en"
     },
     "debug-02": {
-      "sha256": "6e2c62a03c4e6046e19f1609690a0ebbc531028ff60790a41cf5786c916e8d47",
+      "sha256": "c95585afba801ae9877692dee4c0b65d5819b4e07d9234b2c8d660c660799810",
       "domain": "debug",
       "difficulty": 1,
       "language": "en"
@@ -154,7 +154,7 @@
       "language": "ru"
     },
     "math-05": {
-      "sha256": "121f00947e3338b8cebf62cbccb24cba8c26429450734dd2ef66e0126370f1af",
+      "sha256": "9d1219a1cf604a834b4b7e319caf24f9f5c79c90e92fa5d30d47e3ccd2bbd71b",
       "domain": "math",
       "difficulty": 1,
       "language": "en"
@@ -220,7 +220,7 @@
       "language": "en"
     },
     "math-16": {
-      "sha256": "c3a47bba8194ba689ebb5611d64f2ab5ff9250c672f61495c309cbf77d8ef62a",
+      "sha256": "857c70b907bb33683266251b5513b00974f69d2e2631e4deff36b5ff24436547",
       "domain": "math",
       "difficulty": 3,
       "language": "en"
@@ -238,19 +238,19 @@
       "language": "en"
     },
     "text-01": {
-      "sha256": "9ac24e515ddbc85eafbb81e0b69a7be8225e68117d206c217f416b53d92f7b2a",
+      "sha256": "cee444227e3a8f19c48d5ef40e7cb64b0323f51ec05130e7b2f2a76a72f36ece",
       "domain": "text",
       "difficulty": 1,
       "language": "en"
     },
     "text-02": {
-      "sha256": "cef3e13ab88e6600d9ecb732619e9c9a52679c92e08bb4b5dd7ac39c4c8abf0c",
+      "sha256": "22900b578447e8c2be04404cc1a5e8b6d4aed6deb3004f5bd396ea802844f4da",
       "domain": "text",
       "difficulty": 2,
       "language": "ru"
     },
     "text-03": {
-      "sha256": "17acaecd74aa98810578bfb0f2c0e1f5a4d6311fe0a7f68fc68deabef83474a9",
+      "sha256": "2ff16fab95c541a737a11e73164b37fc28f5f68aec31c599a5d74575e70ca2b6",
       "domain": "text",
       "difficulty": 3,
       "language": "en"
@@ -268,19 +268,19 @@
       "language": "en"
     },
     "text-06": {
-      "sha256": "93d2f6633a732245695088f75938e51e2c57bb7b39328f71c53e56a1581fa8ad",
+      "sha256": "c68ca081ffc24ad3665a30a077289f24ccc74bc2351378dd72372da655dd7af5",
       "domain": "text",
       "difficulty": 1,
       "language": "en"
     },
     "text-07": {
-      "sha256": "0544342fb0155fe6347194cfd8d913c4d6ddbb79d2bb853678a9d75fbbf0a37f",
+      "sha256": "1c6e1cc4dca5ffd6f3181f6a4cc1ad4e424ca2220a33f2083af449af354d34a3",
       "domain": "text",
       "difficulty": 2,
       "language": "ru"
     },
     "text-08": {
-      "sha256": "4a1e6b3d63ce8e3f38092349cd47c71051bca1202fd68e95dc806dfb9d6fb692",
+      "sha256": "b02954f070bef9c2956ae94653695c323557f3da57bb826a582c3288b66d6bcf",
       "domain": "text",
       "difficulty": 3,
       "language": "ru"
@@ -292,13 +292,13 @@
       "language": "ru"
     },
     "text-10": {
-      "sha256": "f99671521957ae4a82086f88874c54858defe2a793e8b375216f85a02ff77503",
+      "sha256": "89eca1c15034eff29d644d6888b4b10731729cb7235887e450abcbb0a12de2ba",
       "domain": "text",
       "difficulty": 2,
       "language": "en"
     },
     "text-11": {
-      "sha256": "5a83042508adf76d7738f4e889c9330a2d3c6b78504e408c8286c7599cd43c30",
+      "sha256": "83af8db2b39403e6efa31a235ca98844fa122c09a530a59692cf6ec309520f1f",
       "domain": "text",
       "difficulty": 3,
       "language": "ru"
@@ -310,17 +310,17 @@
       "language": "en"
     },
     "text-13": {
-      "sha256": "b68cc384276c7418238ba8dd28fa52e0b4bff09a1313316f78f6ed1670e21ce8",
+      "sha256": "da92b1ec2579d482a13b6ab5dd0c7009a299288d7af758d2d3409f2fc54e72d5",
       "domain": "text",
       "difficulty": 2,
       "language": "ru"
     },
     "text-14": {
-      "sha256": "ab91b9fa436265f7e68fb30a4db4e76769414221bae91883da0a4a646b75a11c",
+      "sha256": "010fa4d2423b5eb26592de003993d7b7716a94658fa9110447778ca9afce0803",
       "domain": "text",
       "difficulty": 3,
       "language": "en"
     }
   },
-  "sha256": "a7d5e723a8d16678f07e2825f3762826c40b9579a1616a81e02e74fa1ba283c2"
+  "sha256": "f98ab6e9cf4a7a83adf21e8679efad24d41ef687218f8f6ed4d6d8f691119f15"
 }

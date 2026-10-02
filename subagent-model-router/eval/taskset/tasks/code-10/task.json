@@ -8,5 +8,5 @@
   "source": "synthetic",
   "check_timeout_seconds": 40,
   "tags": ["python", "data-structures", "trie", "ranking"],
-  "notes": "Hidden tests cover code-point tie ordering with Cyrillic letters (ё after я, capitals first), a prefix that is itself a word, removing a word that is a prefix of others, re-adding after removal, accumulated weights, k <= 0 and argument validation, plus random operation scripts."
+  "notes": "Hidden tests cover code-point tie ordering with Cyrillic letters (ё after я, capitals first), a prefix that is itself a word, removing a word that is a prefix of others, re-adding after removal, accumulated weights, k <= 0 and argument validation (including non-string words), plus random operation scripts."
 }

@@ -26,7 +26,11 @@ class TTLCache:
     def __init__(self, capacity, ttl, clock=time.monotonic):
         if not isinstance(capacity, int) or capacity < 1:
             raise ValueError(f"capacity must be a positive int, not {capacity!r}")
-        if not ttl > 0:
+        try:
+            positive = ttl > 0
+        except TypeError:  # not a number at all
+            positive = False
+        if not positive:
             raise ValueError(f"ttl must be positive, not {ttl!r}")
         self._capacity = capacity
         self._ttl = ttl

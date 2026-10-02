@@ -15,5 +15,5 @@
     "correction",
     "russian"
   ],
-  "notes": "Trap: the closing correction replaces 48,2 млн руб. / 11 % with 48,6 млн руб. / 12 % (48,6/43,4 = 1.120). Required: 48,6 (comma or dot), 12 % (space optional), 01.04.2027, stems 'дорохов' (case-folded) and 'Восточн' (case-sensitive, so 'восточные районы' does not count), any inflection passes. Forbidden: stems 'глобус', 'мегаполис', 'преми', and 48,2 / 11 %. Words are str.split() tokens."
+  "notes": "Trap: the closing correction replaces 48,2 млн руб. / 11 % with 48,6 млн руб. / 12 % (48,6/43,4 = 1.120). Required: 48,6 (comma or dot), 12 % (space optional, 12,0 % also accepted), 01.04.2027, stems 'дорохов' (case-folded) and 'Восточн' or 'ВОСТОЧН' (case-sensitive, so 'восточные районы' does not count), any inflection passes. Forbidden: stems 'глобус', 'мегаполис', 'преми', 'бонус', 'вознагражд', the bonus sum 1,2 млн / 1 200 тыс., and 48,2 / 11 % (also 11,0 %). Words are str.split() tokens."
 }

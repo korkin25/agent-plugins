@@ -54,9 +54,29 @@ SUPERSEDED = {2300: "the ПР-13 budget before the correction (2 300)"}
 def numbers(text: str) -> set[int]:
     """Integers in the text; groups of three digits separated by single spaces join into one number."""
     found = set()
-    for match in re.finditer(r"(?<![\d,.])\d{1,3}(?: \d{3})+(?![\d,])|(?<![\d,.])\d+(?![\d,]\d)", text):
+    for match in re.finditer(r"(?<![\d,.])\d{1,3}(?: \d{3})+(?!\d|[,.]\d)|(?<![\d,.])\d+(?![\d,]\d)", text):
         found.add(int(match.group(0).replace(" ", "")))
     return found
+
+
+def mentions_budget(text: str, found: set[int], thousands: int) -> bool:
+    """The amount in thousands, in roubles, or in millions with a decimal comma or point ("3,1 млн")."""
+    if thousands in found or thousands * 1000 in found:
+        return True
+    whole, frac = divmod(thousands, 1000)
+    frac_digits = f"{frac:03d}".rstrip("0")
+    millions = str(whole) + (r"[,.]" + frac_digits + r"0*" if frac_digits else r"(?:[,.]0+)?")
+    return re.search(r"(?<![\d,.])" + millions + r"\s?млн", text.casefold()) is not None
+
+
+def date_variants(date: str) -> list[str]:
+    """DD.MM.YYYY, YYYY-MM-DD and "D <month>" forms of one date, as regular expressions."""
+    day, month, year = date.split(".")
+    months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа",
+              "сентября", "октября", "ноября", "декабря"]
+    return [r"(?<![\d.])" + re.escape(date) + r"(?!\d)",
+            r"(?<!\d)" + year + "-" + month + "-" + day + r"(?!\d)",
+            r"(?<!\d)0?" + str(int(day)) + r"\s?" + months[int(month) - 1]]
 
 
 def has_code(text: str, code: str) -> bool:
@@ -87,14 +107,14 @@ def check(workdir: Path) -> None:
     for code, facts in NOT_APPROVED.items():
         if has_code(upper, code):
             raise Fail(f"mentions {code}, which is not approved at the end of the meeting")
-        if facts["budget"] is not None and facts["budget"] in found:
+        if facts["budget"] is not None and mentions_budget(text, found, facts["budget"]):
             raise Fail(f"mentions the budget of {code}, which is not approved")
-        if facts["date"] and facts["date"] in text:
+        if facts["date"] and any(re.search(p, text.casefold()) for p in date_variants(facts["date"])):
             raise Fail(f"mentions the date of {code}, which is not approved")
     for value, label in SUPERSEDED.items():
-        if value in found:
+        if mentions_budget(text, found, value):
             raise Fail(f"mentions {label}")
-    if "голос" in folded:
+    if "голос" in folded or "единоглас" in folded:
         raise Fail("mentions voting")
 
 

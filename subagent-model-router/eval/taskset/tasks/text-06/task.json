@@ -15,5 +15,5 @@
     "required-facts",
     "forbidden-content"
   ],
-  "notes": "Required facts from incident.md: 2027-01-14, 47 minutes, 1,284 failed requests, Adeyemi, the phrase 'expired TLS certificate'. Forbidden: merchant names (Bramblewood, Corvid, Lumen), OPS-4471, clock times (HH:MM). Words are str.split() tokens."
+  "notes": "Required facts from incident.md: 2027-01-14, 47 minutes, 1,284 failed requests, Adeyemi, the phrase 'expired TLS certificate'. Forbidden: merchant names (Bramblewood, Corvid, Lumen), OPS-4471, clock times (HH:MM, an hour with am/pm, or a time marked UTC/GMT such as '9 UTC' or '09.02 UTC'). Words are str.split() tokens."
 }

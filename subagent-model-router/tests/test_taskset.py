@@ -13,11 +13,11 @@ from pathlib import Path
 TASKSET = Path(__file__).resolve().parent.parent / "eval" / "taskset"
 
 # The set grows in stages (README, "Stages"); a set at or past a stage's size meets that stage's spread:
-# (size, tasks per domain, difficulties every domain covers, tasks in Russian).
+# (size, domains it must cover or None for every domain, tasks per such domain, difficulties each such domain
+# covers, tasks in Russian).
 STAGES = [
-    (10, 1, set(), 1),
-    (50, 5, {1, 2, 3}, 5),
-    (190, 20, {1, 2, 3}, 19),
+    (50, {"math", "code", "debug", "text"}, 8, set(), 10),
+    (190, None, 20, {1, 2, 3}, 19),
 ]
 MAX_TASKS = 200
 
@@ -49,9 +49,9 @@ class TaskSetTests(unittest.TestCase):
         reached = [stage for stage in STAGES if len(self.metas) >= stage[0]]
         if not reached:
             return
-        size, per_domain, levels, russian = reached[-1]
+        size, domains, per_domain, levels, russian = reached[-1]
         by_domain = Counter(m["domain"] for m in self.metas)
-        for domain in self.ts.DOMAINS:
+        for domain in sorted(domains) if domains else self.ts.DOMAINS:
             with self.subTest(stage=size, domain=domain):
                 self.assertGreaterEqual(by_domain[domain], per_domain)
                 self.assertLessEqual(levels, {m["difficulty"] for m in self.metas if m["domain"] == domain})

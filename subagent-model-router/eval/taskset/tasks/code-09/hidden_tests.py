@@ -113,8 +113,9 @@ def random_ops(rng, keys, steps, ticks):
 
 
 def run(module):
-    for capacity, ttl in [(0, 1), (-1, 1), (1, 0), (1, -2.5), (2, 0.0)]:
-        yield f"constructor-{capacity}-{ttl}", attempt(module.TTLCache, capacity, ttl)
+    for capacity, ttl in [(0, 1), (-1, 1), (1, 0), (1, -2.5), (2, 0.0), (2.0, 1), (2.5, 1), ("3", 1), (None, 1),
+                          (2, "1"), (2, None)]:
+        yield f"constructor-{capacity!r}-{ttl!r}", attempt(module.TTLCache, capacity, ttl)
     fixed = {
         "expires-at-exact-boundary": (3, 4, [("put", "a", 1), ("tick", 3.75), ("in", "a"), ("tick", 0.25),
                                              ("in", "a"), ("get", "a"), ("len",), ("keys",)]),

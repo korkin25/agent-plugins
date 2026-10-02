@@ -61,7 +61,7 @@ def check(workdir: Path) -> None:
         elif is_number(want):
             if not is_number(got):
                 raise Fail(f"{key} is not a JSON number: {got!r}")
-            if abs(got - want) > 1e-6:
+            if not abs(got - want) <= 1e-6:  # also rejects NaN and Infinity
                 raise Fail(f"{key} is {got}, which does not match the signed agreement")
         elif not isinstance(got, str):
             raise Fail(f"{key} is not a string: {got!r}")

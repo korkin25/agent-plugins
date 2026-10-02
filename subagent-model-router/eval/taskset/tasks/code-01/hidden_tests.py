@@ -12,14 +12,16 @@ from pathlib import Path
 
 
 def canon(value, depth=0):
-    """A JSON-able form of a value: tuples and lists alike, dict keys in any order, other objects by type name."""
+    """A JSON-able form of a value: a tuple tagged apart from a list, dict keys in any order, others by type name."""
     if depth > 60:
         return "<too deep>"
     if value is None or isinstance(value, (bool, int, str)):
         return value
     if isinstance(value, float):
         return value if value == value and value not in (float("inf"), float("-inf")) else repr(value)
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, tuple):
+        return {"<tuple>": [canon(item, depth + 1) for item in value]}
+    if isinstance(value, list):
         return [canon(item, depth + 1) for item in value]
     if isinstance(value, dict):
         pairs = [[canon(k, depth + 1), canon(v, depth + 1)] for k, v in value.items()]
@@ -51,10 +53,19 @@ MODULE = "intervals"
 
 
 def call(module, intervals):
-    """Merge a private copy and report the result together with the argument as it is afterwards."""
+    """Merge a private copy; report the result, the argument as it is afterwards and whether it came back itself."""
     argument = [tuple(pair) if isinstance(pair, tuple) else list(pair) for pair in intervals]
-    outcome = attempt(module.merge_intervals, argument)
+    returned = []
+
+    def merge(value):
+        result = module.merge_intervals(value)
+        returned.append(result is value)
+        return result
+
+    outcome = attempt(merge, argument)
     outcome["argument_after"] = canon(argument)
+    if returned and returned[0]:
+        outcome["returned_the_argument"] = True
     return outcome
 
 
@@ -62,6 +73,7 @@ def run(module):
     fixed = {
         "empty": [],
         "single": [(3, 7)],
+        "single-list": [[3, 7]],
         "point": [(5, 5)],
         "touching": [(1, 3), (3, 5)],
         "touching-chain": [(7, 9), (1, 3), (5, 7), (3, 5)],

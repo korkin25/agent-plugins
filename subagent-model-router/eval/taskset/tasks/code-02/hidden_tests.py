@@ -50,6 +50,11 @@ def main() -> int:
 MODULE = "luhn"
 
 
+def shifted(digits, zero):
+    """The same number with its ASCII digits written from another Unicode zero (fullwidth, Arabic-Indic ...)."""
+    return "".join(chr(ord(zero) + int(char)) if char in "0123456789" else char for char in digits)
+
+
 def run(module):
     numbers = [
         "79927398713", "79927398710", "7992 7398 713", " 79927398713 ", "4539 1488 0343 6467", "4539148803436468",
@@ -57,12 +62,15 @@ def run(module):
         "4111-1111-1111-1111", "4111111111111111", "4111111111111112", "12a4", "+18", "0x18", "1-8", "18.",
         "99999999999999999999999999999999999999999999999994",
         "2222 4000 7000 0005", "378282246310005", "6011111111111117", "5105105105105100", "5105105105105106",
+        shifted("79927398713", "\uff10"), shifted("7992 7398 713", "\u0660"), shifted("18", "\u0966"),
+        "1" + shifted("8", "\uff10"), shifted("00", "\u06f0"), "1\u2078", "\u00b9\u2078",
     ]
     for index, number in enumerate(numbers):
         yield f"is_valid-{index}", attempt(module.is_valid, number)
     payloads = [
         "7992739871", "0", "1", "9", "00", "12345", "123456", "411111111111111", "37828224631000",
         "999999999999999999999999999999", "", " ", "12 34", "12a", "-5", "1.5",
+        shifted("7992739871", "\u0660"), shifted("123", "\uff10"), "12" + shifted("3", "\u0966"), "\u00b2",
     ]
     for index, payload in enumerate(payloads):
         yield f"check_digit-{index}", attempt(module.check_digit, payload)

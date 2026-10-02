@@ -8,5 +8,5 @@
   "source": "synthetic",
   "check_timeout_seconds": 40,
   "tags": ["python", "matrix", "simulation"],
-  "notes": "Hidden tests cover every shape from 1x1 to 8x8 (single rows and columns, wide and tall matrices whose last layer is one row or column), empty matrices, ragged rows and that the argument is not mutated."
+  "notes": "Hidden tests cover every shape from 1x1 to 8x8 (single rows and columns, wide and tall matrices whose last layer is one row or column), empty matrices, ragged rows (including an empty first row) and that the argument is not mutated."
 }

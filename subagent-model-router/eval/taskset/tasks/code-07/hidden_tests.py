@@ -62,7 +62,7 @@ def run(module):
     invalid = [
         "", "   ", "5", "h", "5 m", "1h30", "1H", "1M", "1x", "1y", "1h1h", "30m1h", "1s1m", "1m 1h",
         "-1h", "+1h", "1.5h", "1,5h", "1h-30m", "1h,30m", "1h_30m", "h1", "1hm", "1hh",
-        "١٢s", "１h", "1h ٢m", "1 h", "1 h 30 m", "1w1d1h1m1s1s", "ms", "10mins",
+        "١٢s", "１h", "1h ٢m", "1 h", "1 h 30 m", "1w1d1h1m1s1s", "ms", "10mins", "1_0h", "1_000s",
     ]
     for text in valid + invalid:
         yield f"parse-{text!r}", attempt(module.parse_duration, text)

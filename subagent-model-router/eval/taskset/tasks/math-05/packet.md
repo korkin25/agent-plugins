@@ -4,4 +4,4 @@ WORKDIR: {workdir}
 READ: nothing; the task is self-contained.
 EDIT: create {workdir}/answer.txt; change nothing else.
 CHECKS: none are provided; make sure of the answer before you write it.
-OUTPUT: answer.txt holds the probability as an exact fraction p/q in lowest terms (for example 3/8): two positive integers separated by a slash, no spaces inside, no decimals, nothing else in the file.
+OUTPUT: answer.txt holds the probability as an exact fraction p/q in lowest terms (for example 2/7): two positive integers separated by a slash, no spaces inside, no decimals, nothing else in the file.

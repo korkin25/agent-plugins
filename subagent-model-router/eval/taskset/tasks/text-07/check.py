@@ -38,16 +38,17 @@ def collapse(text: str) -> str:
 LIMIT = 70
 REQUIRED = [
     ("the corrected revenue 48,6", r"(?<![\d,.])48[,.]6(?!\d)"),
-    ("the corrected growth 12 %", r"(?<![\d,.])12\s?%"),
+    ("the corrected growth 12 %", r"(?<![\d,.])12(?:[,.]0)?\s?%"),
     ("the opening date 01.04.2027", r"(?<![\d.])01\.04\.2027(?!\d)"),
     ("the director's surname (stem Дорохов)", r"дорохов"),
 ]
-NAME = ("the warehouse name (stem Восточн, capitalized as a name)", r"Восточн")
+NAME = ("the warehouse name (stem Восточн, capitalized as a name)", r"Восточн|ВОСТОЧН")
 FORBIDDEN = [
     ("a competitor's name", r"глобус|мегаполис"),
-    ("a mention of bonuses (stem преми)", r"преми"),
+    ("a mention of bonuses (stem преми, бонус or вознагражд)", r"преми|бонус|вознагражд"),
+    ("the bonus amount 1,2 млн руб.", r"(?<![\d,.])1[,.]2\s?млн|(?<![\d,.])1\s?200\s?(?:тыс|000)"),
     ("the superseded revenue 48,2", r"(?<![\d,.])48[,.]2(?!\d)"),
-    ("the superseded growth 11 %", r"(?<![\d,.])11\s?%"),
+    ("the superseded growth 11 %", r"(?<![\d,.])11(?:[,.]0)?\s?%"),
 ]
 
 

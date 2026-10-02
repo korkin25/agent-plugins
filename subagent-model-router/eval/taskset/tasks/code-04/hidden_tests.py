@@ -12,14 +12,16 @@ from pathlib import Path
 
 
 def canon(value, depth=0):
-    """A JSON-able form of a value: tuples and lists alike, dict keys in any order, other objects by type name."""
+    """A JSON-able form of a value: a tuple tagged apart from a list, dict keys in any order, others by type name."""
     if depth > 60:
         return "<too deep>"
     if value is None or isinstance(value, (bool, int, str)):
         return value
     if isinstance(value, float):
         return value if value == value and value not in (float("inf"), float("-inf")) else repr(value)
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, tuple):
+        return {"<tuple>": [canon(item, depth + 1) for item in value]}
+    if isinstance(value, list):
         return [canon(item, depth + 1) for item in value]
     if isinstance(value, dict):
         pairs = [[canon(k, depth + 1), canon(v, depth + 1)] for k, v in value.items()]

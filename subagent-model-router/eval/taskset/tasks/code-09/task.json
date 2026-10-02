@@ -8,5 +8,5 @@
   "source": "synthetic",
   "check_timeout_seconds": 40,
   "tags": ["python", "data-structures", "cache", "lru"],
-  "notes": "Hidden tests drive the cache with an injected fake clock: exact expiry boundaries, reads that must not extend the expiry, membership tests that are not uses, expired entries that must not count towards capacity or length, constructor validation and long random operation scripts."
+  "notes": "Hidden tests drive the cache with an injected fake clock: exact expiry boundaries, reads that must not extend the expiry, membership tests that are not uses, expired entries that must not count towards capacity or length, constructor validation (including non-int capacity and non-number ttl) and long random operation scripts."
 }

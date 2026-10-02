@@ -85,6 +85,7 @@ def run(module):
         "ragged-short-last": [[1, 2, 3], [4, 5]],
         "ragged-long-last": [[1], [2, 3]],
         "ragged-empty-row": [[1, 2], []],
+        "ragged-empty-first": [[], [1, 2]],
     }
     for name, matrix in fixed.items():
         yield name, call(module, matrix)

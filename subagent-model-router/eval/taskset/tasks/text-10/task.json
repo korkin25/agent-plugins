@@ -16,5 +16,5 @@
     "numbers",
     "dates"
   ],
-  "notes": "Expected text is produced by the generator's edit() and cross-checked against a hand-written list of every changed line (16 lines changed, 2 non-heading lines with digits left as is). Traps: 'minute(s)' is not a listed unit, so '1 minute' and '9 minutes' are spelled out; version numbers, MB/GB/ms/% and dates keep digits; headings combine sentence case with other rules ('How to sign in with your company account', 'Upgrading Orbit Notes'); 'logged in' appears three times. Comparison collapses whitespace only."
+  "notes": "Expected text is produced by the generator's edit() and cross-checked against a hand-written list of every changed line (17 lines changed, 2 non-heading lines with digits left as is). Traps: 'minute(s)' is not a listed unit, so '1 minute' and '9 minutes' are spelled out; version numbers, MB/GB/ms/% and dates keep digits; headings combine sentence case with other rules ('How to sign in with your company account', 'Upgrading Orbit Notes'); 'logged in' appears three times. Comparison collapses whitespace only."
 }
