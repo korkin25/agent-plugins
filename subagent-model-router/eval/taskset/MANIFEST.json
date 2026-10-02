@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "frozen": "2026-10-02",
+  "retired": {},
+  "tasks": {
+    "math-01": {
+      "sha256": "ae07dee366d9c7d30113ed1a6d94f37c944f2b4bd40293b7cceda6414441170b",
+      "domain": "math",
+      "difficulty": 1,
+      "language": "en"
+    }
+  },
+  "sha256": "5e8104e0b9ebadf856cb5d2e340aa1739ca4dde2076b6ce8cbdf36bd0b5550c1"
+}

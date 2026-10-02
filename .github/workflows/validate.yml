@@ -7,9 +7,11 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same branch or pull request cancels the run still in progress.
+# A newer push to the same branch or pull request cancels the run still in progress. Every push to main gets a
+# group of its own and runs to the end: a run checks only what its own push changed, and the task queues
+# (subagent-model-router/queues) take a merge as done only when its own run is green.
 concurrency:
-  group: validate-${{ github.ref }}
+  group: validate-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -61,6 +63,17 @@ jobs:
             range="origin/main...$GITHUB_SHA"   # a new branch or tag: its changes against main
           else
             range="$BEFORE..$GITHUB_SHA"
+          fi
+          # A task queue (subagent-model-router/queues) takes a task as done on the run of its newest merge alone, so
+          # a merge with a Queue-Task line is checked with everything since that task's first merge.
+          if [ "$EVENT" = push ]; then
+            task=$(git log -1 --format=%B "$GITHUB_SHA" \
+              | sed -n 's/^[[:space:]]*Queue-Task: \([A-Za-z0-9_-]\{1,\}\)[[:space:]]*$/\1/p' | tail -n 1)
+            if [ -n "$task" ]; then
+              first=$(git log --first-parent --reverse -E --format=%H \
+                --grep="^[[:space:]]*Queue-Task: $task[[:space:]]*\$" "$GITHUB_SHA" | sed -n 1p)
+              if [ -n "$first" ]; then range="$first^..$GITHUB_SHA"; echo "Queue-Task $task: since its first merge"; fi
+            fi
           fi
           all=false; reason=""; tests=false; panes=false; dirs=()
           if git diff --name-only -z "$range" > "$RUNNER_TEMP/changed" 2>/dev/null; then
