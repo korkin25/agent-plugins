@@ -1,0 +1,19 @@
+{
+  "id": "text-09",
+  "domain": "text",
+  "difficulty": 1,
+  "title": "Шесть пронумерованных правок в письме клиенту",
+  "language": "ru",
+  "outputs": [
+    "pismo_ispr.txt"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": [
+    "rewrite",
+    "numbered-edits",
+    "exact-text",
+    "russian"
+  ],
+  "notes": "Expected text is produced by the generator with str.replace on the source and stored in expected.txt; the comparison collapses whitespace only. Small traps: three quoted company names (one per paragraph), '24 часов' must stay while '24 месяца' changes, and the body's 'персональный менеджер' must stay while only the signature changes."
+}

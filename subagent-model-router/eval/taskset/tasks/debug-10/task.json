@@ -1,0 +1,19 @@
+{
+  "id": "debug-10",
+  "domain": "debug",
+  "difficulty": 2,
+  "title": "Score statistics crash on a real file",
+  "language": "en",
+  "outputs": [
+    "stats.py",
+    "scores.py"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 15,
+  "tags": [
+    "python",
+    "generators",
+    "iterator-exhaustion"
+  ],
+  "notes": "summarize() iterates over `scores` twice; the generator from read_scores is empty the second time, so sorted() returns [] and indexing fails. Broken variants: list() around the generator in main() only (symptom-only), read_scores returning a list (summarize still fails on generators), sorting before the loop (the loop then sees no scores)."
+}

@@ -3,12 +3,324 @@
   "frozen": "2026-10-02",
   "retired": {},
   "tasks": {
+    "code-01": {
+      "sha256": "cc7f2479fc67101c7611e132ce32942a21622628e54be6303f36678f67e81608",
+      "domain": "code",
+      "difficulty": 1,
+      "language": "en"
+    },
+    "code-02": {
+      "sha256": "c081909cb509b88eb325422f870554b2b8812f52253b2113b44ce6bcd3de7bf8",
+      "domain": "code",
+      "difficulty": 1,
+      "language": "ru"
+    },
+    "code-03": {
+      "sha256": "169dcaac7be481a0f0d224e72c28b66808cfb40b00c8b8a33c7aabd7cfcd019d",
+      "domain": "code",
+      "difficulty": 1,
+      "language": "en"
+    },
+    "code-04": {
+      "sha256": "fd1b1cf4e66c522ade77028ddb6b89630f6745c350f662708493966574824e27",
+      "domain": "code",
+      "difficulty": 1,
+      "language": "en"
+    },
+    "code-05": {
+      "sha256": "b5614c942637f9153cff3eb5ee4ce1052341043fff486e49fa189a09c77b44f7",
+      "domain": "code",
+      "difficulty": 1,
+      "language": "en"
+    },
+    "code-06": {
+      "sha256": "4f05d833b7ae8202e4e7aa13de56fa1acaec3962f8b86861f566c02749983347",
+      "domain": "code",
+      "difficulty": 1,
+      "language": "en"
+    },
+    "code-07": {
+      "sha256": "a0aeab781e72d176aaa7767d2674a0de90c197ba5232802443d3387a1b9d7d25",
+      "domain": "code",
+      "difficulty": 2,
+      "language": "en"
+    },
+    "code-08": {
+      "sha256": "240a2b8c68785fe936a6ff839ec190b5e24e7805ec39e62fc84d1f4ecec31952",
+      "domain": "code",
+      "difficulty": 2,
+      "language": "en"
+    },
+    "code-09": {
+      "sha256": "aaa059ccc0398bc24988d3b07b96e191c9257aae5dfd2b26e73615e42bc45a3d",
+      "domain": "code",
+      "difficulty": 2,
+      "language": "en"
+    },
+    "code-10": {
+      "sha256": "f2b1455fc85f091c7d619e93e098c4119f289e2eab9007409371c79616e033ac",
+      "domain": "code",
+      "difficulty": 2,
+      "language": "ru"
+    },
+    "code-11": {
+      "sha256": "997f6415cb86afd6b7fb64c4dbc2d1f8790454e9e15284da49b815131e30d815",
+      "domain": "code",
+      "difficulty": 2,
+      "language": "en"
+    },
+    "debug-01": {
+      "sha256": "93eae0b295d2610c42ad1df69bcb735198752174faa4a367d830defdf1ce5914",
+      "domain": "debug",
+      "difficulty": 1,
+      "language": "en"
+    },
+    "debug-02": {
+      "sha256": "6e2c62a03c4e6046e19f1609690a0ebbc531028ff60790a41cf5786c916e8d47",
+      "domain": "debug",
+      "difficulty": 1,
+      "language": "en"
+    },
+    "debug-03": {
+      "sha256": "be6a8ceb8ae474f318ef690a9f626b8b206eca78f40e911d142347cab1f50a2b",
+      "domain": "debug",
+      "difficulty": 1,
+      "language": "ru"
+    },
+    "debug-04": {
+      "sha256": "00f1d259f4776b423849bb48b54d9b33daa295ac00b4a8ba1e88373c984f9250",
+      "domain": "debug",
+      "difficulty": 1,
+      "language": "en"
+    },
+    "debug-05": {
+      "sha256": "df2c447151d0bc6a5b17bd04faeadeacfe5ef2fcff57fdd1e615044c504e51d2",
+      "domain": "debug",
+      "difficulty": 2,
+      "language": "en"
+    },
+    "debug-06": {
+      "sha256": "dda1528847fef2d99a0252ea39ec720e50ee7d27b179c3fce5d5b52e3e393540",
+      "domain": "debug",
+      "difficulty": 2,
+      "language": "en"
+    },
+    "debug-07": {
+      "sha256": "ee3811c54477700dca201e2e1e117643c20ff4ada418db7bc96eb0cf48dd9d37",
+      "domain": "debug",
+      "difficulty": 2,
+      "language": "ru"
+    },
+    "debug-08": {
+      "sha256": "5d9c80cb90f9ded0389a0ea0c2dc34291db38207682d3f13630d92ccf3b73189",
+      "domain": "debug",
+      "difficulty": 2,
+      "language": "en"
+    },
+    "debug-09": {
+      "sha256": "b9250873316dbd359a565a234aa2aeff796ba841b76873555cfbed8be43ba4e9",
+      "domain": "debug",
+      "difficulty": 2,
+      "language": "en"
+    },
+    "debug-10": {
+      "sha256": "5bf98d51701f205edfc67e20bb8a234ebc9759b6b4d3c9253303651d1109f696",
+      "domain": "debug",
+      "difficulty": 2,
+      "language": "en"
+    },
     "math-01": {
       "sha256": "ae07dee366d9c7d30113ed1a6d94f37c944f2b4bd40293b7cceda6414441170b",
       "domain": "math",
       "difficulty": 1,
       "language": "en"
+    },
+    "math-02": {
+      "sha256": "7b611483c8af7717f5d5239b429c2037cf54c105bd69faeaf601b50272ff8019",
+      "domain": "math",
+      "difficulty": 1,
+      "language": "en"
+    },
+    "math-03": {
+      "sha256": "66c4738d89f3d0ddb721cec58e2cc91d18acc06bc865b76f98c8b3fd8aaa5be1",
+      "domain": "math",
+      "difficulty": 1,
+      "language": "en"
+    },
+    "math-04": {
+      "sha256": "b237d931301a38d5a4f5b34192aafc41377b747a928fdb4f7a1630caea5ff687",
+      "domain": "math",
+      "difficulty": 1,
+      "language": "ru"
+    },
+    "math-05": {
+      "sha256": "121f00947e3338b8cebf62cbccb24cba8c26429450734dd2ef66e0126370f1af",
+      "domain": "math",
+      "difficulty": 1,
+      "language": "en"
+    },
+    "math-06": {
+      "sha256": "2e37edc75ee5e4c37d4b48cde364a3f405b6c9c33ba35ec5203683226c04050b",
+      "domain": "math",
+      "difficulty": 1,
+      "language": "en"
+    },
+    "math-07": {
+      "sha256": "9a74c5962a7cdf21f26408f774667ef1a4d0a79cf95746d81d3fe321f2394bb5",
+      "domain": "math",
+      "difficulty": 2,
+      "language": "en"
+    },
+    "math-08": {
+      "sha256": "15b2ddf773420c627f237aafbf266f0a72d3533b6da5eb240150557f0e567d9b",
+      "domain": "math",
+      "difficulty": 2,
+      "language": "en"
+    },
+    "math-09": {
+      "sha256": "148fac7d1799da197d825321071d048820f6543952ec1fbe9b3afd0b9ebf371d",
+      "domain": "math",
+      "difficulty": 2,
+      "language": "en"
+    },
+    "math-10": {
+      "sha256": "2371b1190524de7050777893f253691d32b5ca13c9b0677a0dd26d3e0be577d7",
+      "domain": "math",
+      "difficulty": 2,
+      "language": "en"
+    },
+    "math-11": {
+      "sha256": "6f84dfa2e526bbe5c5e073de19c26804b252d0d934604a4faa00a58a6201cbc2",
+      "domain": "math",
+      "difficulty": 2,
+      "language": "ru"
+    },
+    "math-12": {
+      "sha256": "83c1daece1702c63623ca20e05c132ea2d2895f204dd7a620047f806738aa543",
+      "domain": "math",
+      "difficulty": 2,
+      "language": "en"
+    },
+    "math-13": {
+      "sha256": "a193c6ca63868deeddb17ff03e03790bb76ee8d3cfb92685bf69bd423aee4d5a",
+      "domain": "math",
+      "difficulty": 2,
+      "language": "en"
+    },
+    "math-14": {
+      "sha256": "30c45ecbdcb575f528ecac1b15c4eeed95207d4ca526bea1416417ca87047dd0",
+      "domain": "math",
+      "difficulty": 3,
+      "language": "en"
+    },
+    "math-15": {
+      "sha256": "3a166fc88be817493b813e7d498ad6541aeb6901efa552c46edb4330a2a2d420",
+      "domain": "math",
+      "difficulty": 3,
+      "language": "en"
+    },
+    "math-16": {
+      "sha256": "c3a47bba8194ba689ebb5611d64f2ab5ff9250c672f61495c309cbf77d8ef62a",
+      "domain": "math",
+      "difficulty": 3,
+      "language": "en"
+    },
+    "math-17": {
+      "sha256": "5a08b3dea53795ffb7f505a6466c2daa3e747de959220e6fd969fbe416477222",
+      "domain": "math",
+      "difficulty": 3,
+      "language": "en"
+    },
+    "math-18": {
+      "sha256": "cdee48ad84d41d91b085b544807c922b9620af34cfa8218d4dde36d19583517e",
+      "domain": "math",
+      "difficulty": 3,
+      "language": "en"
+    },
+    "text-01": {
+      "sha256": "9ac24e515ddbc85eafbb81e0b69a7be8225e68117d206c217f416b53d92f7b2a",
+      "domain": "text",
+      "difficulty": 1,
+      "language": "en"
+    },
+    "text-02": {
+      "sha256": "cef3e13ab88e6600d9ecb732619e9c9a52679c92e08bb4b5dd7ac39c4c8abf0c",
+      "domain": "text",
+      "difficulty": 2,
+      "language": "ru"
+    },
+    "text-03": {
+      "sha256": "17acaecd74aa98810578bfb0f2c0e1f5a4d6311fe0a7f68fc68deabef83474a9",
+      "domain": "text",
+      "difficulty": 3,
+      "language": "en"
+    },
+    "text-04": {
+      "sha256": "f1b53b2ad3792da538262a995f8858b361056282a26f6c0d51a172c6f0477cc6",
+      "domain": "text",
+      "difficulty": 1,
+      "language": "ru"
+    },
+    "text-05": {
+      "sha256": "78a952b9a035229b301e4fa8c18184fb393fb2a94037dbf5a4e510eb7cad3514",
+      "domain": "text",
+      "difficulty": 2,
+      "language": "en"
+    },
+    "text-06": {
+      "sha256": "93d2f6633a732245695088f75938e51e2c57bb7b39328f71c53e56a1581fa8ad",
+      "domain": "text",
+      "difficulty": 1,
+      "language": "en"
+    },
+    "text-07": {
+      "sha256": "0544342fb0155fe6347194cfd8d913c4d6ddbb79d2bb853678a9d75fbbf0a37f",
+      "domain": "text",
+      "difficulty": 2,
+      "language": "ru"
+    },
+    "text-08": {
+      "sha256": "4a1e6b3d63ce8e3f38092349cd47c71051bca1202fd68e95dc806dfb9d6fb692",
+      "domain": "text",
+      "difficulty": 3,
+      "language": "ru"
+    },
+    "text-09": {
+      "sha256": "1562554f2459acbf53b35cd41d59cd30b5983f5dd88ba9aa703f6f2590faeb93",
+      "domain": "text",
+      "difficulty": 1,
+      "language": "ru"
+    },
+    "text-10": {
+      "sha256": "f99671521957ae4a82086f88874c54858defe2a793e8b375216f85a02ff77503",
+      "domain": "text",
+      "difficulty": 2,
+      "language": "en"
+    },
+    "text-11": {
+      "sha256": "5a83042508adf76d7738f4e889c9330a2d3c6b78504e408c8286c7599cd43c30",
+      "domain": "text",
+      "difficulty": 3,
+      "language": "ru"
+    },
+    "text-12": {
+      "sha256": "aaaa6d129de32b2db3f08d2e393bad10bfea30f98c59bb2a8599aae3da942234",
+      "domain": "text",
+      "difficulty": 1,
+      "language": "en"
+    },
+    "text-13": {
+      "sha256": "b68cc384276c7418238ba8dd28fa52e0b4bff09a1313316f78f6ed1670e21ce8",
+      "domain": "text",
+      "difficulty": 2,
+      "language": "ru"
+    },
+    "text-14": {
+      "sha256": "ab91b9fa436265f7e68fb30a4db4e76769414221bae91883da0a4a646b75a11c",
+      "domain": "text",
+      "difficulty": 3,
+      "language": "en"
     }
   },
-  "sha256": "5e8104e0b9ebadf856cb5d2e340aa1739ca4dde2076b6ce8cbdf36bd0b5550c1"
+  "sha256": "a7d5e723a8d16678f07e2825f3762826c40b9579a1616a81e02e74fa1ba283c2"
 }

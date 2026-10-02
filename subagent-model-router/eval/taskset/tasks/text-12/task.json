@@ -1,0 +1,19 @@
+{
+  "id": "text-12",
+  "domain": "text",
+  "difficulty": 1,
+  "title": "Markdown inventory table to RFC 4180 CSV",
+  "language": "en",
+  "outputs": [
+    "inventory.csv"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": [
+    "reformat",
+    "csv",
+    "markdown-table",
+    "quoting"
+  ],
+  "notes": "Expected rows are the generator's data from which the Markdown table is rendered; the solution is written by csv.writer and parsed back. Traps: commas in Item, Location, price 1,249.00 and Notes; a double quote mid-field (3\") and at a field start (\"B/BB\"); empty Notes cells; the alignment row with colons. The check parses with csv.reader(strict=True), drops trailing empty records and compares every field exactly."
+}

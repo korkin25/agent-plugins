@@ -1,0 +1,12 @@
+{
+  "id": "code-03",
+  "domain": "code",
+  "difficulty": 1,
+  "title": "Read a matrix in clockwise spiral order",
+  "language": "en",
+  "outputs": ["spiral.py"],
+  "source": "synthetic",
+  "check_timeout_seconds": 40,
+  "tags": ["python", "matrix", "simulation"],
+  "notes": "Hidden tests cover every shape from 1x1 to 8x8 (single rows and columns, wide and tall matrices whose last layer is one row or column), empty matrices, ragged rows and that the argument is not mutated."
+}

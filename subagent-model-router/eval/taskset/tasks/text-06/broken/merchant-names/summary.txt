@@ -1,0 +1,1 @@
+On 2027-01-14 an expired TLS certificate on lb-east-2 took the payment API down for 47 minutes; 1,284 payment requests failed. Tomas Adeyemi deployed a new certificate. Bramblewood Tea, Corvid Books and Lumen Pet Supplies were affected and have been contacted.

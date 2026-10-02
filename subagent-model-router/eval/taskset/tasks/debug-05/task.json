@@ -1,0 +1,19 @@
+{
+  "id": "debug-05",
+  "domain": "debug",
+  "difficulty": 2,
+  "title": "Price-range query hangs",
+  "language": "en",
+  "outputs": [
+    "pricebook.py"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 15,
+  "tags": [
+    "python",
+    "binary-search",
+    "infinite-loop",
+    "off-by-one"
+  ],
+  "notes": "first_at_least sets lo = mid, so it loops forever once hi == lo + 1. Broken variants: an iteration cap (no hang, off by one), a lo < hi - 1 loop that returns hi (wrong when every price >= target), bisect_right (drops prices equal to LOW)."
+}

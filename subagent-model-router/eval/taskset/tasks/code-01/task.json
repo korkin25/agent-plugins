@@ -1,0 +1,12 @@
+{
+  "id": "code-01",
+  "domain": "code",
+  "difficulty": 1,
+  "title": "Merge overlapping or touching closed intervals",
+  "language": "en",
+  "outputs": ["intervals.py"],
+  "source": "synthetic",
+  "check_timeout_seconds": 40,
+  "tags": ["python", "intervals", "sorting"],
+  "notes": "Hidden tests cover empty input, touching intervals (shared end point), intervals one apart that must stay separate, unsorted and nested input, ValueError on start > end, and that the argument is not mutated."
+}

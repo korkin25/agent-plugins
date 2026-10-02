@@ -1,0 +1,16 @@
+{
+  "client": "Orchard Vale Logistics Limited",
+  "provider": "Brightwater Systems Ltd",
+  "effective_date": "2027-03-04",
+  "initial_term_months": 24,
+  "auto_renewal": true,
+  "renewal_period_months": 12,
+  "monthly_fee": 12500,
+  "currency": "GBP",
+  "payment_days": 30,
+  "late_interest_percent_per_month": 1.5,
+  "liability_cap_per_contract_year": 150000,
+  "termination_notice_days": 90,
+  "critical_response_hours_business_day": 4,
+  "governing_law": "England and Wales"
+}

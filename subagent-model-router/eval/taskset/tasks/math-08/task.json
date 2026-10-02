@@ -1,0 +1,17 @@
+{
+  "id": "math-08",
+  "domain": "math",
+  "difficulty": 2,
+  "title": "Sum of the 15th powers of the roots of a cubic",
+  "language": "en",
+  "outputs": [
+    "answer.txt"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": [
+    "algebra",
+    "polynomial-roots",
+    "newton-identities"
+  ]
+}

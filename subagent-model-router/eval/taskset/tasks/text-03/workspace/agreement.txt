@@ -1,0 +1,142 @@
+MAINTENANCE SERVICES AGREEMENT
+
+THIS AGREEMENT is made between:
+
+(1) ORCHARD VALE LOGISTICS LIMITED, a company registered in England and Wales
+    under company number 08812457, whose registered office is at Unit 4,
+    Fenwick Trading Estate, Marlow Cross (the "Client"); and
+
+(2) BRIGHTWATER SYSTEMS LTD, a company registered in England and Wales under
+    company number 11290345, whose registered office is at 22 Tannery Lane,
+    Ashcombe (the "Provider").
+
+BACKGROUND
+
+(A) The Client operates a parcel sorting centre at Marlow Cross that relies on
+    conveyor and sorting equipment supplied by a third party.
+(B) The Provider maintains conveyor and sorting equipment of that kind and has
+    agreed to maintain the Client's equipment on the terms of this Agreement.
+
+1. DEFINITIONS AND INTERPRETATION
+
+1.1 In this Agreement:
+    "Business Day" means a day other than a Saturday, a Sunday or a public
+    holiday in England;
+    "Contract Year" means each period of twelve (12) months starting on the
+    Effective Date or on an anniversary of it;
+    "Effective Date" means 04/03/2027;
+    "Monthly Fee" means the fee set out in clause 4.1;
+    "Services" means the preventive and corrective maintenance of the
+    equipment listed in Schedule 1.
+1.2 All dates in this Agreement are written in the form day/month/year.
+1.3 Clause headings do not affect the interpretation of this Agreement.
+
+2. TERM
+
+2.1 This Agreement starts on the Effective Date and continues for an initial
+    term of twenty-four (24) months (the "Initial Term").
+2.2 After the Initial Term, this Agreement renews automatically for successive
+    periods of twelve (12) months each (each a "Renewal Period") unless either
+    party terminates it under clause 11.
+
+3. SERVICES
+
+3.1 The Provider shall perform the Services with reasonable skill and care and
+    in accordance with good industry practice.
+3.2 The Provider shall respond to a critical fault within four (4) hours of
+    the Client's report if the report is made on a Business Day, and within
+    eight (8) hours in all other cases.
+3.3 The Provider shall carry out one preventive maintenance visit every month
+    and shall give the Client at least five (5) Business Days' notice of each
+    visit.
+
+4. FEES AND PAYMENT
+
+4.1 The Client shall pay the Provider a Monthly Fee of GBP 12,500 (twelve
+    thousand five hundred pounds sterling), exclusive of VAT.
+4.2 The Provider shall invoice the Monthly Fee in advance on the first Business
+    Day of each month.
+4.3 The Client shall pay each undisputed invoice within thirty (30) days of the
+    date of the invoice.
+4.4 Any sum not paid when due bears interest at the rate of 1.5% per month from
+    the due date until the date of payment.
+4.5 Call-out visits requested by the Client outside the Services are charged at
+    GBP 95 per hour, in addition to the Monthly Fee.
+
+5. CLIENT OBLIGATIONS
+
+5.1 The Client shall give the Provider's engineers safe access to the equipment
+    during the Client's normal operating hours.
+5.2 The Client shall not allow anyone other than the Provider to modify the
+    equipment's control software during the term of this Agreement.
+
+6. SPARE PARTS
+
+6.1 Spare parts with a list price below GBP 250 per item are included in the
+    Monthly Fee. Other spare parts are charged at list price less ten per cent
+    (10%).
+
+7. INSURANCE
+
+7.1 The Provider shall maintain public liability insurance of at least
+    GBP 5,000,000 for each claim throughout the term of this Agreement.
+
+8. CONFIDENTIALITY
+
+8.1 Each party shall keep the other party's confidential information secret
+    during the term of this Agreement and for three (3) years after it ends.
+
+9. LIMITATION OF LIABILITY
+
+9.1 Nothing in this Agreement limits either party's liability for death or
+    personal injury caused by negligence, or for fraud.
+9.2 Subject to clause 9.1, each party's total liability under or in connection
+    with this Agreement in any Contract Year is limited to an amount equal to
+    twelve (12) times the Monthly Fee.
+
+10. GUARANTEE
+
+10.1 The Provider's parent company, Brightwater Systems Holdings plc,
+     guarantees the Provider's performance of this Agreement under a separate
+     deed of guarantee.
+
+11. TERMINATION
+
+11.1 Either party may terminate this Agreement at the end of the Initial Term
+     or of any Renewal Period by giving the other party not less than ninety
+     (90) days' written notice.
+11.2 Either party may terminate this Agreement with immediate effect by written
+     notice if the other party commits a material breach and does not remedy
+     it within thirty (30) days of being asked in writing to do so.
+
+12. NOTICES
+
+12.1 Notices under this Agreement must be in writing and sent to the
+     registered office of the receiving party.
+
+13. GOVERNING LAW AND JURISDICTION
+
+13.1 This Agreement and any dispute arising from it are governed by the law of
+     England and Wales.
+13.2 The courts of England and Wales have exclusive jurisdiction.
+
+14. CHANGES AGREED BEFORE SIGNATURE
+
+14.1 After the draft of this Agreement was circulated, the parties agreed the
+     following changes. Each change prevails over the text of the clause it
+     amends:
+     (a) in clause 4.1, the Monthly Fee of GBP 12,500 is replaced by GBP 11,800
+         (eleven thousand eight hundred pounds sterling);
+     (b) in clause 11.1, "ninety (90) days'" is replaced by "sixty (60) days'".
+
+SCHEDULE 1 - EQUIPMENT
+
+Line A: inbound conveyor, 140 m, with two merge units.
+Line B: cross-belt sorter with 220 carriers and 96 chutes.
+Line C: outbound conveyor, 85 m, with one spiral lowerator.
+
+Signed for and on behalf of ORCHARD VALE LOGISTICS LIMITED by Rosalind Achebe,
+Operations Director.
+
+Signed for and on behalf of BRIGHTWATER SYSTEMS LTD by Gregor Tamm, Managing
+Director.

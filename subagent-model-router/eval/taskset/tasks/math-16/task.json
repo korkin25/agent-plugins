@@ -1,0 +1,19 @@
+{
+  "id": "math-16",
+  "domain": "math",
+  "difficulty": 3,
+  "title": "Pairs with lcm 12! and a common factor",
+  "language": "en",
+  "outputs": [
+    "answer.txt"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": [
+    "number-theory",
+    "divisors",
+    "lcm-gcd",
+    "double-counting"
+  ],
+  "notes": "Traps: a <= b makes the pairs unordered but keeps a = b = 12!; halving the 10395 ordered pairs without the diagonal gives 5181. broken/: 10363 counts ordered pairs, 5181 loses the pair (12!, 12!), 5198 ignores gcd > 1."
+}

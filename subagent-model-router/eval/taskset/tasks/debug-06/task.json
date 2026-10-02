@@ -1,0 +1,18 @@
+{
+  "id": "debug-06",
+  "domain": "debug",
+  "difficulty": 2,
+  "title": "Bulleted wrap overflows the width",
+  "language": "en",
+  "outputs": [
+    "wrap.py"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 15,
+  "tags": [
+    "python",
+    "text-wrapping",
+    "state-reset"
+  ],
+  "notes": "After a line break wrap() resets the running length to 0 instead of the length of rest_prefix. Broken variants: re-wrapping at width - 2 in the command line only (wrap() with prefixes stays broken), resetting to len(first_prefix), shrinking every line by len(rest_prefix) (not greedy)."
+}

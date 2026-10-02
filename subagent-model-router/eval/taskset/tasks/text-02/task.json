@@ -1,0 +1,20 @@
+{
+  "id": "text-02",
+  "domain": "text",
+  "difficulty": 2,
+  "title": "Протокол совещания: поручения в JSON с исполнителями, сроками и статусами",
+  "language": "ru",
+  "outputs": [
+    "porucheniya.json"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": [
+    "extraction",
+    "json",
+    "dates",
+    "meeting-notes",
+    "russian"
+  ],
+  "notes": "Traps: item 7 moves the П-3 deadline from 05.04.2027 to 09.04.2027 (a date in another format, corrected later); П-2 has no deadline (3 March is when it was done) -> null; the text names owners in the dative (Беловой, Лисицыной), the output wants the attendee-list nominative. Statuses: П-1 and П-6 started -> 'в работе', П-2 done, the rest 'новое'. Owner names are compared with all whitespace removed and ё folded to е; order of objects is free."
+}

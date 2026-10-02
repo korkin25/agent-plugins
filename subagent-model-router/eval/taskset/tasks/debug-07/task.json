@@ -1,0 +1,20 @@
+{
+  "id": "debug-07",
+  "domain": "debug",
+  "difficulty": 2,
+  "title": "Экспорт из Excel: «нет колонок: name»",
+  "language": "ru",
+  "outputs": [
+    "contacts.py"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 15,
+  "tags": [
+    "python",
+    "csv",
+    "encoding",
+    "bom",
+    "russian"
+  ],
+  "notes": "Excel's CSV UTF-8 starts with a byte order mark, so the first header cell reads '\\ufeffname'. Both readers (load and read_header, used by --check) must skip it. Broken variants: fixing load() only (--check still fails), renaming a first cell '\\ufeffname' (fails when name is not the first column and in --check)."
+}

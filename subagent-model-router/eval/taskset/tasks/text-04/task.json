@@ -1,0 +1,19 @@
+{
+  "id": "text-04",
+  "domain": "text",
+  "difficulty": 1,
+  "title": "Обращения в поддержку: метки темы из фиксированного набора",
+  "language": "ru",
+  "outputs": [
+    "metki.json"
+  ],
+  "source": "synthetic",
+  "check_timeout_seconds": 10,
+  "tags": [
+    "classification",
+    "json",
+    "support-tickets",
+    "russian"
+  ],
+  "notes": "20 tickets, 5 per label, each with one unambiguous topic; the order is shuffled with a fixed seed. Labels are compared after trimming, case folding and ё->е. No tolerance: all 20 must match."
+}

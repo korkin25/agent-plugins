@@ -1,0 +1,12 @@
+Move the nightly backup from the old storage shelf to the new one before the
+end of the month, and keep the old copies for another two weeks in case a
+restore is needed.
+
+The build machines are due for an operating system upgrade; schedule it for a
+weekend so that nobody loses a working day, and announce it on Thursday.
+
+Ask the facilities team whether the meeting room projectors can be replaced
+this quarter, since two of them flicker during longer presentations.
+
+Review the onboarding checklist with the two new colleagues after their first
+week and collect everything that was unclear or out of date.

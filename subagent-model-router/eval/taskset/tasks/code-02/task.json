@@ -1,0 +1,12 @@
+{
+  "id": "code-02",
+  "domain": "code",
+  "difficulty": 1,
+  "title": "Проверка номера и контрольная цифра по алгоритму Луна",
+  "language": "ru",
+  "outputs": ["luhn.py"],
+  "source": "synthetic",
+  "check_timeout_seconds": 40,
+  "tags": ["python", "checksum", "luhn"],
+  "notes": "Hidden tests cover even- and odd-length numbers (doubling counts from the right), doubled digits above 9, fewer than two digits, spaces, foreign characters including non-ASCII digits, and ValueError for bad payloads."
+}
