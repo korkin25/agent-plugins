@@ -58,8 +58,8 @@ ELSEWHERE = {'{TOTP}', '{DB_DIR}'} | {
     '{DT_%s%s}' % (utc, part) for utc in ('', 'UTC_') for part in (
         'SIMPLE', 'YEAR', 'MONTH', 'DAY', 'HOUR', 'MINUTE', 'SECOND')}
 DEPTH = 10
-# A value that refers to itself twice doubles at every level; past this size
-# `show` computes it natively instead.
+# A value that refers to itself twice doubles at every level; once it grows
+# by more than this, `show` computes it natively instead.
 LONGEST = 1 << 16
 
 class DbError(Exception):
@@ -115,9 +115,13 @@ def read_password(db=None, ask=True):
             if not byte or byte == b'\n':
                 break
             line += byte
-    except OSError:
-        pass
-    return line.decode(errors='replace')
+    except OSError as error:
+        raise DbError('cannot read the password from stdin: %s' % error)
+    try:
+        return line.decode(sys.stdin.encoding or 'utf-8')
+    except UnicodeDecodeError:
+        raise DbError('the password on stdin is not valid %s'
+                      % (sys.stdin.encoding or 'utf-8'))
 
 
 def keepassxc_cli(password, *cli_args):
@@ -164,7 +168,7 @@ def resolve(value, fields, tree, depth=DEPTH):
     for token in PLACEHOLDER.findall(value):
         result = result.replace(token,
                                 resolve_one(token, fields, tree, depth - 1))
-        if len(result) > LONGEST:
+        if len(result) > len(value) + LONGEST:
             raise Unresolved(token)
     if result != value:
         result = resolve(result, fields, tree, depth - 1)
@@ -188,7 +192,7 @@ def resolve_one(token, fields, tree, depth):
             return token
         wanted, search_in, term = reference.groups()
         wanted, search_in = wanted.upper(), search_in.upper()
-        if search_in == 'I' and not re.match(r'^[0-9A-Fa-f]{32}$', term):
+        if search_in == 'I' and not re.fullmatch(r'[0-9A-Fa-f]{32}', term):
             raise Unresolved(token)
         for _path, uuid, other in tree:
             if search_in == 'I':
