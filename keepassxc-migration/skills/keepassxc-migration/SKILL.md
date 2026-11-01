@@ -109,6 +109,18 @@ the service is unavailable, so shells start clean and silent rather than prompti
 The two cases above are not a locked database, and they are not silent: a missing module or a
 withheld entry gets one line on stderr, which `eval "$(...)"` does not capture.
 
+**Reading the `.kdbx` file directly.** With `--db path`, `$KEEPPASSXC_DB`, or an existing
+`~/Documents/<user>.kdbx` (only when `keepassxc-cli` is installed), `kpxc-env list|export` and
+`kpxc-run` read the file through `keepassxc-cli` instead of the Secret Service;
+`KEEPPASSXC_DB=` (set, empty) turns that off. The password comes from
+`$XDG_RUNTIME_DIR/kpxc-auth` — two lines, the database's real path and then its password, a
+plaintext cache that must stay `0600` and that this plugin never writes. `export` never prompts
+and never reads stdin, since it runs at every shell start: without the cache the file counts as
+locked and `export` stays silent; a wrong cached password or a broken file gets one line on stderr
+and exit 0. Only an explicit `--db` lets `export` ask. In this mode an entry without the
+`kpxc-env` attribute still counts when its title is a valid variable name, so review
+`kpxc-env list` before putting the loader into a shell; entries in the recycle bin never count.
+
 The import leaves a `.kpxc-bak` copy of the dotfile beside it, and that copy still holds every
 secret in plain text. It exists so a broken shell can be undone; **delete it** — along with any
 other dotfile backup — as soon as a fresh shell proves the loader works. A backup that outlives

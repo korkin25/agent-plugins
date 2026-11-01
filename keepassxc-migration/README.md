@@ -48,16 +48,23 @@ traps; the executables do the work.
 
 `kpxc-env list`, `kpxc-env export` and `kpxc-run` can also read a `.kdbx` file directly through
 `keepassxc-cli`, with no GUI and no Secret Service: `--db path/to.kdbx`, or `$KEEPPASSXC_DB`, or
-`~/Documents/<user>.kdbx` when that file exists; without any of them they use the Secret Service.
-The password comes from `$XDG_RUNTIME_DIR/kpxc-auth` when that cache names the same file, else
-from stdin. Every `keepassxc-cli` call runs the database's key derivation again, which takes
-seconds on purpose, so the file is decrypted once per command: one `keepassxc-cli export` into a
-pipe, never to disk. Field references and the plain placeholders (`{REF:…}`, `{USERNAME}`,
-`{S:…}` and the like) are resolved the way `keepassxc-cli show` does; an entry with anything
-more exotic costs one extra `show` for that entry alone, and only when its value is needed.
+`~/Documents/<user>.kdbx` when that file exists and `keepassxc-cli` is installed; without any of
+them, or with `KEEPPASSXC_DB` set to an empty string, they use the Secret Service. The password
+comes from `$XDG_RUNTIME_DIR/kpxc-auth` (two lines: the database's real path, then its password;
+keep it `0600`, the plugin never writes it) when it names the same file, else from a prompt or
+stdin — except for `kpxc-env export` without `--db`, which never asks and treats a missing cache as
+a locked database. In this mode an entry is a variable through its `kpxc-env` attribute or, without
+one, through a title that is a valid variable name; the recycle bin is skipped. Every
+`keepassxc-cli` call runs the database's key derivation again, which takes seconds on purpose, so
+the file is decrypted once per command: one `keepassxc-cli export` into a pipe, never to disk.
+Placeholders and field references (`{REF:…}`, `{USERNAME}`, `{S:…}` and the like) are resolved by
+the same rules `keepassxc-cli show` follows; only `{TOTP}`, `{DT_…}`, `{URL:…}`, `{DB_DIR}` and a
+`{REF:…@I:…}` that is not 32 hex digits cost one extra `show` for that entry alone, and only when
+its value is needed.
 
-`kpxc-env install` symlinks every `kpxc-*` tool into `~/.local/bin`; run it again from a new
-version's `bin/` after an update to move the links there.
+`kpxc-env install` symlinks every `kpxc-*` tool into `~/.local/bin`, replacing only symlinks — a
+regular file of the same name is left alone and reported; run it again from a new version's
+`bin/` after an update to move the links there.
 
 On Claude Code `bin/` is on `PATH`, so the commands work by name. In Codex or a plain shell, call
 them by path — they are ordinary Python 3 executables with no dependencies beyond an optional
@@ -65,12 +72,12 @@ them by path — they are ordinary Python 3 executables with no dependencies bey
 
 ## What it sends where
 
-Nothing leaves the machine. No network calls, no telemetry, nothing written outside the user's
-own home directory. Secret values are read through the D-Bus and KWallet APIs, held in one
-process's memory for the length of a migration, and written straight into KeePassXC. What
-reaches the terminal — and therefore an agent's context — is only entry labels, attributes and
-truncated SHA-256 fingerprints, which are enough to prove two stores agree and useless for
-anything else.
+Nothing leaves the machine. No network calls, no telemetry, nothing written outside the user's own
+home directory. Secret values are read through the D-Bus and KWallet APIs (and, for a `.kdbx` read
+directly, from `keepassxc-cli` over a pipe), held in one process's memory for the length of a
+migration, and written straight into KeePassXC. What reaches the terminal — and therefore an
+agent's context — is only entry labels, attributes and truncated SHA-256 fingerprints, which are
+enough to prove two stores agree and useless for anything else.
 
 `kpxc-switch` writes only user-level files: `~/.local/share/applications`, `~/.config/autostart`,
 `~/.config/kwalletrc`, a user D-Bus service file and systemd *user* unit masks. Nothing under

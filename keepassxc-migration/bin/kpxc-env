@@ -24,6 +24,14 @@ shells are covered too:
 
   command -v kpxc-env >/dev/null && eval "$(kpxc-env export)"
 
+With --db, $KEEPPASSXC_DB or an existing ~/Documents/<user>.kdbx, list and
+export read that file through keepassxc-cli instead, with no GUI and no
+Secret Service; KEEPPASSXC_DB set to an empty string turns that off. The
+password comes from $XDG_RUNTIME_DIR/kpxc-auth, two lines: the real path of
+the database, then its password. export asks for nothing: without that
+cache the file counts as locked, unless --db names it, which also allows a
+prompt or a line on stdin. Entries in the recycle bin are not variables.
+
 KeePassXC must hand entries over without a dialog: untick "Confirm when
 passwords are retrieved by clients" under Settings > Secret Service
 Integration. Every shell start is a new client, and nobody is there to click
@@ -62,26 +70,44 @@ CONFIRM_HINT = ('KeePassXC asks every client for a confirmation dialog, and a '
 DEFAULT_DB = os.path.join(os.path.expanduser('~'), 'Documents',
                           '%s.kdbx' % getpass.getuser())
 VARIABLE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
-# KeePassXC placeholders this script resolves itself, exactly as `keepassxc-cli
-# show` would. Anything else in braces goes to `show` for that one entry.
+# KeePassXC 2.7 placeholders, resolved here the way `keepassxc-cli show`
+# resolves them (Entry::resolveMultiplePlaceholdersRecursive). Those that
+# depend on the clock, the URL parser, TOTP or the file location go to `show`.
 PLACEHOLDER = re.compile(r'\{[^}]+\}')
-REFERENCE = re.compile(r'^\{REF:([TUPANI])@([TUPANI]):([^}]+)\}$')
+REFERENCE = re.compile(r'\{REF:([TUPANI])@([TUPANIO]):([^}]+)\}', re.I)
 FIELD = {'T': 'Title', 'U': 'UserName', 'P': 'Password', 'A': 'URL',
          'N': 'Notes'}
 STANDARD = {'{TITLE}': 'Title', '{USERNAME}': 'UserName',
             '{PASSWORD}': 'Password', '{URL}': 'URL', '{NOTES}': 'Notes'}
+ELSEWHERE = {'{TOTP}', '{DB_DIR}'} | {
+    '{URL:%s}' % part for part in (
+        'RMVSCM', 'WITHOUTSCHEME', 'SCM', 'SCHEME', 'HOST', 'PORT', 'PATH',
+        'QUERY', 'FRAGMENT', 'USERINFO', 'USERNAME', 'PASSWORD')} | {
+    '{DT_%s%s}' % (utc, part) for utc in ('', 'UTC_') for part in (
+        'SIMPLE', 'YEAR', 'MONTH', 'DAY', 'HOUR', 'MINUTE', 'SECOND')}
+DEPTH = 10
+
+class DbError(Exception):
+    """The .kdbx file could not be read; the text says why, never a value."""
 
 
 def default_db():
     """The .kdbx to read straight from, or None to use the Secret Service.
 
-    $KEEPPASSXC_DB names it; otherwise ~/Documents/<user>.kdbx when it exists.
+    $KEEPPASSXC_DB names it, and set to an empty string it means the Secret
+    Service. Without it ~/Documents/<user>.kdbx is used when that file exists
+    and keepassxc-cli is installed to read it.
     """
-    return (os.environ.get('KEEPPASSXC_DB')
-            or (DEFAULT_DB if os.path.isfile(DEFAULT_DB) else None))
+    if 'KEEPPASSXC_DB' in os.environ:
+        return os.environ['KEEPPASSXC_DB'] or None
+    if os.path.isfile(DEFAULT_DB) and shutil.which('keepassxc-cli'):
+        return DEFAULT_DB
+    return None
 
 
 def cached_password(db):
+    """The password from $XDG_RUNTIME_DIR/kpxc-auth: two lines, the real path
+    of the database and then its password. None unless it names this db."""
     runtime = os.environ.get('XDG_RUNTIME_DIR') or '/run/user/%d' % os.getuid()
     path = os.path.join(runtime, 'kpxc-auth')
     try:
@@ -94,12 +120,15 @@ def cached_password(db):
     return None
 
 
-def read_password(db=None):
-    """Cached session password when present, else stdin/TTY prompt."""
+def read_password(db=None, ask=True):
+    """Cached session password when present, else the TTY prompt or one line
+    of stdin. With ask=False only the cache counts, and None means none."""
     if db is not None:
         cached = cached_password(db)
         if cached is not None:
             return cached
+    if not ask:
+        return None
     if sys.stdin.isatty():
         return getpass.getpass('KeePassXC database password: ')
     line = sys.stdin.readline()
@@ -109,9 +138,12 @@ def read_password(db=None):
 def keepassxc_cli(password, *cli_args):
     """(returncode, stdout bytes, stderr text). Every call decrypts the whole
     database again, and the key derivation takes seconds by design."""
-    proc = subprocess.run(['keepassxc-cli', *cli_args],
-                          input=(password + '\n').encode(),
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        proc = subprocess.run(['keepassxc-cli', *cli_args],
+                              input=(password + '\n').encode(),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        raise DbError('keepassxc-cli is not installed') from None
     return (proc.returncode, proc.stdout,
             proc.stderr.decode(errors='replace').strip())
 
@@ -120,40 +152,72 @@ class Unresolved(Exception):
     """A placeholder left for `keepassxc-cli show` to resolve."""
 
 
-def resolve(value, fields, tree, depth=0):
-    """value with its placeholders resolved the way `keepassxc-cli show` does.
+def kind(text):
+    """Entry::placeholderType: 'S', 'REF', a STANDARD key, 'ELSEWHERE', or
+    None for text that KeePassXC leaves as it is."""
+    if not (text.startswith('{') and text.endswith('}')):
+        return None
+    if text.startswith('{S:'):
+        return 'S'
+    if text.startswith('{REF:'):
+        return 'REF'
+    upper = text.upper()
+    if upper in STANDARD:
+        return upper
+    return 'ELSEWHERE' if upper in ELSEWHERE else None
 
-    Raises Unresolved for anything not covered here: an unknown or
-    lower-case placeholder, a missing reference target, a loop."""
-    if not PLACEHOLDER.search(value):
+
+def resolve(value, fields, tree, depth=DEPTH):
+    """value with its placeholders resolved the way `keepassxc-cli show` does:
+    every placeholder found is replaced everywhere in the text, and a text
+    that changed is scanned again. fields is the entry the value belongs to,
+    tree every entry for references. Raises Unresolved for a placeholder
+    resolved elsewhere."""
+    if depth <= 0:
         return value
-    if depth > 8:
-        raise Unresolved(value)
+    result = value
+    for token in PLACEHOLDER.findall(value):
+        result = result.replace(token,
+                                resolve_one(token, fields, tree, depth - 1))
+    if result != value:
+        result = resolve(result, fields, tree, depth - 1)
+    return result
 
-    def one(match):
-        token = match.group(0)
-        if token in STANDARD:
-            return resolve(fields.get(STANDARD[token], ''), fields, tree,
-                           depth + 1)
-        if token.startswith('{S:') and token[3:-1] in fields:
-            return resolve(fields[token[3:-1]], fields, tree, depth + 1)
-        reference = REFERENCE.match(token)
+
+def resolve_one(token, fields, tree, depth):
+    """Entry::resolvePlaceholderRecursive for one placeholder."""
+    if depth <= 0:
+        return token
+    found = kind(token)
+    if found is None:
+        return token
+    if found == 'ELSEWHERE':
+        raise Unresolved(token)
+    if found == 'S':
+        return fields.get(token[3:-1], '')
+    if found == 'REF':
+        reference = REFERENCE.search(token)
         if not reference:
-            raise Unresolved(token)
+            return token
         wanted, search_in, term = reference.groups()
+        wanted, search_in = wanted.upper(), search_in.upper()
+        if search_in == 'I' and not re.match(r'^[0-9A-Fa-f]{32}$', term):
+            raise Unresolved(token)
         for _path, uuid, other in tree:
             if search_in == 'I':
-                if len(term) != 32 or uuid != term.lower():
-                    continue
-            elif other.get(FIELD[search_in], '') != term:
-                continue
-            if wanted == 'I':
-                return uuid
-            return resolve(other.get(FIELD[wanted], ''), other, tree,
-                           depth + 1)
-        raise Unresolved(token)
-
-    return PLACEHOLDER.sub(one, value)
+                hit = uuid == term.lower()
+            elif search_in == 'O':
+                hit = term in other.values()
+            else:
+                hit = other.get(FIELD[search_in], '') == term
+            if hit:
+                raw = uuid if wanted == 'I' else other.get(FIELD[wanted], '')
+                return resolve(raw, other, tree, depth - 1)
+        return ''
+    field = fields.get(STANDARD[found], '')
+    if kind(field) == found:
+        return field
+    return resolve(field, fields, tree, depth - 1)
 
 
 def read_tree(db, password):
@@ -161,18 +225,29 @@ def read_tree(db, password):
     `keepassxc-cli ls -R` lists them, from one decryption of the database.
 
     `keepassxc-cli export` hands the whole tree over as XML on a pipe, so
-    nothing reaches the disk. path is None for an entry that keepassxc-cli
-    cannot address: an empty title, or a '/' inside a title or group name.
+    nothing reaches the disk. path is None for an entry that is no variable:
+    one in the recycle bin, which the Secret Service does not offer either,
+    and one keepassxc-cli cannot address - an empty title, or a '/' in a title
+    or an empty or '/' in a group name. References still reach all of them.
+    Control characters that XML 1.0 cannot carry are lost in the export.
     """
     code, out, err = keepassxc_cli(password, 'export', '-q', '-f', 'xml', db)
     if code != 0:
-        sys.exit('%s: cannot read %s: %s' % (PROG, db, err))
+        raise DbError('cannot read %s: %s' % (
+            db, err or 'wrong password, or not a KeePassXC database'))
+    # The writer leaves a carriage return raw, and an XML parser would turn
+    # it into a newline; as a character reference it survives.
+    out = out.replace(b'\r', b'&#13;')
     try:
-        root = ElementTree.fromstring(out).find('Root/Group')
+        document = ElementTree.fromstring(out)
     except ElementTree.ParseError as error:
-        sys.exit('%s: unreadable export of %s: %s' % (PROG, db, error))
+        raise DbError('unreadable export of %s: %s' % (db, error)) from None
+    root = document.find('Root/Group')
     if root is None:
-        sys.exit('%s: no entries in the export of %s' % (PROG, db))
+        raise DbError('no entries in the export of %s' % db)
+    recycle_bin = None
+    if document.findtext('Meta/RecycleBinEnabled', '') == 'True':
+        recycle_bin = document.findtext('Meta/RecycleBinUUID', '')
     tree = []
 
     def walk(group, prefix):
@@ -189,8 +264,9 @@ def read_tree(db, password):
                              uuid, fields))
             elif child.tag == 'Group':
                 name = child.findtext('Name', '')
-                walk(child, None if prefix is None or '/' in name
-                     else prefix + name + '/')
+                skip = (prefix is None or not name or '/' in name
+                        or child.findtext('UUID', '') == recycle_bin)
+                walk(child, None if skip else prefix + name + '/')
 
     walk(root, '')
     return tree
@@ -207,9 +283,20 @@ def shown(db, password, path, keys):
     if code != 0:
         return None
     text = out.decode(errors='replace')
-    if keys == ['Password']:
-        return {'Password': text[:-1] if text.endswith('\n') else text}
-    return dict(zip(keys, text.split('\n')))
+    text = text[:-1] if text.endswith('\n') else text
+    if len(keys) == 1:
+        return {keys[0]: text}
+    lines = text.split('\n')
+    if len(lines) == len(keys):
+        return dict(zip(keys, lines))
+    # One of the values spans lines, so they cannot be told apart.
+    found = {}
+    for key in keys:
+        value = shown(db, password, path, [key])
+        if value is None:
+            return None
+        found.update(value)
+    return found
 
 
 def db_entries(db, password, needs_value=lambda name, hot, attrs: True):
@@ -220,7 +307,7 @@ def db_entries(db, password, needs_value=lambda name, hot, attrs: True):
     A variable is an entry whose kpxc-env attribute names it; without the
     attribute the entry title is used when it looks like a shell variable.
     attrs carries the kpxc-env attributes; value is None where needs_value
-    said the caller has no use for it.
+    said the caller has no use for it. Raises DbError.
     """
     tree = read_tree(db, password)
     # keepassxc-cli addresses entries by path, and a path held by two entries
@@ -323,7 +410,8 @@ def entries(coll):
         except Exception:                              # noqa: BLE001
             continue
         name = attrs.get(ATTR)
-        if name:
+        # The name goes into shell code for eval, so it has to be one.
+        if name and VARIABLE.match(name):
             found.append((name, item, attrs.get(HOT) == '1'))
     return sorted(found, key=lambda row: row[0])
 
@@ -334,8 +422,12 @@ def cmd_list(args):
         if not os.path.isfile(db):
             print('kpxc-env: database not found: %s' % db, file=sys.stderr)
             return 1
-        rows = db_entries(db, read_password(db),
-                          lambda _name, _hot, _attrs: False)
+        try:
+            rows = db_entries(db, read_password(db),
+                              lambda _name, _hot, _attrs: False)
+        except DbError as error:
+            print('kpxc-env: %s' % error, file=sys.stderr)
+            return 1
         if not rows:
             print('no variables stored yet')
             return 0
@@ -369,8 +461,20 @@ def cmd_export(args):
         if not os.path.isfile(db):
             print('kpxc-env: database not found: %s' % db, file=sys.stderr)
             return 0
-        for name, value, hot, _attrs in db_entries(
-                db, read_password(db), lambda _name, hot, _attrs: not hot):
+        # A shell start must never wait for a password or eat a line of the
+        # script it is starting: unless --db asks for this file in so many
+        # words, only the cached password opens it, and without one the
+        # database counts as locked.
+        password = read_password(db, ask=args.db is not None)
+        if password is None:
+            return 0
+        try:
+            rows = db_entries(db, password,
+                              lambda _name, hot, _attrs: not hot)
+        except DbError as error:
+            print('kpxc-env: %s' % error, file=sys.stderr)
+            return 0
+        for name, value, hot, _attrs in rows:
             if hot:
                 continue
             print('export %s=%s' % (name, shlex.quote(value)))
@@ -511,14 +615,20 @@ def cmd_install(args):
     """Symlink these tools into ~/.local/bin so ordinary shells can find them."""
     os.makedirs(LOCAL_BIN, exist_ok=True)
     here = os.path.dirname(os.path.abspath(__file__))
+    kept = []
     for name in sorted(os.listdir(here)):
         source = os.path.join(here, name)
         if not (name.startswith('kpxc-') and os.path.isfile(source)
                 and os.access(source, os.X_OK)):
             continue
         target = os.path.join(LOCAL_BIN, name)
-        if os.path.islink(target) or os.path.exists(target):
+        if os.path.islink(target):
             os.remove(target)
+        elif os.path.exists(target):
+            # Not a link this command made: someone's own file, left alone.
+            print('%s is not a symlink, left alone' % target, file=sys.stderr)
+            kept.append(target)
+            continue
         os.symlink(source, target)
         print('%s -> %s' % (target, source))
     if LOCAL_BIN not in os.environ.get('PATH', '').split(os.pathsep):
@@ -533,7 +643,7 @@ def cmd_install(args):
                   'would export nothing. Install it for the system interpreter:\n'
                   '  %s' % (system, module_install_command()))
             return 1
-    return 0
+    return 1 if kept else 0
 
 
 def cmd_hot(args):
