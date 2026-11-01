@@ -46,6 +46,19 @@ traps; the executables do the work.
 | `kpxc-env` | Moves `export` lines out of shell dotfiles into the database and loads them while it is unlocked; `list` shows what KeePassXC actually hands over | yes |
 | `kpxc-run` | Runs a single command with selected secrets in its environment and nowhere else | no |
 
+`kpxc-env list`, `kpxc-env export` and `kpxc-run` can also read a `.kdbx` file directly through
+`keepassxc-cli`, with no GUI and no Secret Service: `--db path/to.kdbx`, or `$KEEPPASSXC_DB`, or
+`~/Documents/<user>.kdbx` when that file exists; without any of them they use the Secret Service.
+The password comes from `$XDG_RUNTIME_DIR/kpxc-auth` when that cache names the same file, else
+from stdin. Every `keepassxc-cli` call runs the database's key derivation again, which takes
+seconds on purpose, so the file is decrypted once per command: one `keepassxc-cli export` into a
+pipe, never to disk. Field references and the plain placeholders (`{REF:…}`, `{USERNAME}`,
+`{S:…}` and the like) are resolved the way `keepassxc-cli show` does; an entry with anything
+more exotic costs one extra `show` for that entry alone, and only when its value is needed.
+
+`kpxc-env install` symlinks every `kpxc-*` tool into `~/.local/bin`; run it again from a new
+version's `bin/` after an update to move the links there.
+
 On Claude Code `bin/` is on `PATH`, so the commands work by name. In Codex or a plain shell, call
 them by path — they are ordinary Python 3 executables with no dependencies beyond an optional
 `secretstorage`, and they work the same either way.

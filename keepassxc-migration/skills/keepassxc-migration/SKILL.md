@@ -192,7 +192,9 @@ silently disappears on the next save.
 **Do not drive the database from Python.** A database with a high AES-KDF round count takes
 minutes per open in pure Python and seconds in `keepassxc-cli`, which is C++ and gets the same
 job done. Read the KDF settings out of the KDBX header if the cause of a slow open is unclear —
-the header is not encrypted.
+the header is not encrypted. And every `keepassxc-cli` call is a full open: a loop of `show` over
+the entries costs seconds per entry, so read the whole database with one
+`keepassxc-cli export -f xml` into a pipe — `kpxc-env` and `kpxc-run` do exactly that.
 
 **Hard-killing a secret daemon can take the desktop shell with it.** On KDE Plasma, killing
 `kwalletd` or `gnome-keyring-daemon` can drop `plasmashell`, panel and all;
