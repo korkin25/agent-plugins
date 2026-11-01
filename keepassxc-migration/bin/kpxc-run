@@ -46,7 +46,7 @@ VARIABLE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 # resolves them (Entry::resolveMultiplePlaceholdersRecursive). Those that
 # depend on the clock, the URL parser, TOTP or the file location go to `show`.
 PLACEHOLDER = re.compile(r'\{[^}]+\}')
-REFERENCE = re.compile(r'\{REF:([TUPANI])@([TUPANIO]):([^}]+)\}', re.I)
+REFERENCE = re.compile(r'\{REF:([TUPANI])@([TUPANIO]):([^}]+)\}', re.I | re.A)
 FIELD = {'T': 'Title', 'U': 'UserName', 'P': 'Password', 'A': 'URL',
          'N': 'Notes'}
 STANDARD = {'{TITLE}': 'Title', '{USERNAME}': 'UserName',
@@ -58,6 +58,9 @@ ELSEWHERE = {'{TOTP}', '{DB_DIR}'} | {
     '{DT_%s%s}' % (utc, part) for utc in ('', 'UTC_') for part in (
         'SIMPLE', 'YEAR', 'MONTH', 'DAY', 'HOUR', 'MINUTE', 'SECOND')}
 DEPTH = 10
+# A value that refers to itself twice doubles at every level; past this size
+# `show` computes it natively instead.
+LONGEST = 1 << 16
 
 class DbError(Exception):
     """The .kdbx file could not be read; the text says why, never a value."""
@@ -103,8 +106,18 @@ def read_password(db=None, ask=True):
         return None
     if sys.stdin.isatty():
         return getpass.getpass('KeePassXC database password: ')
-    line = sys.stdin.readline()
-    return line.rstrip('\n')
+    # Byte by byte: the rest of stdin may belong to the command kpxc-run
+    # starts, and a buffered read would swallow it.
+    line = b''
+    try:
+        while True:
+            byte = os.read(0, 1)
+            if not byte or byte == b'\n':
+                break
+            line += byte
+    except OSError:
+        pass
+    return line.decode(errors='replace')
 
 
 def keepassxc_cli(password, *cli_args):
@@ -151,6 +164,8 @@ def resolve(value, fields, tree, depth=DEPTH):
     for token in PLACEHOLDER.findall(value):
         result = result.replace(token,
                                 resolve_one(token, fields, tree, depth - 1))
+        if len(result) > LONGEST:
+            raise Unresolved(token)
     if result != value:
         result = resolve(result, fields, tree, depth - 1)
     return result
@@ -203,7 +218,8 @@ def read_tree(db, password):
     or an empty or '/' in a group name. References still reach all of them.
     Control characters that XML 1.0 cannot carry are lost in the export.
     """
-    code, out, err = keepassxc_cli(password, 'export', '-q', '-f', 'xml', db)
+    code, out, err = keepassxc_cli(password, 'export', '-q', '-f', 'xml',
+                                   '--', db)
     if code != 0:
         raise DbError('cannot read %s: %s' % (
             db, err or 'wrong password, or not a KeePassXC database'))
@@ -251,7 +267,7 @@ def shown(db, password, path, keys):
     for key in keys:
         arguments += ['-a', key]
     code, out, _err = keepassxc_cli(password, 'show', '-q', '-s', *arguments,
-                                    db, path)
+                                    '--', db, path)
     if code != 0:
         return None
     text = out.decode(errors='replace')
@@ -290,9 +306,9 @@ def db_entries(db, password, needs_value=lambda name, hot, attrs: True):
             first.setdefault(path, fields)
     rows = []
     for path, _uuid, _fields in tree:
-        if path is None:
+        if path is None or path not in first:
             continue
-        fields = first[path]
+        fields = first.pop(path)
         keys = [key for key in (ATTR, HOT, PROFILE) if key in fields]
         try:
             attrs = {key: resolve(fields[key], fields, tree) for key in keys}
