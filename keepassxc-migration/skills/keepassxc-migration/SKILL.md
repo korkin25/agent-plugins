@@ -60,6 +60,16 @@ kpxc-switch --disable-legacy        # only once a browser has been proven to wor
 kpxc-ssh-import --db path/to.kdbx   # last, and close the database in the GUI first
 ```
 
+**The agent drives this, not the user.** Every step except `kpxc-migrate --run` runs without a
+human: run it, read its output, and move on — a `--dry-run` is there for the agent to check the
+plan, after which it drops the flag itself. Do not hand the user a command to approve or to
+paste, and do not stop to ask whether to apply a reversible user-level step; everything here is
+undone by `kpxc-switch --undo`. The user is needed for three things only: running
+`kpxc-migrate --run` in their own terminal (it needs a TTY and clicks in KeePassXC), confirming
+that a real browser kept its sessions before `--disable-legacy`, and closing the database before
+`kpxc-ssh-import`. When a step fails because the plugin does not handle this machine, the fix
+belongs in the plugin, not in a one-off command for the user.
+
 Outside Claude Code, call the same commands by path: `<plugin>/bin/kpxc-inventory`. They are
 plain Python 3 executables and behave identically. `kpxc-migrate` needs a real terminal — it
 holds the secrets in memory while the user toggles the integration in KeePassXC — so it refuses
@@ -191,6 +201,21 @@ gnome-keyring is D-Bus-activatable, so the first client that asks brings it stra
 the name *and* override the activation file before expecting KeePassXC to take it. The override
 is a user-level `org.freedesktop.secrets.service` in `$XDG_DATA_HOME/dbus-1/services/`, which
 takes precedence over `/usr/share/dbus-1/services/`.
+
+**On Plasma 6 the name is held by `ksecretd`, not by gnome-keyring.** KDE split the Secret
+Service out of `kwalletd6` into `ksecretd`, which `pam_kwallet` starts at login (`ksecretd
+--pam-login`). It is not D-Bus-activated, so the unit masks and the activation override do nothing
+to it, and KeePassXC's refusal still names gnome-keyring, which is not even installed. Its own
+switch is `apiEnabled=false` in the `[org.freedesktop.secrets]` group of `kwalletrc`; with that
+set, stopping `ksecretd` frees the name for good, while `kwalletd6` keeps running and the wallet
+stays readable through `kwallet-query`. `kpxc-migrate` does both during the handover and
+`kpxc-switch --disable-legacy` sets the key too; the original `kwalletrc` is kept as
+`kwalletrc.kpxc-backup`, which `--undo` restores.
+
+**A KeePassXC entry is withheld until the client is allowed.** Reading back what was just
+written can raise `LockedException` on an open database when "Confirm when passwords are
+retrieved by clients" is on. `kpxc-migrate` reads back only the items it wrote, asks once for
+each, and reports a declined one as `LOCKED` rather than a mismatch.
 
 **`systemctl --user stop gnome-keyring-daemon.service` does not stop a D-Bus-activated
 instance.** It stops the unit; the activated process survives and keeps the name. Kill the

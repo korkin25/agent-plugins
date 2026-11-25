@@ -79,6 +79,10 @@ migration, and written straight into KeePassXC. What reaches the terminal — an
 agent's context — is only entry labels, attributes and truncated SHA-256 fingerprints, which are
 enough to prove two stores agree and useless for anything else.
 
+On Plasma 6 the Secret Service is `ksecretd`, started at login by `pam_kwallet` rather than by
+D-Bus: `kpxc-migrate` sets `apiEnabled=false` in the `[org.freedesktop.secrets]` group of
+`kwalletrc` and stops `ksecretd` so KeePassXC can take the name, leaving `kwalletd6` running.
+
 `kpxc-switch` writes only user-level files: `~/.local/share/applications`, `~/.config/autostart`,
 `~/.config/kwalletrc`, a user D-Bus service file and systemd *user* unit masks. Nothing under
 `/usr` or `/etc` is touched, and `--undo` reverses all of it. The old stores are never emptied:

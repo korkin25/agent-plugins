@@ -3,8 +3,9 @@
 
 --launchers        write user-level .desktop files that pass
                    --password-store=gnome-libsecret to Chromium/Electron apps
---disable-legacy   mask gnome-keyring, disable KWallet, override the D-Bus
-                   activation of org.freedesktop.secrets, autostart KeePassXC
+--disable-legacy   mask gnome-keyring, disable KWallet and its ksecretd Secret
+                   Service, override the D-Bus activation of
+                   org.freedesktop.secrets, autostart KeePassXC
 --undo             reverse both of the above
 --dry-run          print what would happen and change nothing
 
@@ -68,8 +69,10 @@ def patch_launchers():
         out, changed = [], False
         for line in lines:
             if line.startswith('Exec=') and FLAG not in line:
-                head, _, rest = line[5:].partition(' ')
-                line = 'Exec=%s %s %s' % (head, FLAG, rest.rstrip('\n'))
+                # strip the newline first: an Exec= with no arguments would
+                # otherwise put the flag on a line of its own
+                head, _, rest = line[5:].rstrip('\n').partition(' ')
+                line = 'Exec=%s %s %s' % (head, FLAG, rest)
                 line = line.rstrip() + '\n'
                 changed = True
             out.append(line)
@@ -118,7 +121,7 @@ def write_dbus_override():
 
 
 def set_kwallet(enabled):
-    parser = configparser.RawConfigParser()
+    parser = configparser.RawConfigParser(strict=False)
     parser.optionxform = str
     if os.path.exists(KWALLETRC):
         parser.read(KWALLETRC)
@@ -127,8 +130,15 @@ def set_kwallet(enabled):
             shutil.copy2(KWALLETRC, backup)
     if not parser.has_section('Wallet'):
         parser.add_section('Wallet')
-    parser.set('Wallet', 'Enabled', 'true' if enabled else 'false')
-    say('set KWallet Enabled=%s in' % ('true' if enabled else 'false'), KWALLETRC)
+    value = 'true' if enabled else 'false'
+    parser.set('Wallet', 'Enabled', value)
+    # Plasma 6: ksecretd, started by pam_kwallet, serves org.freedesktop.secrets
+    # unless this is false - masks and the D-Bus override do not reach it.
+    if not parser.has_section('org.freedesktop.secrets'):
+        parser.add_section('org.freedesktop.secrets')
+    parser.set('org.freedesktop.secrets', 'apiEnabled', value)
+    say('set KWallet Enabled=%s and ksecretd apiEnabled=%s in' % (value, value),
+        KWALLETRC)
     if dry:
         return
     with open(KWALLETRC, 'w') as handle:

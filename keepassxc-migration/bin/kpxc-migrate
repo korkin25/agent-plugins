@@ -10,6 +10,7 @@ attributes and truncated fingerprints is ever printed.
 """
 
 import argparse
+import configparser
 import datetime
 import hashlib
 import os
@@ -32,6 +33,14 @@ BACKUP_TARGETS = ['~/.local/share/keyrings', '~/.local/share/kwalletd',
 DBUS_OVERRIDE = os.path.expanduser(
     os.environ.get('XDG_DATA_HOME', '~/.local/share')
     + '/dbus-1/services/org.freedesktop.secrets.service')
+KWALLETRC = os.path.join(os.environ.get('XDG_CONFIG_HOME')
+                         or os.path.expanduser('~/.config'), 'kwalletrc')
+# Plasma 6 serves org.freedesktop.secrets from ksecretd, started by
+# pam_kwallet at login rather than by D-Bus activation, so neither the unit
+# masks nor the activation override keep it off the name. Its own switch is
+# apiEnabled in this kwalletrc group.
+KSECRETD = 'ksecretd'
+KSECRETD_GROUP = 'org.freedesktop.secrets'
 
 
 def fp(value):
@@ -83,7 +92,9 @@ def wallet_folders(wallet):
                 names.append(token)
         if names:
             print('  wallet folders discovered: %s' % ', '.join(names))
-            return names
+            # The listing can miss folders another frontend (ksecretd) keeps
+            # open, so the usual names are still tried; a missing one is skipped.
+            return names + [f for f in FALLBACK_FOLDERS if f not in seen]
     return FALLBACK_FOLDERS
 
 
@@ -125,6 +136,61 @@ def stop_gnome_keyring():
                 pass
         time.sleep(0.5)
     return not gk_pids()
+
+
+def ksecretd_pids():
+    try:
+        out = subprocess.run(['pgrep', '-x', KSECRETD],
+                             capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [int(x) for x in out.split()]
+
+
+def disable_ksecretd_api():
+    """Write [org.freedesktop.secrets] apiEnabled=false into kwalletrc.
+
+    The first change to kwalletrc leaves kwalletrc.kpxc-backup beside it - the
+    same file kpxc-switch --undo restores - so the original is never lost.
+    """
+    parser = configparser.RawConfigParser(strict=False)
+    parser.optionxform = str
+    if os.path.exists(KWALLETRC):
+        parser.read(KWALLETRC)
+        backup = KWALLETRC + '.kpxc-backup'
+        if not os.path.exists(backup):
+            shutil.copy2(KWALLETRC, backup)
+    if not parser.has_section(KSECRETD_GROUP):
+        parser.add_section(KSECRETD_GROUP)
+    if parser.get(KSECRETD_GROUP, 'apiEnabled', fallback='') == 'false':
+        return False
+    parser.set(KSECRETD_GROUP, 'apiEnabled', 'false')
+    os.makedirs(os.path.dirname(KWALLETRC), exist_ok=True)
+    with open(KWALLETRC, 'w') as handle:
+        parser.write(handle, space_around_delimiters=False)
+    return True
+
+
+def stop_ksecretd():
+    """Turn ksecretd's Secret Service off and stop the running instance.
+
+    Only ksecretd is stopped: kwalletd keeps running, so the wallet stays
+    readable through kwallet-query and the Plasma shell is not disturbed.
+    """
+    if disable_ksecretd_api():
+        print('ksecretd: set [%s] apiEnabled=false in %s'
+              % (KSECRETD_GROUP, KWALLETRC))
+    for _ in range(20):
+        pids = ksecretd_pids()
+        if not pids:
+            return True
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        time.sleep(0.5)
+    return not ksecretd_pids()
 
 
 def wait_for(predicate, what, limit):
@@ -315,6 +381,16 @@ Turn the integration off for a moment:
             handle.write('[D-BUS Service]\nName=org.freedesktop.secrets\n'
                          'Exec=%s\n' % keepassxc_exec())
     print('gnome-keyring stopped, its D-Bus activation is overridden')
+    if owner() == KSECRETD or ksecretd_pids():
+        if not stop_ksecretd():
+            sys.exit('ksecretd will not stop, still running: %s'
+                     % ksecretd_pids())
+        print('ksecretd stopped; kwalletd keeps running')
+    held = owner()
+    if held and 'keepass' not in held.lower():
+        print('\n! org.freedesktop.secrets is still held by %s - KeePassXC will '
+              'refuse\n  to enable the integration until that process lets go.'
+              % held)
     print("""
 Now in KeePassXC, with the database open:
   1. Tools -> Settings -> Secret Service Integration -> check -> OK
@@ -324,9 +400,8 @@ Now in KeePassXC, with the database open:
     if wait_for(lambda o: bool(o and 'keepass' in o.lower()),
                 'KeePassXC to take the name', args.wait) is None:
         print('KeePassXC did not take the name. Nothing was written.')
-        print('To put gnome-keyring back:')
-        print('  rm %s && systemctl --user start gnome-keyring-daemon.service'
-              % DBUS_OVERRIDE)
+        print('To put the old service back: kpxc-switch --undo, then log out '
+              'and in\n(or: systemctl --user start gnome-keyring-daemon.service)')
         sys.exit(1)
     print('the name is now held by:', owner())
 
@@ -338,9 +413,11 @@ Now in KeePassXC, with the database open:
     print('target collection:', destination.collection_path)
 
     written = failed = 0
+    created = []
     for label, attrs, secret in collected:
         try:
-            destination.create_item(label, attrs, secret, replace=True)
+            created.append((label, secret, destination.create_item(
+                label, attrs, secret, replace=True)))
             written += 1
         except Exception as error:                     # noqa: BLE001
             failed += 1
@@ -348,20 +425,42 @@ Now in KeePassXC, with the database open:
     print('written: %d, failed: %d' % (written, failed))
 
     print('\n=== Verification ===')
-    back = {item.get_label(): item.get_secret()
-            for item in destination.get_all_items()}
-    mismatched = 0
-    for label, _attrs, secret in collected:
-        got = back.get(label)
-        if got != secret:
+    # Only the items written above are read back: the exposed group may hold
+    # other entries, and KeePassXC withholds each one until a client is allowed.
+    mismatched = locked = 0
+    for label, secret, item in created:
+        got = read_back(item)
+        if got is None:
+            locked += 1
+            status = 'LOCKED'
+        elif got == secret:
+            status = 'OK'
+        else:
             mismatched += 1
-        print('  %-9s %-44s %s -> %s'
-              % ('OK' if got == secret else 'MISMATCH', label[:44],
-                 fp(secret), fp(got)))
-    print('\nresult: %d of %d match' % (len(collected) - mismatched,
+            status = 'MISMATCH'
+        print('  %-9s %-44s %s -> %s' % (status, label[:44], fp(secret), fp(got)))
+    print('\nresult: %d of %d match' % (len(created) - mismatched - locked,
                                         len(collected)))
+    if locked:
+        print('%d entr%s could not be read back: KeePassXC asked to allow access '
+              'and\nthe dialog was declined or timed out. They were written; '
+              'kpxc-verify\nchecks them again.' % (locked, 'y' if locked == 1 else 'ies'))
     print('Save the database in KeePassXC if it does not save by itself.')
     return 1 if mismatched or failed else 0
+
+
+def read_back(item):
+    """The item's secret, asking KeePassXC once for access; None if withheld."""
+    from secretstorage.exceptions import LockedException
+    try:
+        return item.get_secret()
+    except LockedException:
+        pass
+    try:
+        item.unlock()
+        return item.get_secret()
+    except Exception:                                  # noqa: BLE001
+        return None
 
 
 if __name__ == '__main__':
