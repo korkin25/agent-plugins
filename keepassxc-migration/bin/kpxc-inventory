@@ -125,6 +125,27 @@ def section_owner():
     item('owner', '%s (pid %s)' % (exact, pid if pid else '?'))
 
 
+def ksecretd_api():
+    """[org.freedesktop.secrets] apiEnabled from kwalletrc, as a short note."""
+    base = os.environ.get('XDG_CONFIG_HOME') or os.path.expanduser('~/.config')
+    path, section, value = os.path.join(base, 'kwalletrc'), None, None
+    try:
+        with open(path, 'r', errors='replace') as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith('[') and line.endswith(']'):
+                    section = line[1:-1]
+                elif section == 'org.freedesktop.secrets' and '=' in line:
+                    key, _, raw = line.partition('=')
+                    if key.strip().lower() == 'apienabled':
+                        value = raw.strip().lower()
+    except OSError:
+        pass
+    if value == 'false':
+        return 'false (ksecretd leaves the name alone)'
+    return '%s (ksecretd takes org.freedesktop.secrets at login)' % (value or 'unset')
+
+
 def section_services():
     head('Keyring daemons and units')
     table = proc_table()
@@ -138,6 +159,8 @@ def section_services():
         else:
             state = 'not installed'
         item(name, state)
+    if shutil.which('ksecretd'):
+        item('ksecretd apiEnabled', ksecretd_api())
     for unit in UNITS:
         enabled = run(['systemctl', '--user', 'is-enabled', unit])
         active = run(['systemctl', '--user', 'is-active', unit])
