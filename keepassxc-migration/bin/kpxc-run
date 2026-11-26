@@ -8,9 +8,10 @@ exits. This is what the shims written by `kpxc-env shim` call.
 With --db or $KEEPPASSXC_DB they are read from that file through
 keepassxc-cli instead, with the password from $XDG_RUNTIME_DIR/kpxc-auth,
 else a prompt or one line of stdin. KEEPPASSXC_DB set to an empty string
-means the Secret Service. An existing ~/Documents/<user>.kdbx is read the
-same way only while no unlocked database on the Secret Service holds
-variables: an open KeePassXC wins over the file.
+means the Secret Service. Without either, the database KeePassXC last
+worked with (from its own keepassxc.ini) is read the same way, but only
+while no unlocked database on the Secret Service holds variables: an open
+KeePassXC wins over the file.
 
   kpxc-run --profile terraform -- terraform apply
   kpxc-run --var GITHUB_TOKEN -- gh pr list
@@ -41,8 +42,6 @@ CONFIRM_HINT = ('KeePassXC asks every client for a confirmation dialog and '
                 'are retrieved by clients" in KeePassXC: Settings > Secret '
                 'Service Integration.')
 
-DEFAULT_DB = os.path.join(os.path.expanduser('~'), 'Documents',
-                          '%s.kdbx' % getpass.getuser())
 VARIABLE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 # KeePassXC 2.7 placeholders, resolved here the way `keepassxc-cli show`
 # resolves them (Entry::resolveMultiplePlaceholdersRecursive). Those that
@@ -68,17 +67,89 @@ class DbError(Exception):
     """The .kdbx file could not be read; the text says why, never a value."""
 
 
+def qsettings_list(raw):
+    """A QSettings ini value as the list of strings it stores: items split on
+    commas outside quotes, \\x.... and backslash escapes undone, the way
+    QSettings reads a string list. A single path comes back as one item."""
+    items, current, quoted, i = [], [], False, 0
+    simple = {'a': '\a', 'b': '\b', 'f': '\f', 'n': '\n', 'r': '\r',
+              't': '\t', 'v': '\v'}
+    while i < len(raw):
+        ch = raw[i]
+        if ch == '\\' and i + 1 < len(raw):
+            nxt = raw[i + 1]
+            if nxt == 'x':
+                digits = re.match(r'[0-9a-fA-F]{1,4}', raw[i + 2:])
+                if digits:
+                    current.append(chr(int(digits.group(0), 16)))
+                    i += 2 + len(digits.group(0))
+                    continue
+            current.append(simple.get(nxt, nxt))
+            i += 2
+            continue
+        if ch == '"':
+            quoted = not quoted
+        elif ch == ',' and not quoted:
+            items.append(''.join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+        i += 1
+    items.append(''.join(current).strip())
+    return [item for item in items if item]
+
+
+def keepassxc_db():
+    """The database KeePassXC itself last worked with, or None.
+
+    The path is wherever the user keeps the file, so it is taken from
+    KeePassXC's own state: $XDG_CACHE_HOME/keepassxc/keepassxc.ini in 2.7,
+    the config file in older releases. LastActiveDatabase first, then
+    LastOpenedDatabases, then LastDatabases, the recent-files list; the
+    first one that still exists wins.
+    """
+    home = os.path.expanduser('~')
+    places = (
+        os.path.join(os.environ.get('XDG_CACHE_HOME')
+                     or os.path.join(home, '.cache'), 'keepassxc'),
+        os.path.join(os.environ.get('XDG_CONFIG_HOME')
+                     or os.path.join(home, '.config'), 'keepassxc'),
+    )
+    keys = ('LastActiveDatabase', 'LastOpenedDatabases', 'LastDatabases')
+    for place in places:
+        values = {}
+        section = None
+        try:
+            with open(os.path.join(place, 'keepassxc.ini'),
+                      errors='replace') as handle:
+                for line in handle:
+                    line = line.strip()
+                    if line.startswith('[') and line.endswith(']'):
+                        section = line[1:-1]
+                    elif section == 'General' and '=' in line:
+                        key, _sep, value = line.partition('=')
+                        values[key.strip()] = value.strip()
+        except OSError:
+            continue
+        for key in keys:
+            for path in qsettings_list(values.get(key, '')):
+                path = os.path.expanduser(path)
+                if os.path.isfile(path):
+                    return path
+    return None
+
+
 def default_db():
     """The .kdbx to read straight from, or None to use the Secret Service.
 
     $KEEPPASSXC_DB names it, and set to an empty string it means the Secret
-    Service. Without it ~/Documents/<user>.kdbx is used when that file exists
-    and keepassxc-cli is installed to read it.
+    Service. Without it the database KeePassXC last worked with is used, when
+    keepassxc-cli is installed to read it.
     """
     if 'KEEPPASSXC_DB' in os.environ:
         return os.environ['KEEPPASSXC_DB'] or None
-    if os.path.isfile(DEFAULT_DB) and shutil.which('keepassxc-cli'):
-        return DEFAULT_DB
+    if shutil.which('keepassxc-cli'):
+        return keepassxc_db()
     return None
 
 
@@ -404,8 +475,8 @@ def main():
     parser.add_argument('--db', default=None,
                         help='read variables straight from this .kdbx file via '
                              'keepassxc-cli (no GUI/Secret Service); defaults '
-                             'to $KEEPPASSXC_DB, else %s when it exists, else '
-                             'the Secret Service' % DEFAULT_DB)
+                             'to $KEEPPASSXC_DB, else the database KeePassXC '
+                             'last opened, else the Secret Service')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args()
 
@@ -422,7 +493,7 @@ def main():
     injected = 0
     withheld = []
     db = args.db or default_db()
-    # A file found only by its usual location gives way to a KeePassXC that
+    # A file picked from KeePassXC's recent-files list gives way to a KeePassXC that
     # already has the database open; --db and $KEEPPASSXC_DB do not.
     if (db and args.db is None and 'KEEPPASSXC_DB' not in os.environ
             and serves_variables()):
