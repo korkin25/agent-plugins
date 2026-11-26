@@ -48,9 +48,10 @@ traps; the executables do the work.
 
 `kpxc-env list`, `kpxc-env export` and `kpxc-run` can also read a `.kdbx` file directly through
 `keepassxc-cli`, with no GUI and no Secret Service: `--db path/to.kdbx`, or `$KEEPPASSXC_DB`, or
-`~/Documents/<user>.kdbx` when that file exists and `keepassxc-cli` is installed; without any of
-them, or with `KEEPPASSXC_DB` set to an empty string, they use the Secret Service. The file found
-at its usual location gives way to an open KeePassXC: when the Secret Service already has an
+the database KeePassXC itself last worked with (`LastActiveDatabase`, `LastOpenedDatabases` or
+the recent-files list in its own `keepassxc.ini`, wherever the file lives) when `keepassxc-cli` is
+installed; without any of them, or with `KEEPPASSXC_DB` set to an empty string, they use the
+Secret Service. The file taken from KeePassXC's list gives way to an open KeePassXC: when the Secret Service already has an
 unlocked database with variables, that is read instead, so an unlocked GUI never leads to a
 password prompt. `--db` and `$KEEPPASSXC_DB` always mean the file. The password
 comes from `$XDG_RUNTIME_DIR/kpxc-auth` (two lines: the database's real path, then its password;

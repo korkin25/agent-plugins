@@ -26,9 +26,10 @@ shells are covered too:
 
 With --db or $KEEPPASSXC_DB, list and export read that file through
 keepassxc-cli instead, with no GUI and no Secret Service; KEEPPASSXC_DB set
-to an empty string turns that off. An existing ~/Documents/<user>.kdbx is
-read the same way, but only while the Secret Service has no unlocked
-database with variables in it: an open KeePassXC wins over the file. The
+to an empty string turns that off. Without either, the
+database KeePassXC last worked with (from its own keepassxc.ini) is read
+the same way, but only while the Secret Service has no unlocked database
+with variables in it: an open KeePassXC wins over the file. The
 password comes from $XDG_RUNTIME_DIR/kpxc-auth, two lines: the real path of
 the database, then its password. export asks for nothing: without that
 cache the file counts as locked, unless --db names it, which also allows a
@@ -69,8 +70,6 @@ CONFIRM_HINT = ('KeePassXC asks every client for a confirmation dialog, and a '
                 'are retrieved by clients" in KeePassXC: Settings > Secret '
                 'Service Integration.')
 
-DEFAULT_DB = os.path.join(os.path.expanduser('~'), 'Documents',
-                          '%s.kdbx' % getpass.getuser())
 VARIABLE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 # KeePassXC 2.7 placeholders, resolved here the way `keepassxc-cli show`
 # resolves them (Entry::resolveMultiplePlaceholdersRecursive). Those that
@@ -96,17 +95,89 @@ class DbError(Exception):
     """The .kdbx file could not be read; the text says why, never a value."""
 
 
+def qsettings_list(raw):
+    """A QSettings ini value as the list of strings it stores: items split on
+    commas outside quotes, \\x.... and backslash escapes undone, the way
+    QSettings reads a string list. A single path comes back as one item."""
+    items, current, quoted, i = [], [], False, 0
+    simple = {'a': '\a', 'b': '\b', 'f': '\f', 'n': '\n', 'r': '\r',
+              't': '\t', 'v': '\v'}
+    while i < len(raw):
+        ch = raw[i]
+        if ch == '\\' and i + 1 < len(raw):
+            nxt = raw[i + 1]
+            if nxt == 'x':
+                digits = re.match(r'[0-9a-fA-F]{1,4}', raw[i + 2:])
+                if digits:
+                    current.append(chr(int(digits.group(0), 16)))
+                    i += 2 + len(digits.group(0))
+                    continue
+            current.append(simple.get(nxt, nxt))
+            i += 2
+            continue
+        if ch == '"':
+            quoted = not quoted
+        elif ch == ',' and not quoted:
+            items.append(''.join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+        i += 1
+    items.append(''.join(current).strip())
+    return [item for item in items if item]
+
+
+def keepassxc_db():
+    """The database KeePassXC itself last worked with, or None.
+
+    The path is wherever the user keeps the file, so it is taken from
+    KeePassXC's own state: $XDG_CACHE_HOME/keepassxc/keepassxc.ini in 2.7,
+    the config file in older releases. LastActiveDatabase first, then
+    LastOpenedDatabases, then LastDatabases, the recent-files list; the
+    first one that still exists wins.
+    """
+    home = os.path.expanduser('~')
+    places = (
+        os.path.join(os.environ.get('XDG_CACHE_HOME')
+                     or os.path.join(home, '.cache'), 'keepassxc'),
+        os.path.join(os.environ.get('XDG_CONFIG_HOME')
+                     or os.path.join(home, '.config'), 'keepassxc'),
+    )
+    keys = ('LastActiveDatabase', 'LastOpenedDatabases', 'LastDatabases')
+    for place in places:
+        values = {}
+        section = None
+        try:
+            with open(os.path.join(place, 'keepassxc.ini'),
+                      errors='replace') as handle:
+                for line in handle:
+                    line = line.strip()
+                    if line.startswith('[') and line.endswith(']'):
+                        section = line[1:-1]
+                    elif section == 'General' and '=' in line:
+                        key, _sep, value = line.partition('=')
+                        values[key.strip()] = value.strip()
+        except OSError:
+            continue
+        for key in keys:
+            for path in qsettings_list(values.get(key, '')):
+                path = os.path.expanduser(path)
+                if os.path.isfile(path):
+                    return path
+    return None
+
+
 def default_db():
     """The .kdbx to read straight from, or None to use the Secret Service.
 
     $KEEPPASSXC_DB names it, and set to an empty string it means the Secret
-    Service. Without it ~/Documents/<user>.kdbx is used when that file exists
-    and keepassxc-cli is installed to read it.
+    Service. Without it the database KeePassXC last worked with is used, when
+    keepassxc-cli is installed to read it.
     """
     if 'KEEPPASSXC_DB' in os.environ:
         return os.environ['KEEPPASSXC_DB'] or None
-    if os.path.isfile(DEFAULT_DB) and shutil.which('keepassxc-cli'):
-        return DEFAULT_DB
+    if shutil.which('keepassxc-cli'):
+        return keepassxc_db()
     return None
 
 
@@ -441,7 +512,7 @@ def entries(coll):
 def chosen_db(args):
     """The .kdbx to read for this command, or None for the Secret Service.
 
-    A file found only because ~/Documents/<user>.kdbx exists gives way to a
+    A file picked from KeePassXC's own recent-files list gives way to a
     KeePassXC that already has the database open and serves the variables:
     reading the file would ask for a password the user has just typed into
     the GUI. --db and $KEEPPASSXC_DB still mean that file and nothing else.
@@ -763,15 +834,15 @@ def main():
     listp = sub.add_parser('list', help='names of stored variables')
     listp.add_argument('--db', default=None,
                        help='read straight from this .kdbx via keepassxc-cli '
-                            '(defaults to $KEEPPASSXC_DB, else %s when it '
-                            'exists, else the Secret Service)' % DEFAULT_DB)
+                            '(defaults to $KEEPPASSXC_DB, else the database '
+                            'KeePassXC last opened, else the Secret Service)')
     sub.add_parser('install', help='symlink the tools into ~/.local/bin')
     exportp = sub.add_parser('export', help='shell code for eval')
     exportp.add_argument('--db', default=None,
                          help='read straight from this .kdbx via '
                               'keepassxc-cli (defaults to $KEEPPASSXC_DB, else '
-                              '%s when it exists, else the Secret Service)'
-                              % DEFAULT_DB)
+                              'the database KeePassXC last opened, else the '
+                              'Secret Service)')
 
     imp = sub.add_parser('import', help='move export lines into the database')
     imp.add_argument('--from', dest='source', default='~/.bashrc')

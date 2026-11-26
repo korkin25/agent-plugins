@@ -120,9 +120,10 @@ The two cases above are not a locked database, and they are not silent: a missin
 withheld entry gets one line on stderr, which `eval "$(...)"` does not capture.
 
 **Reading the `.kdbx` file directly.** With `--db path`, `$KEEPPASSXC_DB`, or an existing
-`~/Documents/<user>.kdbx` (only when `keepassxc-cli` is installed), `kpxc-env list|export` and
+the database KeePassXC last worked with — taken from its own `keepassxc.ini`, so the file can live
+anywhere (only when `keepassxc-cli` is installed) — `kpxc-env list|export` and
 `kpxc-run` read the file through `keepassxc-cli` instead of the Secret Service;
-`KEEPPASSXC_DB=` (set, empty) turns that off. The `~/Documents` file is only a fallback: while
+`KEEPPASSXC_DB=` (set, empty) turns that off. That last-used file is only a fallback: while
 the Secret Service has an unlocked database holding variables, that is used and nothing asks for
 a password; `--db` and `$KEEPPASSXC_DB` always mean the file. The password comes from
 `$XDG_RUNTIME_DIR/kpxc-auth` — two lines, the database's real path and then its password, a
