@@ -24,9 +24,11 @@ shells are covered too:
 
   command -v kpxc-env >/dev/null && eval "$(kpxc-env export)"
 
-With --db, $KEEPPASSXC_DB or an existing ~/Documents/<user>.kdbx, list and
-export read that file through keepassxc-cli instead, with no GUI and no
-Secret Service; KEEPPASSXC_DB set to an empty string turns that off. The
+With --db or $KEEPPASSXC_DB, list and export read that file through
+keepassxc-cli instead, with no GUI and no Secret Service; KEEPPASSXC_DB set
+to an empty string turns that off. An existing ~/Documents/<user>.kdbx is
+read the same way, but only while the Secret Service has no unlocked
+database with variables in it: an open KeePassXC wins over the file. The
 password comes from $XDG_RUNTIME_DIR/kpxc-auth, two lines: the real path of
 the database, then its password. export asks for nothing: without that
 cache the file counts as locked, unless --db names it, which also allows a
@@ -436,8 +438,24 @@ def entries(coll):
     return sorted(found, key=lambda row: row[0])
 
 
-def cmd_list(args):
+def chosen_db(args):
+    """The .kdbx to read for this command, or None for the Secret Service.
+
+    A file found only because ~/Documents/<user>.kdbx exists gives way to a
+    KeePassXC that already has the database open and serves the variables:
+    reading the file would ask for a password the user has just typed into
+    the GUI. --db and $KEEPPASSXC_DB still mean that file and nothing else.
+    """
     db = args.db or default_db()
+    if db and args.db is None and 'KEEPPASSXC_DB' not in os.environ:
+        coll, _problem = collection()
+        if coll is not None and entries(coll):
+            return None
+    return db
+
+
+def cmd_list(args):
+    db = chosen_db(args)
     if db:
         if not os.path.isfile(db):
             print('kpxc-env: database not found: %s' % db, file=sys.stderr)
@@ -476,7 +494,7 @@ def cmd_list(args):
 
 
 def cmd_export(args):
-    db = args.db or default_db()
+    db = chosen_db(args)
     if db:
         if not os.path.isfile(db):
             print('kpxc-env: database not found: %s' % db, file=sys.stderr)

@@ -5,10 +5,12 @@ The variables never enter the ambient environment: they are read from the
 unlocked database, placed in the child process's environment, and gone when it
 exits. This is what the shims written by `kpxc-env shim` call.
 
-With --db, $KEEPPASSXC_DB or an existing ~/Documents/<user>.kdbx they are read
-from that file through keepassxc-cli instead, with the password from
-$XDG_RUNTIME_DIR/kpxc-auth, else a prompt or one line of stdin.
-KEEPPASSXC_DB set to an empty string means the Secret Service.
+With --db or $KEEPPASSXC_DB they are read from that file through
+keepassxc-cli instead, with the password from $XDG_RUNTIME_DIR/kpxc-auth,
+else a prompt or one line of stdin. KEEPPASSXC_DB set to an empty string
+means the Secret Service. An existing ~/Documents/<user>.kdbx is read the
+same way only while no unlocked database on the Secret Service holds
+variables: an open KeePassXC wins over the file.
 
   kpxc-run --profile terraform -- terraform apply
   kpxc-run --var GITHUB_TOKEN -- gh pr list
@@ -355,6 +357,27 @@ def collection():
     return None
 
 
+def serves_variables():
+    """True when the Secret Service has an unlocked collection holding at
+    least one variable. Never exits: it only decides where to read from."""
+    try:
+        import secretstorage
+        connection = secretstorage.dbus_init()
+        for item in secretstorage.get_all_collections(connection):
+            if item.collection_path.endswith('/session') or item.is_locked():
+                continue
+            for entry in item.get_all_items():
+                try:
+                    if entry.get_attributes().get(ATTR):
+                        return True
+                except Exception:                      # noqa: BLE001
+                    continue
+            return False
+    except Exception:                                  # noqa: BLE001
+        return False
+    return False
+
+
 def wanted(attrs, name, args):
     if args.all:
         return True
@@ -399,6 +422,11 @@ def main():
     injected = 0
     withheld = []
     db = args.db or default_db()
+    # A file found only by its usual location gives way to a KeePassXC that
+    # already has the database open; --db and $KEEPPASSXC_DB do not.
+    if (db and args.db is None and 'KEEPPASSXC_DB' not in os.environ
+            and serves_variables()):
+        db = None
     coll = None
     if db:
         if not os.path.isfile(db):
