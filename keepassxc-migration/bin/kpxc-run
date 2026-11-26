@@ -178,7 +178,13 @@ def read_password(db=None, ask=True):
     if not ask:
         return None
     if sys.stdin.isatty():
-        return getpass.getpass('KeePassXC database password: ')
+        # Name the file: the prompt may come where an open KeePassXC was
+        # expected, and the user has to see which database is asked about.
+        try:
+            return getpass.getpass('Password for %s: ' % db)
+        except EOFError:
+            print(file=sys.stderr)
+            raise DbError('no password entered') from None
     # Byte by byte: the rest of stdin may belong to the command kpxc-run
     # starts, and a buffered read would swallow it.
     line = b''
@@ -551,4 +557,10 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        # Ctrl-C is an answer, not a crash: no traceback, the usual 128+SIGINT.
+        print('\n%s: interrupted' % os.path.basename(sys.argv[0]),
+              file=sys.stderr)
+        sys.exit(130)

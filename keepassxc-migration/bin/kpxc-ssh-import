@@ -150,7 +150,11 @@ def main():
         os.chmod(args.backup_dir, 0o700)
         print('key files copied to %s' % args.backup_dir)
 
-    password = getpass.getpass('database password: ')
+    try:
+        password = getpass.getpass('database password: ')
+    except EOFError:
+        print(file=sys.stderr)
+        sys.exit('no password entered')
 
     def cli(*argv):
         command = ['keepassxc-cli', argv[0], '-q'] + list(argv[1:])
@@ -221,4 +225,10 @@ restart the agent:
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        # Ctrl-C is an answer, not a crash: no traceback, the usual 128+SIGINT.
+        print('\n%s: interrupted' % os.path.basename(sys.argv[0]),
+              file=sys.stderr)
+        sys.exit(130)

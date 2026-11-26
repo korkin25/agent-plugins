@@ -539,4 +539,10 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        # Ctrl-C is an answer, not a crash: no traceback, the usual 128+SIGINT.
+        print('\n%s: interrupted' % os.path.basename(sys.argv[0]),
+              file=sys.stderr)
+        sys.exit(130)
